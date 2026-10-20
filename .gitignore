@@ -1,0 +1,61 @@
+# --- Biometric data: never commit face photos or embeddings ---
+known/*
+!known/README.md
+data/*
+!data/.gitkeep
+*.npz
+*.npy
+*.pkl
+
+# Image files (anywhere in the repo)
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.gif
+*.webp
+*.tif
+*.tiff
+*.heic
+
+# Video recordings
+*.mp4
+*.avi
+*.mkv
+*.mov
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Model downloads (InsightFace caches in ~/.insightface, but just in case)
+models/
+*.onnx
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
