@@ -15,8 +15,9 @@ GALLERY_PATH = DATA_DIR / "gallery.npz"
 
 # --- Models ----------------------------------------------------------------
 MODEL_PACK = "buffalo_s"  # InsightFace pack: SCRFD-500M detector + MobileFaceNet ArcFace
-PROVIDERS = ["CPUExecutionProvider"]  # add "CUDAExecutionProvider" later for GPU
+PROVIDERS = ["CPUExecutionProvider"]  # explicit, so the Azure provider is never used
 CTX_ID = -1  # -1 = CPU, 0 = first GPU
+MODEL_MODULES = ["detection", "recognition"]  # skip the pack's gender/age and landmark models
 
 # --- Detection -------------------------------------------------------------
 DET_SIZE = (640, 640)  # detector input size
@@ -25,13 +26,24 @@ DET_THRESHOLD = 0.5  # minimum detector confidence
 
 # --- Quality filter (applied before embedding) ----------------------------
 MIN_FACE_PX = 80  # minimum face box width in pixels
-MIN_BLUR_VAR = 60.0  # minimum variance of Laplacian (lower = blurrier)
+MIN_BLUR_VAR = 60.0  # minimum variance of Laplacian on the face resized to 112x112 (lower = blurrier)
+MAX_YAW_RATIO = 0.30  # nose offset from the eye midpoint / eye distance (0 = facing straight on)
+PITCH_RANGE = (0.25, 0.75)  # (nose - eyes) / (mouth - eyes) vertically; about 0.5 when level
 
 # --- Recognition -----------------------------------------------------------
 EMBEDDING_DIM = 512
 MATCH_THRESHOLD = 0.45  # minimum cosine similarity to accept a match
 MATCH_MARGIN = 0.05  # top score must beat the second-best person by this much
-BEST_FRAMES_PER_TRACK = 5  # recognize only the best N frames per person
+BEST_FRAMES_PER_TRACK = 5  # recognize only the best N frames per person (tracking phase)
+
+# --- Webcam prototype vote (until ByteTrack tracking is added) ---------------
+VOTE_FRAMES = 5  # last N decisions for the largest face in view
+VOTE_MIN_AGREE = 3  # a name must win this many of them to be confirmed
+FACE_LOST_SECONDS = 1.5  # reset the vote after no face for this long
+
+# --- Enrollment ----------------------------------------------------------------
+ENROLL_MIN_PHOTOS = 5  # warn when a person has fewer accepted photos
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 # --- Processing rate -------------------------------------------------------
 PROCESS_FPS = 8  # frames per second actually processed (5 to 10 on CPU)

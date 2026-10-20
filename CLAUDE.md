@@ -19,13 +19,15 @@
 ```
 app/
   config.py      thresholds, fps, frame size, model, camera sources
-  detector.py    SCRFD face detection + quality filter (stub)
-  recognizer.py  ArcFace embeddings (stub)
-  gallery.py     enrolled embeddings + cosine matching (stub)
+  models.py      loads the buffalo_s pack once (CPU providers only)
+  detector.py    SCRFD face detection + quality filter
+  recognizer.py  ArcFace embeddings
+  gallery.py     every embedding per person; best-score cosine matching
+  camera.py      opens a webcam index, video file or RTSP URL
 scripts/
   check_env.py   verifies deps, model, webcam
-  enroll.py      (next phase) build gallery from known/
-  recognize.py   (next phase) live webcam recognition
+  enroll.py      build data/gallery.npz from known/ (optional --capture NAME)
+  recognize.py   live recognition, --source webcam index or video file
 known/<person>/*.jpg   enrollment photos (git-ignored)
 data/                  embeddings (gallery.npz) and database (git-ignored)
 tests/                 pytest tests
@@ -38,9 +40,15 @@ The InsightFace models download to `%USERPROFILE%\.insightface\models\buffalo_s`
 All commands from the project root, using the venv:
 
 ```
-.venv\Scripts\python scripts\check_env.py     # environment + webcam check
-.venv\Scripts\python -m pytest                # tests
+.venv\Scripts\python scripts\check_env.py                  # environment + webcam check
+.venv\Scripts\python scripts\enroll.py                     # build gallery from known/
+.venv\Scripts\python scripts\enroll.py --capture waqas     # capture webcam photos, then build
+.venv\Scripts\python scripts\recognize.py                  # live webcam
+.venv\Scripts\python scripts\recognize.py --source clip.mp4 --no-window
+.venv\Scripts\python -m pytest                             # tests
 ```
+
+`recognize.py` logs one line per decision (time, name or unknown, score, second-best score, verdict) for threshold tuning.
 
 ## Rules
 

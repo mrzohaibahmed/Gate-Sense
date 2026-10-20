@@ -1,5 +1,5 @@
-insightface
-onnxruntime
-opencv-python
-numpy
-pytest
+insightface==2.1
+onnxruntime==1.31.0
+opencv-python==5.0.0.93
+numpy==2.4.6
+pytest==9.1.1

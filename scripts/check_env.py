@@ -25,7 +25,8 @@ def main() -> int:
     import onnxruntime as ort
     import insightface
     import pytest
-    from insightface.app import FaceAnalysis
+
+    from app.models import face_analysis, providers_in_use
 
     print(f"numpy       {np.__version__}")
     print(f"opencv      {cv2.__version__}")
@@ -35,13 +36,9 @@ def main() -> int:
 
     print(f"\nLoading {config.MODEL_PACK} on CPU (downloads on first run)...")
     t0 = time.perf_counter()
-    fa = FaceAnalysis(
-        name=config.MODEL_PACK,
-        providers=config.PROVIDERS,
-        allowed_modules=["detection", "recognition"],
-    )
-    fa.prepare(ctx_id=config.CTX_ID, det_size=config.DET_SIZE, det_thresh=config.DET_THRESHOLD)
+    fa = face_analysis()
     print(f"Model loaded in {time.perf_counter() - t0:.1f}s: {sorted(fa.models)}")
+    print(f"Providers in use: {providers_in_use()}")
 
     source = config.CAMERAS[0]["source"]
     print(f"\nOpening camera {source!r}...")
