@@ -78,6 +78,12 @@ def pose_ratios(kps: np.ndarray) -> tuple[float, float]:
     return yaw, pitch
 
 
+def quality_score(det: Detection) -> float:
+    """Higher is better: bigger, more confident, more frontal faces. Used to pick a track's best frames."""
+    yaw, _ = pose_ratios(det.kps)
+    return det.width * det.score * (1.0 - min(yaw, 1.0))
+
+
 def check_quality(img: np.ndarray, det: Detection) -> str | None:
     """Return why the face fails the quality filter, or None if it passes."""
     if det.width < config.MIN_FACE_PX:

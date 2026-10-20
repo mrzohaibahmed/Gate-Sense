@@ -12,7 +12,12 @@
 - Match by cosine similarity with a configurable threshold, starting at 0.45.
 - CPU speed: process 5 to 10 fps, detect on frames about 640 px wide, recognize only the best few frames per person.
 - Load only the `detection` and `recognition` modules (`allowed_modules`); buffalo_s also ships gender/age and landmark models we don't use.
-- Later phases (not now): ByteTrack tracking, SQLite then PostgreSQL, FastAPI + dashboard, liveness check, Docker.
+- Tracking: ByteTrack from **supervision** (MIT), pinned to **0.30.9**, the last release that includes it (0.31 moved it to Roboflow's separate `trackers` package). Not Ultralytics (AGPL).
+- Per track: embed only the best `BEST_FRAMES_PER_TRACK` frames; record when one person wins `VOTE_MIN_AGREE` of them.
+- One `recognize.py` process per camera (`--camera NAME` from `config.CAMERAS`); direction comes from the camera.
+- Cool-down per (person, camera), seeded from the DB on start. For video files, event time = run start + video position.
+- Storage: SQLite at `data/attendance.db` (WAL mode for several camera processes). Embeddings stay in `data/gallery.npz` for now. Day = calendar date (shift windows later).
+- Later phases (not now): PostgreSQL, FastAPI + dashboard, shift windows, liveness check, Docker.
 
 ## Folder layout
 
@@ -24,12 +29,17 @@ app/
   recognizer.py  ArcFace embeddings
   gallery.py     every embedding per person; best-score cosine matching
   camera.py      opens a webcam index, video file or RTSP URL
+  images.py      image read/write, face snapshot crops
+  tracker.py     ByteTrack wrapper + per-track best frames and vote
+  attendance.py  cool-down and daily summary rules (pure logic)
+  db.py          SQLite schema and queries
 scripts/
   check_env.py   verifies deps, model, webcam
-  enroll.py      build data/gallery.npz from known/ (optional --capture NAME)
-  recognize.py   live recognition, --source webcam index or video file
+  enroll.py      build data/gallery.npz from known/, sync persons table (optional --capture NAME)
+  recognize.py   attendance worker for one camera (--camera, --source, --no-db)
+  today.py       print a day's attendance (--date)
 known/<person>/*.jpg   enrollment photos (git-ignored)
-data/                  embeddings (gallery.npz) and database (git-ignored)
+data/                  gallery.npz, attendance.db, snapshots/ (all git-ignored)
 tests/                 pytest tests
 ```
 
@@ -43,12 +53,14 @@ All commands from the project root, using the venv:
 .venv\Scripts\python scripts\check_env.py                  # environment + webcam check
 .venv\Scripts\python scripts\enroll.py                     # build gallery from known/
 .venv\Scripts\python scripts\enroll.py --capture waqas     # capture webcam photos, then build
-.venv\Scripts\python scripts\recognize.py                  # live webcam
-.venv\Scripts\python scripts\recognize.py --source clip.mp4 --no-window
-.venv\Scripts\python -m pytest                             # tests
+.venv\Scripts\python scripts\recognize.py                                  # entrance (webcam, IN)
+.venv\Scripts\python scripts\recognize.py --camera exit --source clip.mp4  # exit (OUT) from a clip
+.venv\Scripts\python scripts\recognize.py --no-db                          # tune without recording
+.venv\Scripts\python scripts\today.py                                      # today's attendance
+.venv\Scripts\python -m pytest                                             # tests
 ```
 
-`recognize.py` logs one line per decision (time, name or unknown, score, second-best score, verdict) for threshold tuning.
+`recognize.py` logs one line per match decision (time, track, name or unknown, score, second-best score, verdict) for threshold tuning, plus a line per event or cool-down skip.
 
 ## Rules
 

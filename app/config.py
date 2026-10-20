@@ -12,6 +12,8 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 KNOWN_DIR = ROOT_DIR / "known"  # known/<person>/*.jpg enrollment photos
 DATA_DIR = ROOT_DIR / "data"  # embeddings and database
 GALLERY_PATH = DATA_DIR / "gallery.npz"
+DB_PATH = DATA_DIR / "attendance.db"
+SNAPSHOT_DIR = DATA_DIR / "snapshots"  # one small face crop per attendance event
 
 # --- Models ----------------------------------------------------------------
 MODEL_PACK = "buffalo_s"  # InsightFace pack: SCRFD-500M detector + MobileFaceNet ArcFace
@@ -34,12 +36,13 @@ PITCH_RANGE = (0.25, 0.75)  # (nose - eyes) / (mouth - eyes) vertically; about 0
 EMBEDDING_DIM = 512
 MATCH_THRESHOLD = 0.45  # minimum cosine similarity to accept a match
 MATCH_MARGIN = 0.05  # top score must beat the second-best person by this much
-BEST_FRAMES_PER_TRACK = 5  # recognize only the best N frames per person (tracking phase)
 
-# --- Webcam prototype vote (until ByteTrack tracking is added) ---------------
-VOTE_FRAMES = 5  # last N decisions for the largest face in view
-VOTE_MIN_AGREE = 3  # a name must win this many of them to be confirmed
-FACE_LOST_SECONDS = 1.5  # reset the vote after no face for this long
+# --- Tracking (ByteTrack via supervision) and voting --------------------------
+BEST_FRAMES_PER_TRACK = 5  # embed and keep only the best N frames of each tracked face
+VOTE_MIN_AGREE = 3  # a person must win this many of a track's kept frames to be recorded
+TRACK_ACTIVATION_THRESHOLD = 0.5  # detector score needed to start a new track
+TRACK_MATCH_THRESHOLD = 0.8  # ByteTrack matching threshold (higher = more lenient box matching)
+TRACK_LOST_SECONDS = 1.5  # a track not seen for this long is closed
 
 # --- Enrollment ----------------------------------------------------------------
 ENROLL_MIN_PHOTOS = 5  # warn when a person has fewer accepted photos
@@ -49,13 +52,16 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 PROCESS_FPS = 8  # frames per second actually processed (5 to 10 on CPU)
 
 # --- Attendance --------------------------------------------------------------
-DEBOUNCE_SECONDS = 5 * 60  # ignore the same person on the same camera for this long
+COOLDOWN_SECONDS = 5 * 60  # ignore the same person on the same camera for this long
+SNAPSHOT_SIZE = 160  # longest side of saved face snapshots, in pixels
 
 # --- Cameras ---------------------------------------------------------------
-# source: an int for a local webcam index, or an RTSP URL string for an IP camera.
+# Run one recognize.py per camera: --camera <name>. The first entry is the default.
+# source: an int for a local webcam index, a video file path, or an RTSP URL.
 # direction: "IN" for entrance, "OUT" for exit.
 CAMERAS = [
-    {"name": "webcam", "source": 0, "direction": "IN"},
+    {"name": "entrance", "source": 0, "direction": "IN"},
+    {"name": "exit", "source": str(DATA_DIR / "clips" / "exit.mp4"), "direction": "OUT"},
     # {"name": "gate-entrance", "source": "rtsp://user:pass@192.168.1.10:554/stream1", "direction": "IN"},
     # {"name": "gate-exit", "source": "rtsp://user:pass@192.168.1.11:554/stream1", "direction": "OUT"},
 ]

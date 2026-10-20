@@ -2,7 +2,8 @@
 
 Every photo is detected, quality-checked and embedded. Photos with no face,
 more than one face, or a face that fails the quality filter are rejected.
-All accepted embeddings are kept per person and saved to data/gallery.npz.
+All accepted embeddings are kept per person and saved to data/gallery.npz,
+and the persons table in data/attendance.db is synced to match.
 A summary per person lists accepted photos and why the others were rejected.
 
 Optionally capture photos from the webcam first:
@@ -21,29 +22,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cv2  # noqa: E402
-import numpy as np  # noqa: E402
 
-from app import config  # noqa: E402
+from app import config, db  # noqa: E402
 from app.camera import open_capture, parse_source  # noqa: E402
 from app.detector import Detector, check_quality  # noqa: E402
 from app.gallery import Gallery  # noqa: E402
+from app.images import read_image, write_image  # noqa: E402
 from app.models import providers_in_use  # noqa: E402
 from app.recognizer import Recognizer  # noqa: E402
 
 WINDOW = "GateSense enroll"
-
-
-def read_image(path: Path) -> np.ndarray | None:
-    # imdecode + fromfile handles non-ASCII Windows paths, which cv2.imread does not.
-    data = np.fromfile(str(path), dtype=np.uint8)
-    return cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
-
-
-def write_image(path: Path, img: np.ndarray) -> None:
-    ok, buf = cv2.imencode(path.suffix, img)
-    if not ok:
-        raise RuntimeError(f"could not encode {path}")
-    buf.tofile(str(path))
 
 
 def capture(name: str, count: int, source, detector: Detector) -> None:
@@ -161,6 +149,11 @@ def main() -> int:
     gallery.save()
     total = sum(gallery.counts().values())
     print(f"\nSaved {len(gallery)} people, {total} embeddings to {config.GALLERY_PATH.relative_to(config.ROOT_DIR)}")
+
+    conn = db.connect()
+    db.sync_persons(conn, gallery.names)
+    conn.close()
+    print(f"Synced persons table in {config.DB_PATH.relative_to(config.ROOT_DIR)} (people no longer enrolled are marked inactive)")
     return 0
 
 

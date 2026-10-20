@@ -36,25 +36,36 @@ Or capture them from the webcam (SPACE saves when the face passes the quality ch
 .venv\Scripts\python scripts\enroll.py --capture waqas
 ```
 
-It prints, per person, how many photos were accepted and why any were rejected, then saves `data/gallery.npz`.
+It prints, per person, how many photos were accepted and why any were rejected, then saves `data/gallery.npz` and syncs the `persons` table in `data/attendance.db`.
 
-## Recognize
+## Record attendance
 
-```
-.venv\Scripts\python scripts\recognize.py                      # webcam from app/config.py
-.venv\Scripts\python scripts\recognize.py --source 1           # another webcam
-.venv\Scripts\python scripts\recognize.py --source clip.mp4    # recorded clip
-```
-
-Add `--no-window` to log without showing video. Each decision is logged like:
+Run one worker per camera. Cameras (name, source, IN/OUT direction) are listed in `CAMERAS` in [app/config.py](app/config.py); `--source` overrides a camera's source. To test with one webcam, run two terminals:
 
 ```
-13:28:34.814  face0  waqas        score=0.910 (waqas)          second=0.312 (ali)            ACCEPT
-13:28:35.013  face0  unknown      score=0.402 (waqas)          second=0.298 (ali)            below threshold
-13:28:35.013  CONFIRMED waqas (3/5 frames)
+.venv\Scripts\python scripts\recognize.py --camera entrance                       # webcam as IN
+.venv\Scripts\python scripts\recognize.py --camera exit --source data\clips\out.mp4  # clip as OUT
 ```
 
-Use these scores to tune `MATCH_THRESHOLD` and `MATCH_MARGIN` in `app/config.py`.
+Each face is tracked (ByteTrack); its best 5 frames are embedded, and when one person wins 3 of them an event is saved with a face snapshot in `data/snapshots/`. The same person on the same camera is ignored for the 5-minute cool-down. Add `--no-window` to log without video, or `--no-db` to tune without recording anything. Log lines look like:
+
+```
+13:28:34.814  track1    waqas        score=0.910 (waqas)          second=0.312 (ali)            ACCEPT
+13:28:35.013  track2    unknown      score=0.402 (waqas)          second=0.298 (ali)            below threshold
+13:28:35.140  track1    IN  waqas  EVENT saved  score=0.910  votes 3/3  snapshot=snapshots/2026-10-20/132835_waqas_entrance.jpg
+13:31:02.517  track5    IN  waqas  ignored: cool-down (300s) since last IN
+```
+
+Use the scores to tune `MATCH_THRESHOLD` and `MATCH_MARGIN` in `app/config.py`.
+
+## Today's attendance
+
+```
+.venv\Scripts\python scripts\today.py                    # today
+.venv\Scripts\python scripts\today.py --date 2026-10-20
+```
+
+Prints name, first IN, last OUT, worked hours and a missing-exit flag for every enrolled person. Status is `present`, `missing exit` (no OUT after the last IN), `missing entry` (OUT without IN) or `absent`.
 
 ## Tests
 
@@ -64,8 +75,8 @@ Use these scores to tune `MATCH_THRESHOLD` and `MATCH_MARGIN` in `app/config.py`
 
 ## Configuration
 
-Thresholds, frame rate, frame size and camera sources (webcam index or RTSP URL, plus IN/OUT direction) are in [app/config.py](app/config.py).
+Thresholds, frame rate, frame size, tracking, vote and cool-down settings, and the camera list (name, source, IN/OUT direction) are in [app/config.py](app/config.py).
 
 ## Privacy
 
-Face photos (`known/`) and embeddings (`data/`, `*.npz`) are biometric data. They are git-ignored and must never be committed. Enroll only people who have given written consent.
+Face photos (`known/`), embeddings (`data/`, `*.npz`) and event snapshots (`data/snapshots/`) are biometric data. They are git-ignored and must never be committed. Enroll only people who have given written consent.
