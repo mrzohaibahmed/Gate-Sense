@@ -53,6 +53,7 @@ env/
 
 # Environment / secrets
 .env
+.streamlit/secrets.toml
 
 # Editors / OS
 .vscode/

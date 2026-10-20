@@ -4,10 +4,17 @@ Tables follow PLAN.md. Embeddings stay in data/gallery.npz for now, so there is
 no face_embeddings table yet. ``cameras.source`` replaces PLAN.md's
 ``rtsp_url`` because a source can also be a webcam index or a video file.
 
+Manual corrections never delete anything: an admin can add a manual event,
+change an event's time, or void (and restore) an event. Every change, and
+every change to a person, writes an ``audit_log`` row with a required reason
+in the same transaction. Voided events are ignored by the daily summary.
+Manual events have ``manual = 1`` and ``match_score = 0``.
+
 Timestamps are local time stored as ISO text ("YYYY-MM-DD HH:MM:SS"). WAL mode
-lets one recognize.py per camera write at the same time.
+lets one recognize.py per camera and the dashboard use the database at once.
 """
 
+import json
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -36,7 +43,9 @@ CREATE TABLE IF NOT EXISTS attendance_events (
     camera_id     INTEGER NOT NULL REFERENCES cameras(id),
     timestamp     TEXT NOT NULL,
     match_score   REAL NOT NULL,
-    snapshot_path TEXT
+    snapshot_path TEXT,
+    manual        INTEGER NOT NULL DEFAULT 0,
+    voided        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON attendance_events(timestamp);
 CREATE TABLE IF NOT EXISTS daily_attendance (
@@ -48,40 +57,123 @@ CREATE TABLE IF NOT EXISTS daily_attendance (
     status       TEXT NOT NULL,
     PRIMARY KEY (person_id, date)
 );
+CREATE TABLE IF NOT EXISTS audit_log (
+    id        INTEGER PRIMARY KEY,
+    timestamp TEXT NOT NULL,
+    user      TEXT NOT NULL,
+    action    TEXT NOT NULL,
+    target    TEXT NOT NULL,
+    details   TEXT NOT NULL,
+    reason    TEXT NOT NULL
+);
 """
+
+# Columns added after the first schema; connect() adds them to older databases.
+MIGRATIONS = {
+    "attendance_events": {
+        "manual": "INTEGER NOT NULL DEFAULT 0",
+        "voided": "INTEGER NOT NULL DEFAULT 0",
+    },
+}
 
 
 def _ts(dt: datetime | None) -> str | None:
     return None if dt is None else dt.isoformat(sep=" ", timespec="seconds")
 
 
-def connect(path: Path = config.DB_PATH) -> sqlite3.Connection:
-    """Open the database, creating the file and tables if needed."""
+def connect(path: Path | None = None) -> sqlite3.Connection:
+    """Open the database (default ``config.DB_PATH``), creating or upgrading the tables."""
+    path = path or config.DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    for table, columns in MIGRATIONS.items():
+        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for col, decl in columns.items():
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+    conn.commit()
     return conn
 
 
+def _audit(conn, user: str, action: str, target: str, details: dict, reason: str) -> None:
+    """Write an audit row; call inside the transaction that makes the change."""
+    if not reason or not reason.strip():
+        raise ValueError("a reason is required")
+    conn.execute(
+        "INSERT INTO audit_log (timestamp, user, action, target, details, reason) VALUES (?, ?, ?, ?, ?, ?)",
+        (_ts(datetime.now()), user, action, target, json.dumps(details, default=str), reason.strip()),
+    )
+
+
+# --- People -----------------------------------------------------------------
+
+
 def sync_persons(conn: sqlite3.Connection, codes: list[str]) -> None:
-    """Make exactly these employee codes active; new ones get their code as name."""
+    """Called by enroll.py: add new codes as active, deactivate people no longer enrolled.
+
+    Existing people keep their active flag, so someone an admin deactivated in
+    the dashboard stays inactive after re-enrolling.
+    """
     with conn:
-        conn.execute("UPDATE persons SET active = 0")
         for code in codes:
             conn.execute(
-                "INSERT INTO persons (employee_code, name) VALUES (?, ?) "
-                "ON CONFLICT(employee_code) DO UPDATE SET active = 1",
+                "INSERT INTO persons (employee_code, name) VALUES (?, ?) ON CONFLICT(employee_code) DO NOTHING",
                 (code, code),
             )
+        placeholders = ",".join("?" * len(codes))
+        conn.execute(f"UPDATE persons SET active = 0 WHERE employee_code NOT IN ({placeholders})", codes)
 
 
 def person_ids(conn: sqlite3.Connection) -> dict[str, int]:
     """employee_code -> id for active people."""
     rows = conn.execute("SELECT id, employee_code FROM persons WHERE active = 1")
     return {r["employee_code"]: r["id"] for r in rows}
+
+
+def active_person_id(conn: sqlite3.Connection, code: str) -> int | None:
+    row = conn.execute("SELECT id FROM persons WHERE employee_code = ? AND active = 1", (code,)).fetchone()
+    return row["id"] if row else None
+
+
+def list_persons(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM persons ORDER BY name").fetchall()
+
+
+def _person(conn, person_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM persons WHERE id = ?", (person_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"no person with id {person_id}")
+    return row
+
+
+def set_person_active(conn, person_id: int, active: bool, reason: str, user: str) -> None:
+    with conn:
+        old = _person(conn, person_id)
+        _audit(conn, user, "activate_person" if active else "deactivate_person", f"person:{old['employee_code']}",
+               {"active": [old["active"], int(active)]}, reason)
+        conn.execute("UPDATE persons SET active = ? WHERE id = ?", (int(active), person_id))
+
+
+def update_person(conn, person_id: int, name: str, department: str | None, shift: str | None,
+                  reason: str, user: str) -> None:
+    if not name.strip():
+        raise ValueError("name is required")
+    new = {"name": name.strip(), "department": (department or "").strip() or None, "shift": (shift or "").strip() or None}
+    with conn:
+        old = _person(conn, person_id)
+        changes = {k: [old[k], v] for k, v in new.items() if old[k] != v}
+        if not changes:
+            return
+        _audit(conn, user, "edit_person", f"person:{old['employee_code']}", changes, reason)
+        conn.execute("UPDATE persons SET name = ?, department = ?, shift = ? WHERE id = ?",
+                     (new["name"], new["department"], new["shift"], person_id))
+
+
+# --- Cameras ------------------------------------------------------------------
 
 
 def upsert_camera(conn: sqlite3.Connection, name: str, source: str | int, direction: str) -> int:
@@ -92,6 +184,23 @@ def upsert_camera(conn: sqlite3.Connection, name: str, source: str | int, direct
             (name, str(source), direction),
         )
     return conn.execute("SELECT id FROM cameras WHERE name = ?", (name,)).fetchone()["id"]
+
+
+def ensure_cameras(conn: sqlite3.Connection, cameras: list[dict]) -> None:
+    """Add configured cameras that aren't in the table yet (keeps sources set by recognize.py)."""
+    with conn:
+        for cam in cameras:
+            conn.execute(
+                "INSERT INTO cameras (name, source, direction) VALUES (?, ?, ?) ON CONFLICT(name) DO NOTHING",
+                (cam["name"], str(cam["source"]), cam["direction"]),
+            )
+
+
+def list_cameras(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM cameras ORDER BY name").fetchall()
+
+
+# --- Events -------------------------------------------------------------------
 
 
 def add_event(
@@ -111,23 +220,85 @@ def add_event(
     return cur.lastrowid
 
 
+EVENT_COLUMNS = (
+    "SELECT e.id, e.timestamp, e.match_score, e.snapshot_path, e.manual, e.voided, "
+    "p.employee_code, p.name, c.name AS camera, c.direction FROM attendance_events e "
+    "JOIN persons p ON p.id = e.person_id JOIN cameras c ON c.id = e.camera_id "
+)
+
+
+def _event(conn, event_id: int) -> sqlite3.Row:
+    row = conn.execute(EVENT_COLUMNS + "WHERE e.id = ?", (event_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"no event with id {event_id}")
+    return row
+
+
+def recent_events(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.Row]:
+    """Newest events first, including manual and voided ones."""
+    return conn.execute(EVENT_COLUMNS + "ORDER BY e.timestamp DESC, e.id DESC LIMIT ?", (limit,)).fetchall()
+
+
+def events_on(conn: sqlite3.Connection, day: date) -> list[sqlite3.Row]:
+    """All of a day's events (including voided) for the corrections page."""
+    start, end = day.isoformat(), (day + timedelta(days=1)).isoformat()
+    return conn.execute(EVENT_COLUMNS + "WHERE e.timestamp >= ? AND e.timestamp < ? ORDER BY e.timestamp",
+                        (start, end)).fetchall()
+
+
+def add_manual_event(conn, person_id: int, camera_id: int, timestamp: datetime, reason: str, user: str) -> int:
+    with conn:
+        person = _person(conn, person_id)
+        cur = conn.execute(
+            "INSERT INTO attendance_events (person_id, camera_id, timestamp, match_score, snapshot_path, manual) "
+            "VALUES (?, ?, ?, 0, NULL, 1)",
+            (person_id, camera_id, _ts(timestamp)),
+        )
+        camera = conn.execute("SELECT name, direction FROM cameras WHERE id = ?", (camera_id,)).fetchone()
+        _audit(conn, user, "add_event", f"event:{cur.lastrowid}",
+               {"person": person["employee_code"], "camera": camera["name"], "direction": camera["direction"],
+                "timestamp": _ts(timestamp)}, reason)
+    return cur.lastrowid
+
+
+def edit_event_time(conn, event_id: int, timestamp: datetime, reason: str, user: str) -> None:
+    with conn:
+        old = _event(conn, event_id)
+        _audit(conn, user, "edit_event", f"event:{event_id}",
+               {"person": old["employee_code"], "timestamp": [old["timestamp"], _ts(timestamp)]}, reason)
+        conn.execute("UPDATE attendance_events SET timestamp = ? WHERE id = ?", (_ts(timestamp), event_id))
+
+
+def set_event_voided(conn, event_id: int, voided: bool, reason: str, user: str) -> None:
+    with conn:
+        old = _event(conn, event_id)
+        _audit(conn, user, "void_event" if voided else "restore_event", f"event:{event_id}",
+               {"person": old["employee_code"], "timestamp": old["timestamp"], "direction": old["direction"]}, reason)
+        conn.execute("UPDATE attendance_events SET voided = ? WHERE id = ?", (int(voided), event_id))
+
+
+def audit_entries(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+
+
 def last_event_times(conn: sqlite3.Connection, camera_name: str) -> dict[tuple[str, str], datetime]:
     """Latest event per person on this camera, to seed the cool-down after a restart."""
     rows = conn.execute(
         "SELECT p.employee_code, MAX(e.timestamp) AS ts FROM attendance_events e "
         "JOIN persons p ON p.id = e.person_id JOIN cameras c ON c.id = e.camera_id "
-        "WHERE c.name = ? GROUP BY p.employee_code",
+        "WHERE c.name = ? AND e.voided = 0 GROUP BY p.employee_code",
         (camera_name,),
     )
     return {(r["employee_code"], camera_name): datetime.fromisoformat(r["ts"]) for r in rows}
 
 
 def events_for_day(conn: sqlite3.Connection, day: date) -> list[Event]:
+    """A day's non-voided events, for the daily summary."""
     start, end = day.isoformat(), (day + timedelta(days=1)).isoformat()
     rows = conn.execute(
         "SELECT p.employee_code, e.timestamp, c.direction FROM attendance_events e "
         "JOIN persons p ON p.id = e.person_id JOIN cameras c ON c.id = e.camera_id "
-        "WHERE e.timestamp >= ? AND e.timestamp < ? ORDER BY e.timestamp",
+        "WHERE e.timestamp >= ? AND e.timestamp < ? AND e.voided = 0 ORDER BY e.timestamp",
         (start, end),
     )
     return [Event(r["employee_code"], datetime.fromisoformat(r["timestamp"]), r["direction"]) for r in rows]
@@ -142,12 +313,11 @@ def refresh_daily(conn: sqlite3.Connection, day: date) -> list[DaySummary]:
         ids[code] = conn.execute("SELECT id FROM persons WHERE employee_code = ?", (code,)).fetchone()["id"]
     summaries = summarize_day(events, list(ids))
     with conn:
+        conn.execute("DELETE FROM daily_attendance WHERE date = ?", (day.isoformat(),))
         for s in summaries:
             conn.execute(
                 "INSERT INTO daily_attendance (person_id, date, first_in, last_out, worked_hours, status) "
-                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(person_id, date) DO UPDATE SET "
-                "first_in = excluded.first_in, last_out = excluded.last_out, "
-                "worked_hours = excluded.worked_hours, status = excluded.status",
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (ids[s.person], day.isoformat(), _ts(s.first_in), _ts(s.last_out), s.worked_hours, s.status),
             )
     return summaries

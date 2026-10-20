@@ -1,0 +1,8 @@
+# Used when running `streamlit run dashboard/main.py` from the project root.
+# scripts/dashboard.py passes the same settings from app/config.py.
+[server]
+address = "localhost"
+headless = true
+
+[browser]
+gatherUsageStats = false

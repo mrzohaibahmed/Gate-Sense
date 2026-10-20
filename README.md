@@ -67,6 +67,24 @@ Use the scores to tune `MATCH_THRESHOLD` and `MATCH_MARGIN` in `app/config.py`.
 
 Prints name, first IN, last OUT, worked hours and a missing-exit flag for every enrolled person. Status is `present`, `missing exit` (no OUT after the last IN), `missing entry` (OUT without IN) or `absent`.
 
+## Dashboard
+
+Set the admin password in an environment variable (it is never stored in the code), then start the dashboard:
+
+```
+$env:GATESENSE_ADMIN_PASSWORD = "choose-a-strong-password"     # PowerShell
+set GATESENSE_ADMIN_PASSWORD=choose-a-strong-password          # cmd
+.venv\Scripts\python scripts\dashboard.py
+```
+
+Open http://localhost:8501. It listens on localhost only (`DASHBOARD_HOST` in `app/config.py`) and Streamlit's usage statistics are turned off. Pages:
+
+- **Live events**: the latest events with snapshot thumbnails, refreshing every 5 seconds.
+- **Today**: counts and a table of who is present, missing an exit, missing an entry or absent.
+- **Reports**: daily or monthly reports, downloadable as Excel or CSV.
+- **People**: list everyone, edit name, department and shift, activate or deactivate. Inactive people are not recorded by the cameras.
+- **Corrections**: add a manual event (for example a missing OUT), change an event's time, or void and restore an event. A reason is required and every change goes to the audit log, which can be viewed and exported. Nothing is deleted.
+
 ## Tests
 
 ```

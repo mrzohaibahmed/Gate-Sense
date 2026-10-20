@@ -76,7 +76,6 @@ class Recorder:
         last = {}
         if self.conn:
             self.camera_id = db.upsert_camera(self.conn, self.cam_name, source, self.direction)
-            self.person_ids = db.person_ids(self.conn)
             last = db.last_event_times(self.conn, self.cam_name)
         self.cooldown = Cooldown(config.COOLDOWN_SECONDS, last)
 
@@ -89,9 +88,9 @@ class Recorder:
         if self.conn is None:
             print(f"{head}  EVENT (not saved, --no-db)  score={best.match.score:.3f}  votes {votes}/{len(track.samples)}")
             return
-        person_id = self.person_ids.get(name)
+        person_id = db.active_person_id(self.conn, name)  # looked up each time, so dashboard changes apply live
         if person_id is None:
-            print(f"{head}  NOT SAVED: not in persons table, run scripts\\enroll.py")
+            print(f"{head}  NOT SAVED: inactive in the dashboard, or not enrolled (run scripts\\enroll.py)")
             return
         snap = config.SNAPSHOT_DIR / f"{now:%Y-%m-%d}" / f"{now:%H%M%S}_{name}_{self.cam_name}.jpg"
         write_image(snap, best.snapshot)

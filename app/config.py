@@ -55,6 +55,14 @@ PROCESS_FPS = 8  # frames per second actually processed (5 to 10 on CPU)
 COOLDOWN_SECONDS = 5 * 60  # ignore the same person on the same camera for this long
 SNAPSHOT_SIZE = 160  # longest side of saved face snapshots, in pixels
 
+# --- Dashboard (Streamlit) ----------------------------------------------------
+DASHBOARD_HOST = "localhost"  # bind address; only change this behind a firewall/VPN
+DASHBOARD_PORT = 8501
+DASHBOARD_PASSWORD_ENV = "GATESENSE_ADMIN_PASSWORD"  # admin password is read from this environment variable
+DASHBOARD_USER = "admin"  # name written to the audit log
+LIVE_REFRESH_SECONDS = 5  # live events page auto-refresh
+LIVE_EVENT_LIMIT = 50  # events shown on the live page
+
 # --- Cameras ---------------------------------------------------------------
 # Run one recognize.py per camera: --camera <name>. The first entry is the default.
 # source: an int for a local webcam index, a video file path, or an RTSP URL.

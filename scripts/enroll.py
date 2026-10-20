@@ -152,8 +152,11 @@ def main() -> int:
 
     conn = db.connect()
     db.sync_persons(conn, gallery.names)
+    inactive = sorted(set(gallery.names) - db.person_ids(conn).keys())
     conn.close()
     print(f"Synced persons table in {config.DB_PATH.relative_to(config.ROOT_DIR)} (people no longer enrolled are marked inactive)")
+    if inactive:
+        print(f"Note: {', '.join(inactive)} inactive in the dashboard; activate them on the People page to record attendance")
     return 0
 
 
