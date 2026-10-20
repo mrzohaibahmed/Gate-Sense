@@ -1,5 +1,6 @@
 """Opening video sources: a webcam index, a video file path or an RTSP URL."""
 
+import re
 import sys
 
 import cv2
@@ -14,6 +15,11 @@ def parse_source(value: str | int) -> str | int:
 
 def is_webcam(source: str | int) -> bool:
     return isinstance(source, int)
+
+
+def mask_source(source: str | int) -> str:
+    """Hide the password in rtsp://user:password@host URLs before showing or logging them."""
+    return re.sub(r"(://[^:/@\s]+:)[^@\s]*@", r"\1***@", str(source))
 
 
 def open_capture(source: str | int) -> cv2.VideoCapture:

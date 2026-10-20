@@ -99,10 +99,14 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
-def _audit(conn, user: str, action: str, target: str, details: dict, reason: str) -> None:
-    """Write an audit row; call inside the transaction that makes the change."""
+def require_reason(reason: str | None) -> None:
     if not reason or not reason.strip():
         raise ValueError("a reason is required")
+
+
+def _audit(conn, user: str, action: str, target: str, details: dict, reason: str) -> None:
+    """Write an audit row; call inside the transaction that makes the change."""
+    require_reason(reason)
     conn.execute(
         "INSERT INTO audit_log (timestamp, user, action, target, details, reason) VALUES (?, ?, ?, ?, ?, ?)",
         (_ts(datetime.now()), user, action, target, json.dumps(details, default=str), reason.strip()),
@@ -112,11 +116,14 @@ def _audit(conn, user: str, action: str, target: str, details: dict, reason: str
 # --- People -----------------------------------------------------------------
 
 
-def sync_persons(conn: sqlite3.Connection, codes: list[str]) -> None:
-    """Called by enroll.py: add new codes as active, deactivate people no longer enrolled.
+def sync_persons(conn: sqlite3.Connection, codes: list[str], removed: list[str] = ()) -> None:
+    """Make sure everyone in the gallery has a persons row, and deactivate `removed`.
 
-    Existing people keep their active flag, so someone an admin deactivated in
-    the dashboard stays inactive after re-enrolling.
+    New codes are added as active (name = code). Existing people keep their
+    active flag, so someone an admin deactivated stays inactive after
+    re-enrolling. `removed` is who enroll.py's full rebuild dropped from the
+    gallery (their known/ folder is gone); people added on the dashboard who
+    have no photos yet are never in it, so they are not deactivated.
     """
     with conn:
         for code in codes:
@@ -124,8 +131,32 @@ def sync_persons(conn: sqlite3.Connection, codes: list[str]) -> None:
                 "INSERT INTO persons (employee_code, name) VALUES (?, ?) ON CONFLICT(employee_code) DO NOTHING",
                 (code, code),
             )
-        placeholders = ",".join("?" * len(codes))
-        conn.execute(f"UPDATE persons SET active = 0 WHERE employee_code NOT IN ({placeholders})", codes)
+        for code in removed:
+            conn.execute("UPDATE persons SET active = 0 WHERE employee_code = ?", (code,))
+
+
+def add_person(conn, code: str, name: str, department: str | None, shift: str | None,
+               reason: str, user: str) -> int:
+    """Add a new active person (from the dashboard's Enrollment page)."""
+    if not name.strip():
+        raise ValueError("name is required")
+    if conn.execute("SELECT 1 FROM persons WHERE employee_code = ?", (code,)).fetchone():
+        raise ValueError(f"employee code {code!r} already exists")
+    row = {"name": name.strip(), "department": (department or "").strip() or None,
+           "shift": (shift or "").strip() or None}
+    with conn:
+        cur = conn.execute("INSERT INTO persons (employee_code, name, department, shift) VALUES (?, ?, ?, ?)",
+                           (code, row["name"], row["department"], row["shift"]))
+        _audit(conn, user, "add_person", f"person:{code}", row, reason)
+    return cur.lastrowid
+
+
+def log_face_data_deleted(conn, code: str, details: dict, reason: str, user: str, deactivate: bool) -> None:
+    """Audit a face-data deletion (photos and embeddings); attendance history is untouched."""
+    with conn:
+        _audit(conn, user, "delete_face_data", f"person:{code}", {**details, "deactivated": deactivate}, reason)
+        if deactivate:
+            conn.execute("UPDATE persons SET active = 0 WHERE employee_code = ?", (code,))
 
 
 def person_ids(conn: sqlite3.Connection) -> dict[str, int]:

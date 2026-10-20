@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import streamlit as st  # noqa: E402
 
 from dashboard import auth  # noqa: E402
+from dashboard.common import manager  # noqa: E402
 
 st.set_page_config(page_title="GateSense", page_icon=":material/door_front:", layout="wide")
 
@@ -26,11 +27,16 @@ nav = st.navigation(
         st.Page("views/today.py", title="Today", icon=":material/today:"),
         st.Page("views/reports.py", title="Reports", icon=":material/table_chart:"),
         st.Page("views/people.py", title="People", icon=":material/group:"),
+        st.Page("views/enrollment.py", title="Enrollment", icon=":material/person_add:"),
+        st.Page("views/cameras.py", title="Cameras", icon=":material/linked_camera:"),
         st.Page("views/corrections.py", title="Corrections", icon=":material/edit_note:"),
+        st.Page("views/settings.py", title="Settings", icon=":material/settings:"),
     ]
 )
 with st.sidebar:
     st.caption("GateSense")
+    running = [s.camera for s in manager().statuses() if s.state != "stopped"]
+    st.caption(f"Workers running: {', '.join(running)}" if running else "No camera workers running")
     if st.button("Log out", icon=":material/logout:"):
         auth.logout()
 nav.run()

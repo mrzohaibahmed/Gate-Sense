@@ -1,5 +1,6 @@
 """Shared helpers for the dashboard pages."""
 
+import atexit
 import base64
 import sqlite3
 from contextlib import closing
@@ -7,6 +8,27 @@ from contextlib import closing
 import streamlit as st
 
 from app import config, db
+from app.workers import WorkerManager
+
+
+@st.cache_resource
+def manager() -> WorkerManager:
+    """One worker manager per dashboard process; its workers are stopped when the dashboard exits.
+
+    (Workers also watch the dashboard's PID and exit on their own if it dies without running atexit.)
+    """
+    mgr = WorkerManager()
+    atexit.register(mgr.stop_all)
+    return mgr
+
+
+@st.cache_resource(show_spinner="Loading face models...")
+def face_models():
+    """Detector and recognizer for the Enrollment page, loaded once on first use."""
+    from app.detector import Detector
+    from app.recognizer import Recognizer
+
+    return Detector(), Recognizer()
 
 
 def connection() -> closing[sqlite3.Connection]:

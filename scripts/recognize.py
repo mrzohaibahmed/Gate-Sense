@@ -8,6 +8,12 @@ snapshot in data/snapshots/, unless the person is still in the cool-down for
 this camera. Every match decision is logged (time, track, name or unknown,
 score, second-best score) for threshold tuning.
 
+The worker reports its status in data/run/<camera>.json and exits cleanly when
+data/run/<camera>.stop appears (see app/workers.py), so the dashboard's
+Cameras page can show and stop it whether it was started there or here. It
+reloads data/gallery.npz when enrollment changes it. A second worker for the
+same camera, or for a webcam another worker already uses, refuses to start.
+
 Run from the project root:
     .venv\\Scripts\\python scripts\\recognize.py                                   # first camera (entrance, webcam)
     .venv\\Scripts\\python scripts\\recognize.py --camera exit --source clip.mp4   # exit camera from a clip
@@ -26,9 +32,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cv2  # noqa: E402
 
-from app import config, db  # noqa: E402
+from app import config, db, workers  # noqa: E402
 from app.attendance import Cooldown  # noqa: E402
-from app.camera import is_webcam, open_capture, parse_source  # noqa: E402
+from app.camera import is_webcam, mask_source, open_capture, parse_source  # noqa: E402
 from app.detector import Detector, check_quality, quality_score, resize_to_width  # noqa: E402
 from app.gallery import Gallery, Match  # noqa: E402
 from app.images import crop_face, write_image  # noqa: E402
@@ -99,20 +105,47 @@ class Recorder:
         print(f"{head}  EVENT saved  score={best.match.score:.3f}  votes {votes}/{len(track.samples)}  snapshot={rel}")
 
 
+FAILURES = {"no gallery", "could not open source", "lost the camera"}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="GateSense attendance worker for one camera.")
     parser.add_argument("--camera", help="camera name from app/config.py CAMERAS (default: the first)")
     parser.add_argument("--source", help="override the camera's source: webcam index, video file or RTSP URL")
     parser.add_argument("--no-window", action="store_true", help="log only, don't show video")
     parser.add_argument("--no-db", action="store_true", help="don't write events or snapshots (for tuning)")
+    parser.add_argument("--parent-pid", type=int, help="exit when this process ends (set by the dashboard)")
     args = parser.parse_args()
     cam = find_camera(args.camera)
     source = parse_source(args.source) if args.source is not None else cam["source"]
 
-    if not config.GALLERY_PATH.exists():
-        print(f"No gallery at {config.GALLERY_PATH}. Run scripts\\enroll.py first.")
+    pid = workers.running_elsewhere(cam["name"])
+    if pid:
+        print(f"ERROR: a worker for {cam['name']} is already running (pid {pid}).")
         return 1
+    other = workers.webcam_conflict(cam["name"], source, config.CAMERAS)
+    if other:
+        print(f"ERROR: webcam {source} is already in use by the {other} worker.")
+        return 1
+
+    runtime = workers.WorkerRuntime(cam["name"], source, args.parent_pid)
+    reason = "error"
+    try:
+        reason = run(args, cam, source, runtime)
+    finally:
+        runtime.close(reason)
+        print(f"Worker stopped: {reason}")
+    return 1 if reason in FAILURES else 0
+
+
+def run(args, cam: dict, source, runtime: "workers.WorkerRuntime") -> str:
+    """The worker loop; returns why it stopped."""
+    if not config.GALLERY_PATH.exists():
+        print(f"No gallery at {config.GALLERY_PATH}. Enroll people first (dashboard or scripts\\enroll.py).")
+        return "no gallery"
     gallery = Gallery.load()
+    gallery_mtime = config.GALLERY_PATH.stat().st_mtime
+    last_gallery_check = time.monotonic()
     print(f"Camera {cam['name']} ({cam['direction']}), gallery: {gallery.counts()}")
     print(
         f"Threshold {config.MATCH_THRESHOLD}, margin {config.MATCH_MARGIN}, {config.PROCESS_FPS} fps, "
@@ -125,9 +158,9 @@ def main() -> int:
 
     try:
         cap = open_capture(source)
-    except RuntimeError as e:
-        print(f"ERROR: {e}")
-        return 1
+    except RuntimeError:
+        print(f"ERROR: could not open video source {mask_source(source)!r}")
+        return "could not open source"
     webcam = is_webcam(source)
     # Files: process every Nth frame. Live sources: process at most PROCESS_FPS per second.
     src_fps = cap.get(cv2.CAP_PROP_FPS)
@@ -135,7 +168,7 @@ def main() -> int:
         src_fps = 30.0
     step = 1 if webcam else max(1, round(src_fps / config.PROCESS_FPS))
     interval = 1.0 / config.PROCESS_FPS
-    print(f"Source {source!r} at {src_fps:.0f} fps\n")
+    print(f"Source {mask_source(source)!r} at {src_fps:.0f} fps\n")
 
     tracker = FaceTracker(config.PROCESS_FPS)
     tracks: dict[int, TrackState] = {}
@@ -144,12 +177,22 @@ def main() -> int:
     frame_idx = 0
     start, start_dt = time.monotonic(), datetime.now()
     times = deque(maxlen=20)
+    reason = "stopped"
 
     try:
         while True:
+            runtime.tick()
+            if stop := runtime.should_stop():
+                reason = stop
+                break
+            if time.monotonic() - last_gallery_check >= config.GALLERY_RELOAD_SECONDS:
+                last_gallery_check = time.monotonic()
+                gallery, gallery_mtime = reload_gallery(gallery, gallery_mtime)
+
             ok, frame = cap.read()
             if not ok:
                 print("End of video." if not webcam else "ERROR: lost the camera.")
+                reason = "lost the camera" if webcam else "end of video"
                 break
             frame_idx += 1
 
@@ -199,15 +242,17 @@ def main() -> int:
                         print(f"{stamp}  track{tid:<4} closed as unknown (votes: {track.votes_summary()})")
                     del tracks[tid]
             times.append(time.perf_counter() - t0)
+            runtime.tick(processed=True)
 
             if not args.no_window:
                 ms = 1000 * sum(times) / len(times)
                 cv2.putText(small, f"{ms:.0f} ms/frame", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, YELLOW, 1)
                 cv2.imshow(window, small)
                 if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+                    reason = "window closed"
                     break
     except KeyboardInterrupt:
-        pass
+        reason = "interrupted"
     finally:
         cap.release()
         cv2.destroyAllWindows()
@@ -215,7 +260,21 @@ def main() -> int:
             recorder.conn.close()
     if times:
         print(f"Average processing time: {1000 * sum(times) / len(times):.0f} ms/frame")
-    return 0
+    return reason
+
+
+def reload_gallery(gallery: Gallery, mtime: float) -> tuple[Gallery, float]:
+    """Pick up enrollment changes made while running (the dashboard rewrites gallery.npz)."""
+    try:
+        new_mtime = config.GALLERY_PATH.stat().st_mtime
+        if new_mtime == mtime:
+            return gallery, mtime
+        gallery = Gallery.load()
+        print(f"Gallery reloaded: {gallery.counts()}")
+        return gallery, new_mtime
+    except (OSError, ValueError) as e:  # missing or mid-replace: keep the current one
+        print(f"Gallery reload skipped: {e}")
+        return gallery, mtime
 
 
 if __name__ == "__main__":

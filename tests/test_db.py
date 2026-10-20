@@ -21,8 +21,24 @@ def test_tables_created(conn):
 
 def test_sync_persons_deactivates_removed(conn):
     db.sync_persons(conn, ["ali", "waqas"])
-    db.sync_persons(conn, ["waqas"])
+    db.sync_persons(conn, ["waqas"], removed=["ali"])
     assert list(db.person_ids(conn)) == ["waqas"]
+
+
+def test_sync_persons_leaves_people_without_photos_alone(conn):
+    db.add_person(conn, "new1", "New Person", None, None, "added on enrollment page", "admin")
+    db.sync_persons(conn, ["waqas"])  # new1 has no photos yet, so isn't in the gallery
+    assert set(db.person_ids(conn)) == {"new1", "waqas"}
+
+
+def test_add_person(conn):
+    db.add_person(conn, "e042", "Ayesha Khan", "HR", "day", "new hire", "admin")
+    [p] = db.list_persons(conn)
+    assert (p["employee_code"], p["name"], p["department"], p["shift"], p["active"]) == \
+        ("e042", "Ayesha Khan", "HR", "day", 1)
+    assert db.audit_entries(conn)[0]["action"] == "add_person"
+    with pytest.raises(ValueError, match="already exists"):
+        db.add_person(conn, "e042", "Someone Else", None, None, "dup", "admin")
 
 
 def test_sync_persons_keeps_admin_deactivation(conn):

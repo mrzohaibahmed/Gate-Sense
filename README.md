@@ -14,6 +14,12 @@ py -3.11 -m venv .venv
 
 No C++ Build Tools are needed; current insightface ships a prebuilt wheel.
 
+Then set the dashboard's admin password: copy `.env.example` to `.env` and fill in `GATESENSE_ADMIN_PASSWORD=`. `.env` is git-ignored. A real `GATESENSE_ADMIN_PASSWORD` environment variable, if set, takes priority over `.env`.
+
+```
+copy .env.example .env
+```
+
 ## Check the environment
 
 ```
@@ -24,7 +30,7 @@ On the first run this downloads the buffalo_s model (about 120 MB) to `%USERPROF
 
 ## Enroll people
 
-Put 5 to 10 photos per person in `known/<name>/` (see [known/README.md](known/README.md)), then:
+The easiest way is the dashboard's **Enrollment** page (see Dashboard below). From the command line instead, put 5 to 10 photos per person in `known/<employee code>/` (see [known/README.md](known/README.md)), then:
 
 ```
 .venv\Scripts\python scripts\enroll.py
@@ -40,7 +46,7 @@ It prints, per person, how many photos were accepted and why any were rejected, 
 
 ## Record attendance
 
-Run one worker per camera. Cameras (name, source, IN/OUT direction) are listed in `CAMERAS` in [app/config.py](app/config.py); `--source` overrides a camera's source. To test with one webcam, run two terminals:
+Run one worker per camera, either with the Start buttons on the dashboard's **Cameras** page or from the command line. Cameras (name, source, IN/OUT direction) are listed in `CAMERAS` in [app/config.py](app/config.py); `--source` overrides a camera's source. To test with one webcam, run two terminals:
 
 ```
 .venv\Scripts\python scripts\recognize.py --camera entrance                       # webcam as IN
@@ -69,11 +75,9 @@ Prints name, first IN, last OUT, worked hours and a missing-exit flag for every 
 
 ## Dashboard
 
-Set the admin password in an environment variable (it is never stored in the code), then start the dashboard:
+The admin password comes from `GATESENSE_ADMIN_PASSWORD` in `.env` (see Setup) or from the environment, which wins if both are set. It is never stored in the code or printed; the launcher only says where it was found. Without a password the dashboard refuses to start.
 
 ```
-$env:GATESENSE_ADMIN_PASSWORD = "choose-a-strong-password"     # PowerShell
-set GATESENSE_ADMIN_PASSWORD=choose-a-strong-password          # cmd
 .venv\Scripts\python scripts\dashboard.py
 ```
 
@@ -83,6 +87,9 @@ Open http://localhost:8501. It listens on localhost only (`DASHBOARD_HOST` in `a
 - **Today**: counts and a table of who is present, missing an exit, missing an entry or absent.
 - **Reports**: daily or monthly reports, downloadable as Excel or CSV.
 - **People**: list everyone, edit name, department and shift, activate or deactivate. Inactive people are not recorded by the cameras.
+- **Enrollment**: add a person (employee code, name, department, shift), then add photos by uploading files or taking them with the camera (one per click). Each photo is checked with the same quality filter as `enroll.py` and shown as accepted or rejected with the reason; accepted photos go to `known/<code>/` and the person's embeddings are rebuilt. Delete single photos, or **Delete face data** (photos and embeddings; attendance history is kept; needs a reason and is audited). The camera is refused while a camera worker is using the webcam.
+- **Cameras**: Start and Stop the `recognize.py` worker for each camera, with status (running/stopped, since when, fps) and the last 50 log lines (`data/logs/<camera>.log`). Two workers on the same webcam are refused. Workers started here stop when the dashboard stops; workers already running (for example started from the command line) are detected and can be stopped. Running workers pick up enrollment changes within a few seconds.
+- **Settings**: read-only view of the thresholds, vote and cool-down settings and camera sources (RTSP passwords hidden).
 - **Corrections**: add a manual event (for example a missing OUT), change an event's time, or void and restore an event. A reason is required and every change goes to the audit log, which can be viewed and exported. Nothing is deleted.
 
 ## Tests

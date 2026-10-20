@@ -9,6 +9,8 @@ Saved to ``data/gallery.npz`` (``app.config.GALLERY_PATH``). That file is
 biometric data and is git-ignored. Later it moves to SQLite, then PostgreSQL.
 """
 
+import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,13 +59,38 @@ class Gallery:
         """Number of stored embeddings per person."""
         return {name: int((self.labels == i).sum()) for i, name in enumerate(self.names)}
 
-    def save(self, path: Path = config.GALLERY_PATH) -> None:
+    def people(self) -> dict[str, list[np.ndarray]]:
+        """{name: [embedding, ...]}, the inverse of ``from_people``."""
+        return {name: list(self.embeddings[self.labels == i]) for i, name in enumerate(self.names)}
+
+    def replace_person(self, name: str, embeddings: list[np.ndarray]) -> "Gallery":
+        """New gallery with `name`'s embeddings replaced (removed if the list is empty)."""
+        people = self.people()
+        if embeddings:
+            people[name] = list(embeddings)
+        else:
+            people.pop(name, None)
+        return Gallery.from_people(people)
+
+    def save(self, path: Path | None = None) -> None:
+        """Write atomically, so a running worker never reads a half-written file."""
+        path = path or config.GALLERY_PATH
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(path, names=np.array(self.names), embeddings=self.embeddings, labels=self.labels)
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "wb") as f:
+            np.savez(f, names=np.array(self.names, dtype=str), embeddings=self.embeddings, labels=self.labels)
+        for attempt in range(20):  # Windows refuses the replace while a worker has the file open
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.1)
 
     @classmethod
-    def load(cls, path: Path = config.GALLERY_PATH) -> "Gallery":
-        with np.load(path, allow_pickle=False) as data:
+    def load(cls, path: Path | None = None) -> "Gallery":
+        with np.load(path or config.GALLERY_PATH, allow_pickle=False) as data:
             return cls(data["names"].tolist(), data["embeddings"], data["labels"])
 
     def person_scores(self, emb: np.ndarray) -> np.ndarray:

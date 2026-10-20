@@ -1,4 +1,4 @@
-"""Single admin login. The password comes from an environment variable, never from code."""
+"""Single admin login. The password comes from the environment or .env, never from code."""
 
 import hmac
 import os
@@ -7,17 +7,19 @@ import time
 import streamlit as st
 
 from app import config
+from app.env import admin_password_source
 
 
 def require_login() -> bool:
     """Show the login form until the admin password is entered; True once logged in."""
-    expected = os.environ.get(config.DASHBOARD_PASSWORD_ENV, "")
-    if not expected:
+    if admin_password_source() is None:  # also loads .env if the variable isn't set yet
         st.error(
-            f"No admin password set. Set the `{config.DASHBOARD_PASSWORD_ENV}` environment variable "
+            f"No admin password set. Set `{config.DASHBOARD_PASSWORD_ENV}` in the environment, or put "
+            f"`{config.DASHBOARD_PASSWORD_ENV}=...` in `.env` in the project root (see `.env.example`), "
             "and restart the dashboard."
         )
         return False
+    expected = os.environ[config.DASHBOARD_PASSWORD_ENV]
     if st.session_state.get("authenticated"):
         return True
 
