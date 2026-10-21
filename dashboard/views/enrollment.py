@@ -2,11 +2,13 @@ import cv2
 import streamlit as st
 
 from app import config, db, enrollment
-from dashboard.common import claim_camera, connection, face_models, flash, manager, person_label, show_flash
+from dashboard import guided_capture
+from dashboard.common import connection, face_models, flash, person_label, show_flash
 
 st.title("Enrollment")
-st.caption("Photos are checked with the same quality filter as scripts\\enroll.py and saved to known/<code>/. "
-           "Running camera workers pick up gallery changes within a few seconds.")
+st.caption("Take the guided photos (front, slightly left, slightly right); each is checked with the same rules as "
+           "scripts\\enroll.py and saved to known/<code>/. Running camera workers pick up gallery changes within "
+           "a few seconds.")
 show_flash()
 USER = config.DASHBOARD_USER
 MIN = config.ENROLL_MIN_PHOTOS
@@ -23,17 +25,34 @@ def thumb(img, size: int = 200) -> bytes | None:
     return buf.tobytes() if ok else None
 
 
+def angles(info: dict) -> str:
+    return f"yaw {info['yaw']:+.0f}°, pitch {info['pitch']:+.0f}°" if info.get("yaw") is not None else ""
+
+
 def process(code: str, images: list[tuple[str, object]]) -> None:
-    """Check, save accepted photos, rebuild the person's embeddings, remember the results for display."""
+    """Check, save accepted photos, rebuild the person's embeddings, remember the results for display.
+
+    Every photo gets a visible result: a summary at the top of the page and a box per photo under the tabs.
+    """
     detector, recognizer = face_models()
     with st.spinner("Checking photos..."), connection() as conn:
-        results, person = enrollment.add_photos(code, images, detector, recognizer, conn)
-    st.session_state["enroll_last_check"] = (code, [
-        (label, thumb(img), check.reason, path.name if path else None)
-        for (label, check, path), (_, img) in zip(results, images)
-    ])
-    if person is not None:
-        st.session_state[f"enroll_result:{code}"] = person
+        results, _person = enrollment.add_photos(code, images, detector, recognizer, conn)
+    checked = [(label, thumb(img), check.quality.to_json() if check.quality else {"ok": False,
+                "reason": check.message or "Couldn't check this photo."}, path.name if path else None)
+               for (label, check, path), (_, img) in zip(results, images)]
+    st.session_state["enroll_last_check"] = (code, checked)
+    saved = [c for c in checked if c[3]]
+    refused = [c for c in checked if not c[3]]
+    if len(checked) == 1:
+        label, _, info, name = checked[0]
+        if name:
+            flash(f"Photo saved as {name}. Score {info['score']:.0f}, {angles(info)}.")
+        else:
+            flash(f"Photo not saved: {info['reason']}", "error")
+    else:
+        text = f"{len(saved)} photo(s) saved, {len(refused)} refused"
+        flash(text + (": see the reasons below." if refused else "."),
+              "success" if not refused else "error" if not saved else "warning")
     st.session_state.enroll_widget += 1
 
 
@@ -78,14 +97,13 @@ except ValueError as e:
     st.stop()
 
 photos = enrollment.photo_paths(folder)
-result_key = f"enroll_result:{code}"
-if photos and result_key not in st.session_state:
+stored = enrollment.read_sidecar(folder)  # known/<code>/photos.json: score, yaw, pitch, result per photo
+if photos and not all(p.name in stored for p in photos):  # photos added by hand, or checked before photos.json
     detector, recognizer = face_models()
     with st.spinner("Checking photos..."):
-        st.session_state[result_key] = enrollment.enroll_folder(folder, detector, recognizer)
-result = st.session_state.get(result_key)
-rejected = dict(result.rejected) if result else {}
-usable = len(result.accepted) if result else 0
+        enrollment.write_sidecar(folder, enrollment.enroll_folder(folder, detector, recognizer))
+    stored = enrollment.read_sidecar(folder)
+usable = sum(1 for p in photos if stored.get(p.name, {}).get("ok"))
 embeddings = enrollment.load_gallery().counts().get(code, 0)
 
 if not people[code]["active"]:
@@ -101,60 +119,49 @@ if photos:
     cols = st.columns(5)
     for i, photo in enumerate(photos):
         with cols[i % 5]:
-            reason = rejected.get(photo.name)
-            st.image(str(photo), caption=f"✅ {photo.name}" if reason is None else f"❌ {photo.name}: {reason}")
+            info = stored.get(photo.name, {})
+            if info.get("ok"):
+                caption = f"✅ {photo.name} · score {info['score']:.0f} · {angles(info)}"
+            else:
+                caption = f"❌ {photo.name}: {info.get('reason') or 'not checked'}"
+            st.image(str(photo), caption=caption)
             if st.button("Delete", key=f"del_{code}_{photo.name}", icon=":material/delete:"):
                 detector, recognizer = face_models()
                 with st.spinner("Updating embeddings..."), connection() as conn:
-                    st.session_state[result_key] = enrollment.delete_photo(code, photo.name, detector, recognizer,
-                                                                           conn)
+                    enrollment.delete_photo(code, photo.name, detector, recognizer, conn)
                 flash(f"Deleted {photo.name}; {code}'s embeddings rebuilt.")
                 st.rerun()
 
-# --- Add photos -----------------------------------------------------------------------
+# --- Guided photos (front, slightly left, slightly right) -------------------------------------
 
-st.subheader("Add photos")
-st.caption("Straight on, slightly left and right, with and without glasses. One face per photo, in focus.")
-upload_tab, camera_tab = st.tabs(["Upload files", "Camera"])
-widget = st.session_state.enroll_widget
+guided_capture.render(code)
 
-with upload_tab:
+# --- More photos by upload (optional) --------------------------------------------------------------
+
+last = st.session_state.get("enroll_last_check")
+last = last if last and last[0] == code else None
+with st.expander("Upload more photos (optional)", icon=":material/upload:", expanded=last is not None):
+    st.caption(f"Extra photos straight on or turned a little (up to {config.ENROLL_MAX_YAW:.0f}°), with and without "
+               "glasses. One face per photo, in focus and well lit. Each one gets the same checks.")
+    widget = st.session_state.enroll_widget
     files = st.file_uploader("Photos", type=sorted(e.lstrip(".") for e in config.IMAGE_EXTS),
                              accept_multiple_files=True, key=f"upload_{widget}")
     if st.button("Check and add", disabled=not files, type="primary"):
         process(code, [(f.name, enrollment.decode_image(f.getvalue())) for f in files])
         st.rerun()
-
-with camera_tab:
-    users = manager().webcam_users()
-    if users:
-        claim_camera(False)
-        st.warning(f"The webcam is in use by the {', '.join(users)} worker. Stop it on the Cameras page to "
-                   "take photos here.")
-    else:
-        # Off by default: Streamlit renders every tab, so an always-present camera_input would hold the
-        # webcam whenever this page is open, and a webcam worker would then get no (or black) frames.
-        camera_on = st.toggle("Use the camera", key="enroll_camera_on",
-                              help="Webcam camera workers can't start while this is on.")
-        claim_camera(camera_on)
-        if camera_on:
-            st.caption("Turn this off when you're done, so the camera workers can use the webcam.")
-            shot = st.camera_input("Take a photo (one photo per click)", key=f"camera_{widget}")
-            if shot is not None:
-                process(code, [("camera photo", enrollment.decode_image(shot.getvalue()))])
-                st.rerun()
-
-last = st.session_state.get("enroll_last_check")
-if last and last[0] == code:
-    st.markdown("**Last check**")
-    cols = st.columns(5)
-    for i, (label, image, reason, saved) in enumerate(last[1]):
-        with cols[i % 5]:
-            caption = f"✅ {label}: saved as {saved}" if reason is None else f"❌ {label}: {reason}"
-            if image:
-                st.image(image, caption=caption)
-            else:
-                st.markdown(caption)
+    if last:
+        st.markdown("**Last check**")
+        cols = st.columns(3)
+        for i, (label, image, info, saved) in enumerate(last[1]):
+            info = info if isinstance(info, dict) else {"ok": info is None, "reason": info}  # older session format
+            with cols[i % 3]:
+                if image:
+                    st.image(image, caption=label)
+                if saved:
+                    st.success(f"Saved as {saved}. Score {info.get('score', 0):.0f}" +
+                               (f", {angles(info)}." if angles(info) else "."))
+                else:
+                    st.error(info.get("reason") or "Not saved.")
 
 # --- Delete face data -------------------------------------------------------------------
 
@@ -175,6 +182,5 @@ with st.expander("Delete face data", icon=":material/delete_forever:"):
                 except ValueError as e:
                     st.error(str(e).capitalize())
                 else:
-                    st.session_state.pop(result_key, None)
                     flash(f"Deleted {details['photos']} photo(s) and {details['embeddings']} embedding(s) for {code}.")
                     st.rerun()

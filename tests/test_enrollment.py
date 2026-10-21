@@ -105,7 +105,7 @@ def test_add_photos_saves_only_accepted(conn):
         "e1", [("a.jpg", photo("good", 1)), ("b.jpg", photo("none", 2)), ("c.jpg", photo("good", 3))], DET, REC, conn)
     assert [(label, check.reason, path.name if path else None) for label, check, path in results] == \
         [("a.jpg", None, "1.jpg"), ("b.jpg", "no face", None), ("c.jpg", None, "2.jpg")]
-    assert sorted(p.name for p in (config.KNOWN_DIR / "e1").iterdir()) == ["1.jpg", "2.jpg"]
+    assert [p.name for p in enrollment.photo_paths(config.KNOWN_DIR / "e1")] == ["1.jpg", "2.jpg"]  # + photos.json
     assert person.accepted == ["1.jpg", "2.jpg"]  # saved JPEGs pass the same check again
     assert counts() == {"e1": 2}
 

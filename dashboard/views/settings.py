@@ -34,6 +34,12 @@ GROUPS = {
         ("PITCH_RANGE", "allowed up/down tilt"),
         ("ENROLL_MIN_PHOTOS", "warn when a person has fewer photos"),
     ],
+    "Enrollment photos": [
+        ("ENROLL_MAX_YAW", "degrees a face may be turned left/right"),
+        ("ENROLL_MAX_PITCH", "degrees a face may be tilted up/down"),
+        ("ENROLL_DET_THRESHOLD", "face detector confidence at enrollment"),
+        ("ENROLL_MIN_BRIGHTNESS", "minimum face brightness (0-255)"),
+    ],
 }
 
 for title, items in GROUPS.items():

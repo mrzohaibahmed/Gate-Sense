@@ -34,11 +34,29 @@ class Detector:
             fa = face_analysis()
         self.model = fa.det_model
 
-    def detect(self, img: np.ndarray) -> list[Detection]:
-        """Detect faces in a BGR image, largest first."""
-        bboxes, kpss = self.model.detect(img)
+    def detect(self, img: np.ndarray, det_thresh: float | None = None) -> list[Detection]:
+        """Detect faces in a BGR image, largest first. `det_thresh` overrides DET_THRESHOLD (enrollment)."""
+        if det_thresh is None:
+            bboxes, kpss = self.model.detect(img)
+        else:
+            bboxes, kpss = self.model.detect(img, det_thresh=det_thresh)
         dets = [Detection(bbox=b[:4], kps=k, score=float(b[4])) for b, k in zip(bboxes, kpss)]
         return sorted(dets, key=lambda d: d.width, reverse=True)
+
+    def pose(self, img: np.ndarray, det: Detection) -> tuple[float, float, str] | None:
+        """(yaw, pitch, source) in degrees from InsightFace's 3D-landmark model (enrollment only; loaded on
+        first use). None if the model file is missing."""
+        from insightface.app.common import Face
+
+        from app.models import pose_model
+
+        model = pose_model()
+        if model is None:
+            return None
+        face = Face(bbox=det.bbox, kps=det.kps, det_score=det.score)
+        model.get(img, face)
+        pitch, yaw, _roll = face.pose
+        return float(yaw), float(pitch), "3D landmarks"
 
 
 def resize_to_width(img: np.ndarray, width: int = config.FRAME_WIDTH) -> np.ndarray:

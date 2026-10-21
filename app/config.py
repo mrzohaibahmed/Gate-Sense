@@ -50,6 +50,34 @@ TRACK_LOST_SECONDS = 1.5  # a track not seen for this long is closed
 
 # --- Enrollment ----------------------------------------------------------------
 ENROLL_MIN_PHOTOS = 5  # warn when a person has fewer accepted photos
+# Enrollment photo checks (app/enroll_quality.py). Head pose comes from InsightFace's 3D-landmark model.
+# These apply to enrollment only; the live cameras keep MAX_YAW_RATIO / PITCH_RANGE above.
+ENROLL_MAX_YAW = 35.0  # degrees turned left/right; beyond this a photo is refused
+ENROLL_MAX_PITCH = 25.0  # degrees tilted up/down
+ENROLL_DET_THRESHOLD = 0.4  # face detector confidence at enrollment (live cameras use DET_THRESHOLD)
+ENROLL_MIN_BRIGHTNESS = 40  # mean brightness of the face (0-255); darker = "Too dark"
+
+# Guided enrollment (Enrollment page: live camera guide, or simple capture). Yaw ranges are from the
+# PERSON's point of view: positive = turned to their own left, negative = to their own right. Steps with
+# "required": False are optional extras (e.g. add {"key": "up", ..., "pitch": (5, 20), "required": False}).
+ENROLL_STEPS = [
+    {"key": "front", "title": "Front", "instruction": "Look straight at the camera.", "arrow": "⬆️",
+     "yaw": (-10, 10), "pitch": (-20, 20), "required": True},
+    {"key": "left", "title": "Slightly left", "instruction": "Turn your head slightly to your left.", "arrow": "⬅️",
+     "yaw": (15, 35), "pitch": (-20, 20), "required": True},
+    {"key": "right", "title": "Slightly right", "instruction": "Turn your head slightly to your right.", "arrow": "➡️",
+     "yaw": (-35, -15), "pitch": (-20, 20), "required": True},
+]
+ENROLL_GUIDE_HEIGHT = 0.62  # guide oval height as a fraction of the frame height (centred)
+ENROLL_GUIDE_ASPECT = 0.78  # guide oval width / height: face-shaped whatever the camera's aspect ratio
+ENROLL_FACE_MAX_FRACTION = 0.95  # a face wider than this share of the guide box = "Move back a little"
+ENROLL_STABLE_SECONDS = 0.7  # the guide must stay green this long before Capture is enabled
+ENROLL_AUTO_CAPTURE = False  # capture by itself after ENROLL_AUTO_CAPTURE_SECONDS of stable green
+ENROLL_AUTO_CAPTURE_SECONDS = 1.0
+ENROLL_ANALYSIS_FPS = 6  # face checks per second on the live guide (the video itself runs at camera speed)
+ENROLL_SELF_MATCH_MIN = 0.45  # the captured photos must match each other at least this well (cosine)
+ENROLL_CAMERA_TIMEOUT_SECONDS = 6  # live guide started but no frames for this long = "Camera is busy"
+ENROLL_VIDEO_SIZE = (1280, 720)  # resolution asked from the browser camera
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 ENROLL_MAX_PHOTO_PX = 1600  # dashboard uploads are shrunk to this longest side before saving
 

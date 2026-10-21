@@ -149,6 +149,8 @@ def test_enrollment_camera_is_opt_in_and_blocks_webcam_workers(monkeypatch, tmp_
     at.text_input[1].input("Ayesha Khan")
     at.button(key="FormSubmitter:add_person-Add person").click().run()
     assert not at.get("camera_input")  # off by default: the page doesn't grab the webcam
+    at.radio(key="enroll_mode").set_value("Simple capture").run()  # the browser photo camera lives here now
+    assert not at.get("camera_input")
     at.toggle(key="enroll_camera_on").set_value(True).run()
     assert at.get("camera_input")
 
@@ -188,8 +190,11 @@ def test_enrollment_camera_refused_while_webcam_worker_runs(monkeypatch, tmp_db)
     monkeypatch.setattr(WorkerManager, "webcam_users", lambda self: ["entrance"])
     at = logged_in(monkeypatch)
     at.switch_page("views/enrollment.py").run()
-    assert any("in use by the entrance worker" in w.value for w in at.warning)
-    assert not at.get("camera_input")
+    for mode in ("Live camera (guided)", "Simple capture"):
+        at.radio(key="enroll_mode").set_value(mode).run()
+        assert any("Camera is busy" in w.value and "entrance worker is using the webcam" in w.value
+                   for w in at.warning), mode
+        assert not at.get("camera_input")
 
 
 def test_cameras_page_lists_configured_cameras(monkeypatch, tmp_db):

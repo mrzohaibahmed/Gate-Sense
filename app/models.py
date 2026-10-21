@@ -25,6 +25,25 @@ def face_analysis() -> FaceAnalysis:
     return fa
 
 
+@cache
+def pose_model():
+    """InsightFace's 3D-landmark model from the same pack (1k3d68.onnx), which also gives head pose.
+
+    Loaded only for enrollment photo checks (it's large); the live cameras never use it. None if missing.
+    """
+    from pathlib import Path
+
+    from insightface.model_zoo import model_zoo
+
+    folder = Path(face_analysis().model_dir)
+    files = sorted(folder.glob("1k3d68*.onnx")) or sorted(folder.glob("*3d68*.onnx"))
+    if not files:
+        return None
+    model = model_zoo.get_model(str(files[0]), providers=config.PROVIDERS)
+    model.prepare(ctx_id=config.CTX_ID)
+    return model
+
+
 def providers_in_use() -> dict[str, list[str]]:
     """Execution providers each loaded model's session actually uses."""
     return {task: model.session.get_providers() for task, model in face_analysis().models.items()}

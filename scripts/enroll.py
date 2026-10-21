@@ -23,9 +23,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cv2  # noqa: E402
 
-from app import config, db, enrollment, workers  # noqa: E402
+from app import config, db, enroll_quality, enrollment, workers  # noqa: E402
 from app.camera import open_capture, parse_source  # noqa: E402
-from app.detector import Detector, check_quality  # noqa: E402
+from app.detector import Detector  # noqa: E402
 from app.models import providers_in_use  # noqa: E402
 from app.recognizer import Recognizer  # noqa: E402
 
@@ -37,24 +37,23 @@ def capture(code: str, count: int, source, detector: Detector) -> None:
     saved = 0
     cap = open_capture(source)
     print(f"Capturing {count} photos of {code!r}: SPACE = save, Q = quit")
-    print("Vary the pose a little: straight on, slightly left and right, with and without glasses.")
+    print(f"Vary the pose a little: straight on, slightly left and right (up to {config.ENROLL_MAX_YAW:.0f}°), "
+          "with and without glasses.")
     try:
         while saved < count:
             ok, frame = cap.read()
             if not ok:
                 print("ERROR: lost the camera")
                 break
-            dets = detector.detect(frame)
-            if len(dets) == 1:
-                reason = check_quality(frame, dets[0])
-            else:
-                reason = "no face" if not dets else f"{len(dets)} faces"
+            q = enroll_quality.check_photo(frame, detector)  # the same rules as the Enrollment page
+            reason = None if q.ok else q.reason
 
             view = frame.copy()
-            for d in dets:
-                x1, y1, x2, y2 = d.bbox.astype(int)
-                cv2.rectangle(view, (x1, y1), (x2, y2), (0, 200, 0) if reason is None else (0, 0, 255), 2)
-            status = f"{saved}/{count}  " + ("OK - press SPACE" if reason is None else reason)
+            if q.detection is not None:
+                x1, y1, x2, y2 = q.detection.bbox.astype(int)
+                cv2.rectangle(view, (x1, y1), (x2, y2), (0, 200, 0) if q.ok else (0, 0, 255), 2)
+            status = f"{saved}/{count}  " + (f"OK (yaw {q.yaw:+.0f}, score {q.score:.0f}) - press SPACE"
+                                             if q.ok else (q.short or q.code))
             cv2.putText(view, status, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             cv2.imshow(WINDOW, view)
 
@@ -109,7 +108,8 @@ def main() -> int:
     for r in results:
         print(f"{r.code}: {len(r.accepted)} accepted, {len(r.rejected)} rejected")
         for photo, reason in r.rejected:
-            print(f"    rejected {photo}: {reason}")
+            q = r.checks.get(photo)
+            print(f"    rejected {photo}: {q.reason if q else reason}")
         if not r.accepted:
             print("    WARNING: no usable photos, this person is NOT enrolled")
         elif len(r.accepted) < config.ENROLL_MIN_PHOTOS:

@@ -76,14 +76,15 @@ def thumbnail(rel_path: str | None) -> str | None:
     return "data:image/jpeg;base64," + base64.b64encode(path.read_bytes()).decode()
 
 
-def flash(message: str) -> None:
-    """Show a success message after the next rerun."""
-    st.session_state["flash"] = message
+def flash(message: str, kind: str = "success") -> None:
+    """Show a message after the next rerun; kind: success, warning or error."""
+    st.session_state["flash"] = (message, kind)
 
 
 def show_flash() -> None:
-    if msg := st.session_state.pop("flash", None):
-        st.success(msg)
+    if item := st.session_state.pop("flash", None):
+        message, kind = item if isinstance(item, tuple) else (item, "success")
+        {"warning": st.warning, "error": st.error}.get(kind, st.success)(message)
 
 
 def person_label(row) -> str:

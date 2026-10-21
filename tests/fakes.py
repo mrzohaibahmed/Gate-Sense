@@ -28,7 +28,7 @@ def photo(kind: str = "good", seed: int = 0) -> np.ndarray:
 
 
 class FakeDetector:
-    def detect(self, img):
+    def detect(self, img, det_thresh=None):
         marker = float(img[5:15, 5:15].mean())
         if marker < 65:
             return []

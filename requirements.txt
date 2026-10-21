@@ -7,4 +7,7 @@ streamlit==1.66.0
 pandas==3.0.6
 openpyxl==3.1.5
 python-dotenv==1.2.4
+streamlit-webrtc==0.79.0
+aiortc==1.15.0
+av==17.1.0
 pytest==9.1.1
