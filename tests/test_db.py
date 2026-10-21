@@ -144,6 +144,14 @@ def test_voided_events_do_not_seed_cooldown(setup):
     assert db.last_event_times(conn, "entrance") == {}
 
 
+def test_camera_passwords_never_stored(conn):
+    url = "rtsp://admin:S3cretPw@192.168.1.64:554/Streaming/Channels/101"
+    db.upsert_camera(conn, "gate", url, "IN")
+    db.ensure_cameras(conn, [{"name": "gate2", "source": url, "direction": "OUT"}])
+    sources = [c["source"] for c in db.list_cameras(conn)]
+    assert sources == ["rtsp://admin:***@192.168.1.64:554/Streaming/Channels/101"] * 2
+
+
 def test_ensure_cameras_keeps_existing_source(conn):
     db.upsert_camera(conn, "exit", "clip.mp4", "OUT")
     db.ensure_cameras(conn, [{"name": "exit", "source": 1, "direction": "OUT"},

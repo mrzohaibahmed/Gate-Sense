@@ -14,6 +14,12 @@ Cameras page can show and stop it whether it was started there or here. It
 reloads data/gallery.npz when enrollment changes it. A second worker for the
 same camera, or for a webcam another worker already uses, refuses to start.
 
+Live sources (webcam, RTSP) are read on a background thread (app.camera.LiveCapture),
+so a camera that hangs or that another app holds can't freeze the worker; it
+warns when the camera sends no frames or only black ones. The annotated frame
+and the last decisions go to data/live/<camera>.jpg/.json for the dashboard's
+live view (app/live.py), and are deleted when the worker stops.
+
 Run from the project root:
     .venv\\Scripts\\python scripts\\recognize.py                                   # first camera (entrance, webcam)
     .venv\\Scripts\\python scripts\\recognize.py --camera exit --source clip.mp4   # exit camera from a clip
@@ -24,7 +30,7 @@ Press Q or Esc in the window to quit.
 import argparse
 import sys
 import time
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -32,17 +38,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cv2  # noqa: E402
 
-from app import config, db, workers  # noqa: E402
+from app import config, db, frame_source, sources, workers  # noqa: E402
 from app.attendance import Cooldown  # noqa: E402
-from app.camera import is_webcam, mask_source, open_capture, parse_source  # noqa: E402
+from app.camera import is_live, mask_source, open_capture, parse_source  # noqa: E402
 from app.detector import Detector, check_quality, quality_score, resize_to_width  # noqa: E402
 from app.gallery import Gallery, Match  # noqa: E402
 from app.images import crop_face, write_image  # noqa: E402
+from app.live import CameraHealth, LiveWriter  # noqa: E402
 from app.models import providers_in_use  # noqa: E402
 from app.recognizer import Recognizer  # noqa: E402
 from app.tracker import FaceTracker, Sample, TrackState  # noqa: E402
 
 GREEN, RED, GRAY, YELLOW = (0, 200, 0), (0, 0, 255), (160, 160, 160), (0, 220, 220)
+FAILURES = {"no gallery", "could not open source", "video file not found", "lost the camera"}
+STATS_SECONDS = 60  # log a summary of what the pipeline saw this often
 
 
 def fmt_score(name: str | None, score: float | None) -> str:
@@ -58,10 +67,21 @@ def log_match(stamp: str, track_id: int, m: Match) -> None:
     )
 
 
-def draw(img, det, color, text) -> None:
-    x1, y1, x2, y2 = det.bbox.astype(int)
-    cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-    cv2.putText(img, text, (x1, max(y1 - 8, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+def draw(img, bbox, color, text, thickness: int = 2) -> None:
+    x1, y1, x2, y2 = (int(v) for v in bbox)
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
+    cv2.putText(img, text, (x1, max(y1 - 8, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+
+
+def mirror_box(bbox, width: int):
+    """The same box in a left-right mirrored image of `width` pixels."""
+    x1, y1, x2, y2 = bbox
+    return (width - x2, y1, width - x1, y2)
+
+
+def header(img, text: str) -> None:
+    cv2.rectangle(img, (0, 0), (img.shape[1], 24), (0, 0, 0), -1)
+    cv2.putText(img, text, (6, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
 
 def find_camera(name: str | None) -> dict:
@@ -85,27 +105,119 @@ class Recorder:
             last = db.last_event_times(self.conn, self.cam_name)
         self.cooldown = Cooldown(config.COOLDOWN_SECONDS, last)
 
-    def record(self, stamp: str, now: datetime, track: TrackState, name: str, votes: int) -> None:
+    def record(self, stamp: str, now: datetime, track: TrackState, name: str, votes: int) -> tuple[str, str]:
+        """Returns (decision kind, detail) for the live view: event, cool-down or not saved."""
         best = track.best_sample(name)
         head = f"{stamp}  track{track.track_id:<4} {self.direction:<3} {name}"
         if not self.cooldown.allow(name, self.cam_name, now):
             print(f"{head}  ignored: cool-down ({config.COOLDOWN_SECONDS}s) since last {self.direction}")
-            return
+            return "cool-down", f"{self.direction} already recorded in the last {config.COOLDOWN_SECONDS} s"
         if self.conn is None:
             print(f"{head}  EVENT (not saved, --no-db)  score={best.match.score:.3f}  votes {votes}/{len(track.samples)}")
-            return
+            return "not saved", "--no-db"
         person_id = db.active_person_id(self.conn, name)  # looked up each time, so dashboard changes apply live
         if person_id is None:
             print(f"{head}  NOT SAVED: inactive in the dashboard, or not enrolled (run scripts\\enroll.py)")
-            return
+            return "not saved", "person inactive or not enrolled"
         snap = config.SNAPSHOT_DIR / f"{now:%Y-%m-%d}" / f"{now:%H%M%S}_{name}_{self.cam_name}.jpg"
         write_image(snap, best.snapshot)
         rel = snap.relative_to(config.DATA_DIR).as_posix()
         db.add_event(self.conn, person_id, self.camera_id, now, best.match.score, rel)
         print(f"{head}  EVENT saved  score={best.match.score:.3f}  votes {votes}/{len(track.samples)}  snapshot={rel}")
+        return "event", f"{self.direction} saved (votes {votes}/{len(track.samples)})"
 
 
-FAILURES = {"no gallery", "could not open source", "lost the camera"}
+class Pipeline:
+    """Detect, track, check quality, embed, match, vote and record one frame; returns the annotated view.
+
+    With `mirror`, only the returned view is flipped left-right (like a mirror or a video call); detection,
+    recognition and snapshots use the original frame, the same orientation as the enrollment photos.
+    """
+
+    def __init__(self, gallery: Gallery, detector, recognizer, recorder: Recorder, live: LiveWriter,
+                 mirror: bool = False):
+        self.gallery, self.detector, self.recognizer = gallery, detector, recognizer
+        self.recorder, self.live = recorder, live
+        self.mirror = mirror
+        self.tracker = FaceTracker(config.PROCESS_FPS)
+        self.tracks: dict[int, TrackState] = {}
+        self.times = deque(maxlen=20)
+        self.stats = Counter()
+
+    def process(self, frame, t: float, now: datetime, stamp: str):
+        t0 = time.perf_counter()
+        small = resize_to_width(frame)
+        marks = []  # (bbox, color, text, thickness), drawn at the end onto the (possibly mirrored) view
+
+        def mark(det, color, text, thickness=2):
+            marks.append((det.bbox, color, text, thickness))
+
+        dets = self.detector.detect(small)
+        tracked = self.tracker.update(dets)
+        self.stats["frames"] += 1
+        self.stats["faces"] += len(dets)
+        tracked_ids = {id(d) for _, d in tracked}
+        for d in dets:
+            if id(d) not in tracked_ids:
+                mark(d, GRAY, "new face", 1)  # not confirmed by the tracker yet
+
+        for tid, det in tracked:
+            track = self.tracks.setdefault(tid, TrackState(tid))
+            track.last_seen = t
+            if track.decided:
+                mark(det, GREEN, f"#{tid} {track.decided}")
+                continue
+            skip = check_quality(small, det)
+            if skip:
+                print(f"{stamp}  track{tid:<4} {'skip':<12} {skip}")
+                self.stats[f"skip: {skip.split(' (')[0]}"] += 1
+                self.live.decision("skip", tid, detail=skip)
+                mark(det, GRAY, f"#{tid} skip: {skip.split(' (')[0]}")
+                continue
+            q = quality_score(det)
+            if not track.wants(q):
+                mark(det, YELLOW, f"#{tid} ...")
+                continue
+            m = self.gallery.match(self.recognizer.embed(small, det))
+            log_match(stamp, tid, m)
+            track.add(Sample(q, m, crop_face(small, det.bbox, config.SNAPSHOT_SIZE)))
+            if m.name:
+                self.stats["matched"] += 1
+                votes = sum(s.match.name == m.name for s in track.samples)
+                self.live.decision("match", tid, m.name, m.score, m.second_score,
+                                   f"vote {votes}/{config.VOTE_MIN_AGREE}")
+            else:
+                self.stats[f"unknown: {m.reason}"] += 1
+                self.live.decision("unknown", tid, m.best_name, m.score, m.second_score, m.reason)
+            mark(det, GREEN if m.name else RED, f"#{tid} {m.name or 'unknown'} {m.score:.2f}")
+            won = track.vote()
+            if won:
+                track.decided = won[0]
+                kind, detail = self.recorder.record(stamp, now, track, *won)
+                self.stats[kind] += 1
+                self.live.decision(kind, tid, won[0], track.best_sample(won[0]).match.score, detail=detail)
+
+        for tid, track in list(self.tracks.items()):
+            if t - track.last_seen > config.TRACK_LOST_SECONDS:
+                if not track.decided and track.samples:
+                    print(f"{stamp}  track{tid:<4} closed as unknown (votes: {track.votes_summary()})")
+                    self.live.decision("closed", tid, detail=f"left without a decision ({track.votes_summary()})")
+                del self.tracks[tid]
+
+        # A new image either way, so the capture's buffer is never drawn on.
+        view = cv2.flip(small, 1) if self.mirror else small.copy()
+        for bbox, color, text, thickness in marks:
+            draw(view, mirror_box(bbox, view.shape[1]) if self.mirror else bbox, color, text, thickness)
+        self.times.append(time.perf_counter() - t0)
+        return view
+
+    def ms_per_frame(self) -> float:
+        return 1000 * sum(self.times) / len(self.times) if self.times else 0.0
+
+    def stats_line(self) -> str:
+        s = dict(self.stats)
+        self.stats.clear()
+        return "stats: " + (", ".join(f"{k} {v}" for k, v in s.items()) if s else "no frames processed")
 
 
 def main() -> int:
@@ -129,138 +241,174 @@ def main() -> int:
         return 1
 
     runtime = workers.WorkerRuntime(cam["name"], source, args.parent_pid)
+    live = LiveWriter(cam["name"])
     reason = "error"
     try:
-        reason = run(args, cam, source, runtime)
+        reason = run(args, cam, source, runtime, live)
     finally:
         runtime.close(reason)
+        live.clear()
         print(f"Worker stopped: {reason}")
-    return 1 if reason in FAILURES else 0
+    return 1 if reason in FAILURES or reason.startswith("missing environment variable") else 0
 
 
-def run(args, cam: dict, source, runtime: "workers.WorkerRuntime") -> str:
+def run(args, cam: dict, source, runtime: "workers.WorkerRuntime", live: LiveWriter) -> str:
     """The worker loop; returns why it stopped."""
+    try:
+        stream = sources.expand(source)  # ${VAR} -> value; only used to open the stream, never stored or shown
+    except sources.MissingVariables as e:
+        print(f"ERROR: {e}")
+        return f"missing environment variable {', '.join(e.names)}"
     if not config.GALLERY_PATH.exists():
         print(f"No gallery at {config.GALLERY_PATH}. Enroll people first (dashboard or scripts\\enroll.py).")
         return "no gallery"
     gallery = Gallery.load()
     gallery_mtime = config.GALLERY_PATH.stat().st_mtime
-    last_gallery_check = time.monotonic()
     print(f"Camera {cam['name']} ({cam['direction']}), gallery: {gallery.counts()}")
     print(
         f"Threshold {config.MATCH_THRESHOLD}, margin {config.MATCH_MARGIN}, {config.PROCESS_FPS} fps, "
         f"best {config.BEST_FRAMES_PER_TRACK} frames, vote {config.VOTE_MIN_AGREE}, cool-down {config.COOLDOWN_SECONDS}s"
     )
-
     detector, recognizer = Detector(), Recognizer()
     print(f"Model {config.MODEL_PACK}, providers {providers_in_use()}")
-    recorder = Recorder(cam, source, use_db=not args.no_db)
+    mirror = bool(cam.get("mirror"))
+    if mirror:
+        print("View mirrored left-right (recognition uses the original frame)")
+    pipeline = Pipeline(gallery, detector, recognizer, Recorder(cam, source, use_db=not args.no_db), live, mirror)
+    window = f"GateSense {cam['name']} ({cam['direction']})"
+    label = f"{cam['name']} ({cam['direction']})"
 
+    def housekeeping() -> str | None:
+        """Status, stop request, gallery reload and periodic stats; returns a stop reason."""
+        nonlocal gallery_mtime, last_gallery_check, last_stats
+        runtime.tick()
+        if stop := runtime.should_stop():
+            return stop
+        mono = time.monotonic()
+        if mono - last_gallery_check >= config.GALLERY_RELOAD_SECONDS:
+            last_gallery_check = mono
+            pipeline.gallery, gallery_mtime = reload_gallery(pipeline.gallery, gallery_mtime)
+        if mono - last_stats >= STATS_SECONDS:
+            last_stats = mono
+            print(f"{datetime.now():%H:%M:%S}  {pipeline.stats_line()}")
+        return None
+
+    def show(img, stamp: str) -> bool:
+        """Header, live frame, optional window; True if the window was closed with Q/Esc."""
+        header(img, f"{label}  {stamp}  {runtime.fps:.1f} fps  {pipeline.ms_per_frame():.0f} ms/frame")
+        live.frame(img, runtime.fps, runtime.warning)
+        if args.no_window:
+            return False
+        cv2.imshow(window, img)
+        return cv2.waitKey(1) & 0xFF in (ord("q"), 27)
+
+    last_gallery_check = last_stats = time.monotonic()
+    try:
+        if is_live(stream):
+            return run_live(stream, runtime, live, pipeline, housekeeping, show)
+        return run_file(stream, runtime, pipeline, housekeeping, show)
+    except KeyboardInterrupt:
+        return "interrupted"
+    finally:
+        cv2.destroyAllWindows()
+        if pipeline.recorder.conn:
+            pipeline.recorder.conn.close()
+        if pipeline.times:
+            print(f"Average processing time: {pipeline.ms_per_frame():.0f} ms/frame")
+
+
+def run_live(source, runtime, live: LiveWriter, pipeline: Pipeline, housekeeping, show) -> str:
+    """Webcam, RTSP or stream: newest frame from the background reader, at most PROCESS_FPS per second.
+
+    RTSP sources (app.frame_source.FrameSource) reconnect by themselves and never end the worker;
+    webcams keep the LiveCapture behaviour.
+    """
+    rtsp = frame_source.kind(source) == "rtsp"
+    print(f"Source {mask_source(source)!r} ({'RTSP over TCP' if rtsp else 'live'}), opening...")
+    capture = frame_source.open_live(source, log=print)
+    runtime.health_provider = capture.health
+    live.start()
+    health = CameraHealth(hint="check the camera's power, network and address" if rtsp else None)
+    interval = 1.0 / config.PROCESS_FPS
+    last_seq, next_due, start, opened = 0, 0.0, time.monotonic(), False
+    try:
+        while True:
+            if stop := housekeeping():
+                return stop
+            if capture.error:
+                print(f"ERROR: {capture.error} ({mask_source(source)!r}).")
+                return capture.error
+            if capture.opened and not opened:
+                opened = True
+                print(f"Camera opened after {time.monotonic() - start:.1f} s\n")
+            got = capture.latest(last_seq) if time.monotonic() >= next_due else None
+            warning = health.update(got[1] if got else None)
+            if rtsp and capture.state == "reconnecting":  # the reconnect reason says more than "no frames"
+                warning = "camera reconnecting" + (f": {capture.last_error}" if capture.last_error else "")
+            if warning != runtime.warning:
+                print(f"{datetime.now():%H:%M:%S}  WARNING: {warning}" if warning
+                      else f"{datetime.now():%H:%M:%S}  camera OK again")
+                runtime.warning = warning
+                live.write_info(runtime.fps, warning)
+            if got is None:
+                time.sleep(0.01)
+                continue
+            last_seq, frame = got
+            next_due = time.monotonic() + interval
+            now = datetime.now()
+            stamp = now.strftime("%H:%M:%S.%f")[:-3]
+            img = pipeline.process(frame, time.monotonic() - start, now, stamp)
+            runtime.tick(processed=True)
+            if show(img, stamp):
+                return "window closed"
+    finally:
+        capture.stop()
+
+
+def run_file(source, runtime, pipeline: Pipeline, housekeeping, show) -> str:
+    """Video file: every Nth frame in order, timed by the video position."""
+    if missing := workers.missing_file(source):
+        print(f"ERROR: video file not found: {missing}")
+        print("Put a clip there, or change this camera's source in app/config.py (webcam index or RTSP URL).")
+        return "video file not found"
     try:
         cap = open_capture(source)
     except RuntimeError:
         print(f"ERROR: could not open video source {mask_source(source)!r}")
         return "could not open source"
-    webcam = is_webcam(source)
-    # Files: process every Nth frame. Live sources: process at most PROCESS_FPS per second.
     src_fps = cap.get(cv2.CAP_PROP_FPS)
-    if src_fps <= 0:  # webcams often report 0 or -1
+    if src_fps <= 0:
         src_fps = 30.0
-    step = 1 if webcam else max(1, round(src_fps / config.PROCESS_FPS))
-    interval = 1.0 / config.PROCESS_FPS
+    step = max(1, round(src_fps / config.PROCESS_FPS))
     print(f"Source {mask_source(source)!r} at {src_fps:.0f} fps\n")
-
-    tracker = FaceTracker(config.PROCESS_FPS)
-    tracks: dict[int, TrackState] = {}
-    window = f"GateSense {cam['name']} ({cam['direction']})"
-    last_processed = -interval
-    frame_idx = 0
-    start, start_dt = time.monotonic(), datetime.now()
-    times = deque(maxlen=20)
-    reason = "stopped"
-
+    pipeline.live.start()
+    start_dt, frame_idx = datetime.now(), 0
+    file_health = {"kind": "file", "state": "live", "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or None,
+                   "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or None, "input_fps": round(src_fps, 1),
+                   "last_frame_at": None, "reconnects": 0, "reconnects_today": 0, "last_error": None,
+                   "live_since": time.time()}
+    runtime.health_provider = lambda: file_health
     try:
         while True:
-            runtime.tick()
-            if stop := runtime.should_stop():
-                reason = stop
-                break
-            if time.monotonic() - last_gallery_check >= config.GALLERY_RELOAD_SECONDS:
-                last_gallery_check = time.monotonic()
-                gallery, gallery_mtime = reload_gallery(gallery, gallery_mtime)
-
+            if stop := housekeeping():
+                return stop
             ok, frame = cap.read()
             if not ok:
-                print("End of video." if not webcam else "ERROR: lost the camera.")
-                reason = "lost the camera" if webcam else "end of video"
-                break
+                print("End of video.")
+                return "end of video"
             frame_idx += 1
-
-            if webcam:
-                t = time.monotonic() - start
-                if t - last_processed < interval:
-                    continue
-                now = datetime.now()
-                stamp = now.strftime("%H:%M:%S.%f")[:-3]
-            else:
-                if (frame_idx - 1) % step:
-                    continue
-                t = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-                now = start_dt + timedelta(seconds=t)  # video time, so the cool-down behaves as in real life
-                stamp = f"t={t:8.2f}s"
-            last_processed = t
-
-            t0 = time.perf_counter()
-            small = resize_to_width(frame)
-            for tid, det in tracker.update(detector.detect(small)):
-                track = tracks.setdefault(tid, TrackState(tid))
-                track.last_seen = t
-                if track.decided:
-                    draw(small, det, GREEN, f"#{tid} {track.decided}")
-                    continue
-                reason = check_quality(small, det)
-                if reason:
-                    print(f"{stamp}  track{tid:<4} {'skip':<12} {reason}")
-                    draw(small, det, GRAY, f"#{tid} skip")
-                    continue
-                q = quality_score(det)
-                if not track.wants(q):
-                    draw(small, det, YELLOW, f"#{tid} ...")
-                    continue
-                m = gallery.match(recognizer.embed(small, det))
-                log_match(stamp, tid, m)
-                track.add(Sample(q, m, crop_face(small, det.bbox, config.SNAPSHOT_SIZE)))
-                draw(small, det, GREEN if m.name else RED, f"#{tid} {m.name or 'unknown'} {m.score:.2f}")
-                won = track.vote()
-                if won:
-                    track.decided = won[0]
-                    recorder.record(stamp, now, track, *won)
-
-            for tid, track in list(tracks.items()):
-                if t - track.last_seen > config.TRACK_LOST_SECONDS:
-                    if not track.decided and track.samples:
-                        print(f"{stamp}  track{tid:<4} closed as unknown (votes: {track.votes_summary()})")
-                    del tracks[tid]
-            times.append(time.perf_counter() - t0)
+            if (frame_idx - 1) % step:
+                continue
+            t = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+            file_health["last_frame_at"] = time.time()
+            now = start_dt + timedelta(seconds=t)  # video time, so the cool-down behaves as in real life
+            stamp = f"t={t:8.2f}s"
+            img = pipeline.process(frame, t, now, stamp)
             runtime.tick(processed=True)
-
-            if not args.no_window:
-                ms = 1000 * sum(times) / len(times)
-                cv2.putText(small, f"{ms:.0f} ms/frame", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, YELLOW, 1)
-                cv2.imshow(window, small)
-                if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
-                    reason = "window closed"
-                    break
-    except KeyboardInterrupt:
-        reason = "interrupted"
+            if show(img, stamp):
+                return "window closed"
     finally:
         cap.release()
-        cv2.destroyAllWindows()
-        if recorder.conn:
-            recorder.conn.close()
-    if times:
-        print(f"Average processing time: {1000 * sum(times) / len(times):.0f} ms/frame")
-    return reason
 
 
 def reload_gallery(gallery: Gallery, mtime: float) -> tuple[Gallery, float]:

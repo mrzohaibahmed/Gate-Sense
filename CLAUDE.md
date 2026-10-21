@@ -23,6 +23,13 @@
 - `enroll.py` adds new people and deactivates removed ones (folder gone from known/), but never re-activates someone an admin deactivated. People added on the dashboard with no photos yet are not deactivated.
 - Enrollment logic lives in `app/enrollment.py`, shared by `enroll.py` (full rebuild) and the dashboard's Enrollment page (per-person rebuild). Folder name = employee code. Delete face data removes photos + embeddings, keeps attendance, needs a reason, is audited.
 - Workers: the dashboard's Cameras page runs `recognize.py --camera NAME --no-window --parent-pid <dashboard pid>` via `app/workers.py`. Protocol: status `data/run/<camera>.json`, clean stop via `data/run/<camera>.stop`, log `data/logs/<camera>.log`. Workers exit if the dashboard dies; a hard kill is only a fallback and only for workers this dashboard started. On Windows, launch the base interpreter with `__PYVENV_LAUNCHER__` (`workers.python_command`), as multiprocessing does, because the venv `python.exe` is a launcher with a child process. Same-webcam workers and duplicate workers per camera are refused (dashboard and CLI). Workers reload `gallery.npz` when it changes; the gallery is saved atomically.
+- RTSP (`rtsp://`, e.g. Hikvision): `app/frame_source.py` `FrameSource`, chosen by `frame_source.open_live()`. FFmpeg backend, `OPENCV_FFMPEG_CAPTURE_OPTIONS` = `RTSP_FFMPEG_OPTIONS` (TCP, 5 s timeout; an existing env value wins), open/read timeouts 5000 ms. Newest frame only; reconnects forever with `RTSP_RECONNECT_BACKOFF` (1, 2, 4, 8, 16, 30 s; resets after a working connection) on open failure, read failure, no frame for `RTSP_STALE_SECONDS`, or no first frame within `RTSP_CONNECT_GRACE_SECONDS`. A stale connection is abandoned (its daemon thread releases the capture when the read returns), never joined. It never ends the worker. Health (state, size, input/processed fps, last frame time, reconnects today, last error, live since) goes into the worker status file (`health`) and the Cameras page badge. Mask passwords with `camera.mask_source` everywhere: logs, status, `cameras.source` in the DB, log tails, dashboard.
+- Camera passwords never go in `app/config.py`: sources use `${VAR}` placeholders (`app/sources.py`), looked up in the environment, then `.env` (read fresh with `dotenv_values`, not loaded into `os.environ`). Values in the URL's `user:password@` part are percent-encoded (FFmpeg decodes them; verified). Expand only where a stream is opened (`recognize.run`, `probe_camera.main`); the dashboard, status, DB and logs keep the placeholder form. Missing/empty variable: `WorkerManager.start` refuses, the Cameras page shows the error, the worker exits with reason `missing environment variable X`. `GATESENSE_ENV_FILE` overrides the `.env` path (tests).
+- Webcams (and other URLs) keep `camera.LiveCapture`; video files keep in-order reading. Don't route them through `FrameSource`.
+- Live sources (webcam, RTSP) are read on a background thread (`camera.LiveCapture`, newest frame only) so a hung or busy camera never blocks status/Stop; `live.CameraHealth` warns on no frames or black frames (a webcam held by another app opens fine but gives 1 fps black frames, or blocks). Video files are still read in order on the main thread. `recognize.Pipeline.process()` is shared by both loops.
+- Live view: workers write `data/live/<camera>.jpg` (the already-processed, annotated frame) and `<camera>.json` (fps, frame time, last 20 decisions) at most every `LIVE_FRAME_SECONDS`, atomically (`app/fileutil.py`); deleted on stop (the manager deletes them for a killed worker). No extra detection for the view.
+- The Enrollment camera (`st.camera_input`) is opt-in via a "Use the camera" switch, because Streamlit renders all tabs and the browser would otherwise hold the webcam whenever the page is open. While it is on (`common.camera_claimed()`), webcam workers can't be started from the Cameras page.
+- `start.bat` / `stop.bat` (CRLF, kept by `.gitattributes`): start.bat runs `scripts/dashboard.py --preflight` (0 ok, 1 can't start, 3 already running → opens browser), then the launcher with `--open` in a minimized window. The launcher writes `data/run/_dashboard.json` and, on `data/run/_dashboard.stop`, stops all workers then Streamlit. `stop.bat` runs `scripts/stop.py`: stop files to every live worker (any starter), then the dashboard stop file; it never kills. Use `ping` for delays in batch files, not `timeout` (fails without an interactive console).
 - `GATESENSE_DATA_DIR` overrides `data/` (used for isolated runs). Tests never touch the real `known/`, `data/` or `.env` (`tests/conftest.py`).
 - Next phase: night-shift windows. Later: PostgreSQL, liveness check, Docker.
 
@@ -32,11 +39,15 @@
 app/
   config.py      thresholds, fps, frame size, model, camera sources
   env.py         loads .env (never overrides real environment variables)
+  sources.py     ${VAR} placeholders in camera sources: expand (URL-encodes passwords), missing_variables
   models.py      loads the buffalo_s pack once (CPU providers only)
   detector.py    SCRFD face detection + quality filter
   recognizer.py  ArcFace embeddings
   gallery.py     every embedding per person; best-score cosine matching
-  camera.py      opens a webcam index, video file or RTSP URL
+  camera.py      opens a webcam index or video file; LiveCapture (webcam reader); mask_source
+  frame_source.py  RTSP FrameSource (TCP, newest frame, reconnect with backoff, health, codec); open_live()
+  probe_camera.py  `python -m app.probe_camera <camera|source>`: codec, resolution, fps, timing, face widths,
+                   small-face warning (median < MIN_FACE_PX at FRAME_WIDTH), snapshot to data/probe/
   images.py      image read/write, face snapshot crops
   tracker.py     ByteTrack wrapper + per-track best frames and vote
   attendance.py  cool-down and daily summary rules (pure logic)
@@ -44,20 +55,25 @@ app/
   reports.py     daily/monthly report tables, CSV and Excel export
   enrollment.py  photo checks, enroll_all / enroll_one, add/delete photos, delete face data
   workers.py     worker runtime (status/stop files, parent watchdog) and WorkerManager
+  live.py        live frame + decisions writer/reader, stale-frame message, camera health
+  fileutil.py    atomic writes (temp file + os.replace with Windows retries)
 dashboard/
   main.py        Streamlit entry (login gate + navigation); not app.py, which would shadow the app package
   auth.py        admin login
-  common.py      DB connection, snapshot thumbnails, flash messages
-  views/         live, today, reports, people, enrollment, cameras, corrections, settings pages
+  common.py      DB connection, snapshot thumbnails, flash messages, worker manager, Enrollment camera claims
+  live_panel.py  one camera's live frame + decisions (Live view and Cameras pages)
+  views/         live (events), live_view, today, reports, people, enrollment, cameras, corrections, settings
                  (not pages/, which Streamlit auto-loads)
 scripts/
   check_env.py   verifies deps, model, webcam
   enroll.py      build data/gallery.npz from known/, sync persons table (optional --capture NAME)
   recognize.py   attendance worker for one camera (--camera, --source, --no-db)
   today.py       print a day's attendance (--date)
-  dashboard.py   start the dashboard on DASHBOARD_HOST:DASHBOARD_PORT
+  dashboard.py   start the dashboard on DASHBOARD_HOST:DASHBOARD_PORT (--open, --preflight)
+  stop.py        stop all camera workers, then the dashboard (stop.bat)
+start.bat, stop.bat    Windows double-click start/stop
 known/<person>/*.jpg   enrollment photos (git-ignored)
-data/                  gallery.npz, attendance.db, snapshots/, run/, logs/ (all git-ignored)
+data/                  gallery.npz, attendance.db, snapshots/, run/, logs/, live/ (all git-ignored)
 tests/                 pytest tests (fakes.py: fake detector/recognizer; fake_worker.py: fake recognize.py)
 ```
 
@@ -75,6 +91,8 @@ All commands from the project root, using the venv:
 .venv\Scripts\python scripts\recognize.py --camera exit --source clip.mp4  # exit (OUT) from a clip
 .venv\Scripts\python scripts\recognize.py --no-db                          # tune without recording
 .venv\Scripts\python scripts\today.py                                      # today's attendance
+.venv\Scripts\python -m app.probe_camera entrance                          # check a camera's picture (20 s)
+start.bat / stop.bat                                                       # start / stop everything (double-click)
 .venv\Scripts\python scripts\dashboard.py                                  # dashboard (password from .env or env var)
 .venv\Scripts\python -m pytest                                             # tests (dashboard via AppTest)
 ```

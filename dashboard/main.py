@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import streamlit as st  # noqa: E402
 
 from dashboard import auth  # noqa: E402
-from dashboard.common import manager  # noqa: E402
+from dashboard.common import claim_camera, manager  # noqa: E402
 
 st.set_page_config(page_title="GateSense", page_icon=":material/door_front:", layout="wide")
 
@@ -23,7 +23,8 @@ if not auth.require_login():
 
 nav = st.navigation(
     [
-        st.Page("views/live.py", title="Live events", icon=":material/videocam:", default=True),
+        st.Page("views/live.py", title="Live events", icon=":material/event_note:", default=True),
+        st.Page("views/live_view.py", title="Live view", icon=":material/videocam:"),
         st.Page("views/today.py", title="Today", icon=":material/today:"),
         st.Page("views/reports.py", title="Reports", icon=":material/table_chart:"),
         st.Page("views/people.py", title="People", icon=":material/group:"),
@@ -33,6 +34,8 @@ nav = st.navigation(
         st.Page("views/settings.py", title="Settings", icon=":material/settings:"),
     ]
 )
+if nav.title != "Enrollment":
+    claim_camera(False)  # leaving the Enrollment page releases the browser camera
 with st.sidebar:
     st.caption("GateSense")
     running = [s.camera for s in manager().statuses() if s.state != "stopped"]

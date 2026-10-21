@@ -9,14 +9,13 @@ Saved to ``data/gallery.npz`` (``app.config.GALLERY_PATH``). That file is
 biometric data and is git-ignored. Later it moves to SQLite, then PostgreSQL.
 """
 
-import os
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from app import config
+from app.fileutil import replace_retry
 
 
 @dataclass
@@ -79,14 +78,7 @@ class Gallery:
         tmp = path.with_name(path.name + ".tmp")
         with open(tmp, "wb") as f:
             np.savez(f, names=np.array(self.names, dtype=str), embeddings=self.embeddings, labels=self.labels)
-        for attempt in range(20):  # Windows refuses the replace while a worker has the file open
-            try:
-                os.replace(tmp, path)
-                return
-            except PermissionError:
-                if attempt == 19:
-                    raise
-                time.sleep(0.1)
+        replace_retry(tmp, path)  # a running worker may have the file open for a moment
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Gallery":

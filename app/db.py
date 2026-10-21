@@ -21,6 +21,7 @@ from pathlib import Path
 
 from app import config
 from app.attendance import DaySummary, Event, summarize_day
+from app.camera import mask_source
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS persons (
@@ -212,7 +213,7 @@ def upsert_camera(conn: sqlite3.Connection, name: str, source: str | int, direct
         conn.execute(
             "INSERT INTO cameras (name, source, direction) VALUES (?, ?, ?) "
             "ON CONFLICT(name) DO UPDATE SET source = excluded.source, direction = excluded.direction",
-            (name, str(source), direction),
+            (name, mask_source(source), direction),  # never store a camera password
         )
     return conn.execute("SELECT id FROM cameras WHERE name = ?", (name,)).fetchone()["id"]
 
@@ -223,7 +224,7 @@ def ensure_cameras(conn: sqlite3.Connection, cameras: list[dict]) -> None:
         for cam in cameras:
             conn.execute(
                 "INSERT INTO cameras (name, source, direction) VALUES (?, ?, ?) ON CONFLICT(name) DO NOTHING",
-                (cam["name"], str(cam["source"]), cam["direction"]),
+                (cam["name"], mask_source(cam["source"]), cam["direction"]),
             )
 
 

@@ -19,8 +19,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from app import config
-from app.camera import is_webcam, parse_source
+from app import config, live, sources
+from app.camera import is_live, is_webcam, mask_source, parse_source
+from app.fileutil import atomic_write_bytes
 
 STILL_ACTIVE = 259  # Windows GetExitCodeProcess value for a running process
 
@@ -76,18 +77,7 @@ def python_command(python: str, env: dict) -> str:
 
 
 def _write_json(path: Path, data: dict) -> None:
-    """Atomic write; retries because Windows refuses a replace while a reader has the file open."""
-    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(data), encoding="utf-8")
-    for attempt in range(20):
-        try:
-            os.replace(tmp, path)
-            return
-        except PermissionError:
-            if attempt == 19:
-                tmp.unlink(missing_ok=True)
-                raise
-            time.sleep(0.05)
+    atomic_write_bytes(path, json.dumps(data).encode("utf-8"))
 
 
 def _read_json(path: Path) -> dict | None:
@@ -105,12 +95,31 @@ def stop_path(camera: str, run_dir: Path | None = None) -> Path:
     return Path(run_dir or config.RUN_DIR) / f"{camera}.stop"
 
 
+DASHBOARD = "_dashboard"  # status/stop file name for the dashboard launcher (scripts/dashboard.py)
+
+
+def dashboard_pid(run_dir: Path | None = None) -> int | None:
+    """PID of the running dashboard launcher, if any (stale info files are ignored)."""
+    data = _read_json(status_path(DASHBOARD, run_dir))
+    return data["pid"] if data and pid_alive(data.get("pid")) else None
+
+
 def live_status(camera: str, run_dir: Path | None = None) -> dict | None:
     """The camera's status if its worker process is alive and hasn't reported stopping, else None."""
     data = _read_json(status_path(camera, run_dir))
     if data and data.get("state") != "stopped" and pid_alive(data.get("pid")):
         return data
     return None
+
+
+def missing_file(source) -> Path | None:
+    """For a video-file source, its path if the file doesn't exist (relative paths are from the project root)."""
+    source = parse_source(str(source))
+    if is_live(source):
+        return None
+    path = Path(source)
+    path = path if path.is_absolute() else config.ROOT_DIR / path
+    return None if path.is_file() else path
 
 
 def running_elsewhere(camera: str, run_dir: Path | None = None) -> int | None:
@@ -160,13 +169,23 @@ class WorkerRuntime:
         self._window_frames = 0
         self._window_start = self._last_write = self._last_check = time.monotonic()
         self._stop_reason = None
+        self.warning: str | None = None  # camera problem shown on the Cameras page
+        self.health_provider = None  # callable returning the frame source's health dict
         self.write("loading")
 
     def write(self, state: str, reason: str | None = None) -> None:
+        health = None
+        if self.health_provider is not None:
+            health = dict(self.health_provider(), processed_fps=round(self.fps, 1))
+            if state == "stopped":
+                health["state"] = "stopped"
         _write_json(self.status_file, {
-            "camera": self.camera, "pid": os.getpid(), "source": self.source,
+            "camera": self.camera, "pid": os.getpid(),
+            "source": self.source if self.source is None or isinstance(self.source, int) else mask_source(self.source),
             "started": self.started.isoformat(timespec="seconds"), "updated": time.time(),
             "state": state, "fps": round(self.fps, 1), "frames": self.frames, "reason": reason,
+            "warning": self.warning if state != "stopped" else None,
+            "health": health,
         })
 
     def tick(self, processed: bool = False) -> None:
@@ -214,6 +233,8 @@ class WorkerStatus:
     source: str | int | None = None
     managed: bool = False  # started by this dashboard process
     detail: str = ""  # stop reason or exit code of the last run
+    warning: str | None = None  # camera problem reported by the worker
+    health: dict | None = None  # frame source health (state, size, fps, last frame, reconnects, last error)
 
 
 class WorkerManager:
@@ -221,11 +242,11 @@ class WorkerManager:
 
     def __init__(self, cameras: list[dict] | None = None, script: Path | None = None,
                  extra_args: tuple[str, ...] = ("--no-window",), run_dir: Path | None = None,
-                 log_dir: Path | None = None, python: str | None = None):
+                 log_dir: Path | None = None, python: str | None = None, live_dir: Path | None = None):
         self._cameras = cameras  # None = config.CAMERAS (read each time)
         self.script = Path(script or config.ROOT_DIR / "scripts" / "recognize.py")
         self.extra_args = tuple(extra_args)
-        self._run_dir, self._log_dir = run_dir, log_dir
+        self._run_dir, self._log_dir, self._live_dir = run_dir, log_dir, live_dir
         self.python = python or sys.executable
         self._procs: dict[str, subprocess.Popen] = {}
         self._exit: dict[str, str] = {}
@@ -242,6 +263,10 @@ class WorkerManager:
     @property
     def log_dir(self) -> Path:
         return Path(self._log_dir or config.LOG_DIR)
+
+    @property
+    def live_dir(self) -> Path:
+        return Path(self._live_dir or config.LIVE_DIR)
 
     def camera(self, name: str) -> dict:
         for cam in self.cameras:
@@ -275,6 +300,7 @@ class WorkerManager:
                 return WorkerStatus(
                     name, state, data["pid"], datetime.fromisoformat(data["started"]), data.get("fps"),
                     cam["source"] if data.get("source") is None else data["source"], managed=proc is not None,
+                    warning=data.get("warning"), health=data.get("health"),
                 )
             detail = (data or {}).get("reason") or self._exit.get(name, "")
             return WorkerStatus(name, "stopped", source=cam["source"], detail=detail)
@@ -295,6 +321,11 @@ class WorkerManager:
             cam = self.camera(name)
             if self.status(name).state != "stopped":
                 raise WorkerError(f"{name} is already running")
+            if names := sources.missing_variables(cam["source"]):
+                raise WorkerError(str(sources.MissingVariables(names)))
+            if missing := missing_file(cam["source"]):
+                raise WorkerError(f"video file not found: {missing}. Put a clip there, or change the {name} "
+                                  "camera's source in app/config.py (a webcam index such as 1, or an RTSP URL)")
             other = webcam_conflict(name, cam["source"], self.cameras, self.run_dir) or self._starting_on(name)
             if other:
                 raise WorkerError(f"webcam {cam['source']} is already in use by the {other} worker; stop it first")
@@ -349,11 +380,16 @@ class WorkerManager:
             return f"did not stop within {timeout:.0f} s; end process {st.pid} manually"
         proc.kill()
         proc.wait(5)
+        live.clear(name, self.live_dir)  # a killed worker can't delete its own live frame
         with self._lock:
             self._proc(name)
             with open(self.log_path(name), "a", encoding="utf-8") as f:
                 f.write(f"===== {datetime.now():%Y-%m-%d %H:%M:%S} killed after {timeout:.0f} s =====\n")
         return f"killed after {timeout:.0f} s"
+
+    def stop_running(self) -> list[tuple[str, str]]:
+        """Stop every live worker, whoever started it (stop.bat); returns [(camera, result)]."""
+        return [(st.camera, self.stop(st.camera)) for st in self.statuses() if st.state != "stopped"]
 
     def stop_all(self) -> None:
         """Stop every worker this dashboard started (called when the dashboard exits)."""
@@ -372,4 +408,4 @@ class WorkerManager:
             f.seek(0, os.SEEK_END)
             f.seek(max(0, f.tell() - 200 * lines))
             text = f.read().decode("utf-8", errors="replace")
-        return text.splitlines()[-lines:]
+        return [mask_source(line) for line in text.splitlines()[-lines:]]  # in case a library printed a URL

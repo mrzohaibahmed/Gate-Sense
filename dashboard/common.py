@@ -3,12 +3,39 @@
 import atexit
 import base64
 import sqlite3
+import time
 from contextlib import closing
 
 import streamlit as st
+from streamlit.runtime.scriptrunner import get_script_run_ctx
 
 from app import config, db
 from app.workers import WorkerManager
+
+
+@st.cache_resource
+def _camera_claims() -> dict[str, float]:
+    """Browser sessions that have the Enrollment camera switched on: {session id: last seen}."""
+    return {}
+
+
+def claim_camera(on: bool) -> None:
+    """Record whether this browser session has the Enrollment page camera switched on."""
+    ctx = get_script_run_ctx()
+    sid = ctx.session_id if ctx else "no-session"
+    if on:
+        _camera_claims()[sid] = time.time()
+    else:
+        _camera_claims().pop(sid, None)
+
+
+def camera_claimed() -> bool:
+    """Is the Enrollment camera on in any session? (Claims expire after ENROLL_CAMERA_CLAIM_SECONDS.)"""
+    claims = _camera_claims()
+    for sid, seen in list(claims.items()):
+        if time.time() - seen > config.ENROLL_CAMERA_CLAIM_SECONDS:
+            claims.pop(sid, None)
+    return bool(claims)
 
 
 @st.cache_resource

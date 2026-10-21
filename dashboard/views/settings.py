@@ -45,7 +45,8 @@ for title, items in GROUPS.items():
 
 st.subheader("Cameras")
 st.dataframe(
-    pd.DataFrame([{"Name": c["name"], "Direction": c["direction"], "Source": mask_source(c["source"])}
+    pd.DataFrame([{"Name": c["name"], "Direction": c["direction"], "Source": mask_source(c["source"]),
+                   "Mirrored view": bool(c.get("mirror"))}
                   for c in config.CAMERAS]),
     hide_index=True,
 )

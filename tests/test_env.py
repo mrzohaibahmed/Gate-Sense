@@ -28,12 +28,24 @@ def env_file(tmp_path, monkeypatch):
 
 @pytest.fixture
 def launcher(monkeypatch):
-    """scripts/dashboard.py with subprocess.call replaced, recording the env Streamlit would get."""
+    """scripts/dashboard.py with Streamlit replaced by a fake process, recording the env it would get."""
     spec = importlib.util.spec_from_file_location("dashboard_launcher", ROOT / "scripts" / "dashboard.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     calls = []
-    monkeypatch.setattr(mod.subprocess, "call", lambda cmd, cwd=None: calls.append(dict(os.environ)) or 0)
+
+    class FakeStreamlit:
+        pid, returncode = 4321, 0
+
+        def __init__(self, cmd, cwd=None, env=None):
+            calls.append(dict(env))
+
+        def poll(self):
+            return 0  # exits at once
+
+    monkeypatch.setattr(mod.subprocess, "Popen", FakeStreamlit)
+    monkeypatch.setattr(mod.sys, "argv", ["dashboard.py"])
+    monkeypatch.setattr(mod, "port_in_use", lambda: False)
     mod.calls = calls
     return mod
 

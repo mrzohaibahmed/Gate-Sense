@@ -19,3 +19,4 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "SNAPSHOT_DIR", data / "snapshots")
     monkeypatch.setattr(config, "RUN_DIR", data / "run")
     monkeypatch.setattr(config, "LOG_DIR", data / "logs")
+    monkeypatch.setattr(config, "LIVE_DIR", data / "live")

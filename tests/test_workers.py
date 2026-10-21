@@ -6,16 +6,18 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
-from app import workers
+from app import live, workers
 from app.workers import WorkerError, WorkerManager
 
 FAKE = Path(__file__).with_name("fake_worker.py")
 CAMERAS = [
     {"name": "a", "source": 0, "direction": "IN"},
     {"name": "b", "source": 0, "direction": "OUT"},  # same webcam as a
-    {"name": "c", "source": "clip.mp4", "direction": "OUT"},
+    {"name": "c", "source": str(FAKE), "direction": "OUT"},  # any existing file stands in for a clip
+    {"name": "d", "source": "no-such-clip.mp4", "direction": "OUT"},
 ]
 
 
@@ -71,6 +73,15 @@ def test_start_status_stop(make_manager):
     assert m.stop("a") == "not running"
 
 
+def test_missing_video_file_refused(make_manager):
+    m = make_manager()
+    with pytest.raises(WorkerError, match="video file not found: .*no-such-clip.mp4"):
+        m.start("d")
+    assert m.status("d").state == "stopped" and not m.log_path("d").exists()  # nothing was launched
+    assert workers.missing_file(0) is None and workers.missing_file("rtsp://cam/stream") is None
+    assert workers.missing_file(str(FAKE)) is None
+
+
 def test_start_twice_refused(make_manager):
     m = make_manager()
     m.start("a")
@@ -90,7 +101,7 @@ def test_same_webcam_refused(make_manager):
     wait_for(lambda: running(m, "c"))
     assert m.webcam_users() == ["a"]
     assert workers.webcam_conflict("enroll", 0, CAMERAS, m.run_dir) == "a"
-    assert workers.webcam_conflict("enroll", "clip.mp4", CAMERAS, m.run_dir) is None
+    assert workers.webcam_conflict("enroll", str(FAKE), CAMERAS, m.run_dir) is None
     m.stop("a")
     m.start("b")  # free again
     wait_for(lambda: running(m, "b"))
@@ -100,8 +111,10 @@ def test_hung_worker_is_killed(make_manager):
     m = make_manager("--ignore-stop")
     m.start("a")
     wait_for(lambda: running(m, "a"))
+    live.LiveWriter("a", live_dir=m.live_dir).frame(np.zeros((8, 8, 3), np.uint8))
     assert m.stop("a", timeout=1).startswith("killed")
     assert m.status("a").state == "stopped"
+    assert not live.frame_path("a", m.live_dir).exists()  # cleaned up for the killed worker
     assert "killed after 1 s" in m.log_tail("a")[-1]
 
 
@@ -121,7 +134,7 @@ def test_detects_worker_after_dashboard_restart(make_manager):
     assert st.state == "running" and not st.managed
     assert workers.running_elsewhere("a", second.run_dir) == st.pid
     assert second.stop("a") == "stopped cleanly"  # via the stop file
-    assert first.status("a").state == "stopped"
+    wait_for(lambda: first.status("a").state == "stopped", timeout=5)  # its process handle catches up
 
 
 def test_stop_all(make_manager):
@@ -130,7 +143,7 @@ def test_stop_all(make_manager):
     m.start("c")
     wait_for(lambda: running(m, "a") and running(m, "c"))
     m.stop_all()
-    assert [s.state for s in m.statuses()] == ["stopped"] * 3
+    assert [s.state for s in m.statuses()] == ["stopped"] * len(CAMERAS)
 
 
 def test_popen_pid_is_the_worker(make_manager):
@@ -160,6 +173,27 @@ def test_worker_exits_when_dashboard_dies(dirs):
     finally:
         parent.kill()
         worker.kill()
+
+
+def test_status_carries_health_and_masks_source(tmp_path):
+    url = "rtsp://admin:S3cretPw@192.168.1.64:554/Streaming/Channels/101"
+    rt = workers.WorkerRuntime("gate", url, run_dir=tmp_path)
+    rt.health_provider = lambda: {"kind": "rtsp", "state": "reconnecting", "reconnects": 2,
+                                  "last_error": "stream dropped (read failed)"}
+    rt.write("running")
+    data = json.loads((tmp_path / "gate.json").read_text())
+    assert data["source"] == "rtsp://admin:***@192.168.1.64:554/Streaming/Channels/101"
+    assert data["health"]["state"] == "reconnecting" and data["health"]["processed_fps"] == 0.0
+    rt.close("stop requested")
+    assert json.loads((tmp_path / "gate.json").read_text())["health"]["state"] == "stopped"
+    assert "S3cretPw" not in (tmp_path / "gate.json").read_text()
+
+
+def test_log_tail_masks_passwords(make_manager):
+    m = make_manager()
+    m.log_dir.mkdir(parents=True, exist_ok=True)
+    m.log_path("a").write_text("[ WARN ] could not open rtsp://admin:S3cretPw@10.0.0.5:554/x\n")
+    assert m.log_tail("a") == ["[ WARN ] could not open rtsp://admin:***@10.0.0.5:554/x"]
 
 
 def test_pid_alive():

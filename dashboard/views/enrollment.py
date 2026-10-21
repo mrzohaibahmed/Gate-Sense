@@ -2,7 +2,7 @@ import cv2
 import streamlit as st
 
 from app import config, db, enrollment
-from dashboard.common import connection, face_models, flash, manager, person_label, show_flash
+from dashboard.common import claim_camera, connection, face_models, flash, manager, person_label, show_flash
 
 st.title("Enrollment")
 st.caption("Photos are checked with the same quality filter as scripts\\enroll.py and saved to known/<code>/. "
@@ -128,13 +128,21 @@ with upload_tab:
 with camera_tab:
     users = manager().webcam_users()
     if users:
+        claim_camera(False)
         st.warning(f"The webcam is in use by the {', '.join(users)} worker. Stop it on the Cameras page to "
                    "take photos here.")
     else:
-        shot = st.camera_input("Take a photo (one photo per click)", key=f"camera_{widget}")
-        if shot is not None:
-            process(code, [("camera photo", enrollment.decode_image(shot.getvalue()))])
-            st.rerun()
+        # Off by default: Streamlit renders every tab, so an always-present camera_input would hold the
+        # webcam whenever this page is open, and a webcam worker would then get no (or black) frames.
+        camera_on = st.toggle("Use the camera", key="enroll_camera_on",
+                              help="Webcam camera workers can't start while this is on.")
+        claim_camera(camera_on)
+        if camera_on:
+            st.caption("Turn this off when you're done, so the camera workers can use the webcam.")
+            shot = st.camera_input("Take a photo (one photo per click)", key=f"camera_{widget}")
+            if shot is not None:
+                process(code, [("camera photo", enrollment.decode_image(shot.getvalue()))])
+                st.rerun()
 
 last = st.session_state.get("enroll_last_check")
 if last and last[0] == code:
