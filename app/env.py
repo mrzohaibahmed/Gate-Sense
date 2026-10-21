@@ -1,26 +1,36 @@
-"""Loads .env from the project root.
+"""Reads .env from the project root.
 
 Variables already set in the real environment always win; .env only fills in
 what is missing. Never print or log the values read here.
+
+Only the admin password is copied into os.environ. Camera passwords (${VAR} in
+camera sources) are read from .env fresh each time a camera starts
+(app/sources.py); loading them into the dashboard's environment would make the
+workers it starts inherit stale copies, which would then win over later .env edits.
 """
 
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values
 
 from app import config
 
 
-def load_env(path: Path | None = None) -> None:
-    """Load ``path`` (default ``config.ENV_PATH``) without overriding existing variables."""
+def load_env(path: Path | None = None, keys: tuple[str, ...] | None = None) -> None:
+    """Copy `keys` (default: the admin password) from .env into os.environ, never overriding existing ones."""
     path = path or config.ENV_PATH
-    if path.is_file():
-        load_dotenv(path, override=False)
+    if not path.is_file():
+        return
+    keys = keys or (config.DASHBOARD_PASSWORD_ENV,)
+    values = dotenv_values(path)
+    for key in keys:
+        if values.get(key) and not os.environ.get(key):
+            os.environ[key] = values[key]
 
 
 def admin_password_source() -> str | None:
-    """Load .env, then say where the admin password came from: "environment", ".env" or None.
+    """Load the admin password from .env if needed, then say where it came from: "environment", ".env" or None.
 
     Only the source is returned, never the password itself.
     """

@@ -55,6 +55,10 @@ env/
 .env
 .streamlit/secrets.toml
 
+# Site-specific camera list (IPs, user names), written by the Camera settings page.
+# cameras.example.json is the committed template.
+cameras.json
+
 # Editors / OS
 .vscode/
 .idea/

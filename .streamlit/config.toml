@@ -6,3 +6,7 @@ headless = true
 
 [browser]
 gatherUsageStats = false
+
+[client]
+# No "Deploy" button or developer menu: this is a local app with biometric data, never deployed to the cloud.
+toolbarMode = "minimal"

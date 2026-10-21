@@ -5,7 +5,8 @@ from app import config
 from app.camera import mask_source
 
 st.title("Settings")
-st.caption("Read-only. Change values in app/config.py, then restart the dashboard and the camera workers.")
+st.caption("Read-only. Change values in app/config.py, then restart the dashboard and the camera workers. "
+           "Cameras are added and edited on the Camera settings page.")
 
 GROUPS = {
     "Recognition": [

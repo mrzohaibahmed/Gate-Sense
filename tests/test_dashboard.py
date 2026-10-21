@@ -12,7 +12,7 @@ from app import config, db
 MAIN = str(Path(__file__).resolve().parent.parent / "dashboard" / "main.py")
 PASSWORD = "test-password"
 PAGES = ["views/live.py", "views/today.py", "views/reports.py", "views/people.py", "views/enrollment.py",
-         "views/cameras.py", "views/corrections.py", "views/settings.py"]
+         "views/cameras.py", "views/camera_settings.py", "views/corrections.py", "views/settings.py"]
 
 
 @pytest.fixture
@@ -265,6 +265,89 @@ def test_cameras_page_offline_badge(monkeypatch, tmp_db):
     at = logged_in(monkeypatch)
     at.switch_page("views/cameras.py").run()
     assert "red-badge[● offline]" in " ".join(m.value for m in at.markdown)
+
+
+ADD_KEY = "cs_➕ Add a camera_"
+
+
+def submit(prefix: str, kind: str, label: str) -> str:
+    """Key of a form button on the Camera settings page (Save/Add camera/Test connection)."""
+    return f"FormSubmitter:{prefix}{kind}_form-{label}"
+
+
+def camera_settings_page(monkeypatch):
+    at = logged_in(monkeypatch)
+    at.switch_page("views/camera_settings.py").run()
+    assert not at.exception
+    return at
+
+
+def test_camera_settings_add_webcam(monkeypatch, tmp_db):
+    at = camera_settings_page(monkeypatch)
+    assert [list(at.dataframe[0].value["Name"])] == [["entrance", "exit"]]
+    at.text_input(key=ADD_KEY + "name").input("desk")
+    at.selectbox(key=ADD_KEY + "type").set_value("webcam")
+    at.run()
+    at.number_input(key=ADD_KEY + "index").set_value(1)
+    at.radio(key=ADD_KEY + "direction").set_value("OUT")
+    at.button(key=submit(ADD_KEY, "webcam", "Add camera")).click().run()
+    assert not at.exception and not at.error
+    assert at.success[0].value.startswith("Saved camera desk")
+    assert config.CAMERAS[-1] == {"name": "desk", "source": 1, "direction": "OUT", "mirror": True}
+    assert db.audit_entries(tmp_db)[0]["action"] == "add_camera"
+
+
+def test_camera_settings_add_hikvision_password_goes_to_env(monkeypatch, tmp_db):
+    monkeypatch.delenv("GATESENSE_CAM_GATE1_PASS", raising=False)
+    at = camera_settings_page(monkeypatch)
+    at.text_input(key=ADD_KEY + "name").input("gate1").run()
+    at.text_input(key=ADD_KEY + "ip").input("192.168.1.101")
+    at.text_input(key=ADD_KEY + "user").input("gatesense")
+    at.text_input(key=ADD_KEY + "password").input("p@ss#1")
+    at.button(key=submit(ADD_KEY, "hikvision", "Add camera")).click().run()
+    assert not at.error, [e.value for e in at.error]
+    assert "p@ss" not in config.CAMERAS_FILE.read_text()
+    assert "GATESENSE_CAM_GATE1_PASS='p@ss#1'" in config.ENV_PATH.read_text()
+    df = at.dataframe[0].value.set_index("Name")
+    assert df.loc["gate1", "Password"] == "set (.env)"
+    assert df.loc["gate1", "Source"] == "rtsp://gatesense:***@192.168.1.101:554/Streaming/Channels/101"
+
+
+def test_camera_settings_refuses_typed_password_in_url(monkeypatch, tmp_db):
+    at = camera_settings_page(monkeypatch)
+    at.text_input(key=ADD_KEY + "name").input("cam2")
+    at.selectbox(key=ADD_KEY + "type").set_value("rtsp")
+    at.run()
+    at.text_input(key=ADD_KEY + "url").input("rtsp://admin:hunter2@10.0.0.5:554/live")
+    at.button(key=submit(ADD_KEY, "rtsp", "Add camera")).click().run()
+    assert any("don't type the password into the url" in e.value.lower() for e in at.error)
+    assert not config.CAMERAS_FILE.exists()
+
+
+def test_camera_settings_running_camera_is_locked(monkeypatch, tmp_db):
+    from app.workers import WorkerManager
+
+    monkeypatch.setattr(WorkerManager, "statuses", lambda self: [running_status("entrance")])
+    at = camera_settings_page(monkeypatch)
+    at.selectbox(key="cs_choice").set_value("entrance").run()
+    assert any("is running" in i.value for i in at.info)
+    assert at.button(key=submit("cs_entrance_", "webcam", "Save")).disabled
+    assert at.button(key=submit("cs_entrance_", "webcam", "Test connection")).disabled
+
+
+def test_camera_settings_test_connection(monkeypatch, tmp_db):
+    import numpy as np
+
+    from app import camera_settings
+
+    monkeypatch.setattr(camera_settings, "test_connection", lambda src, extra=None: {
+        "ok": True, "width": 1920, "height": 1080, "codec": "h264",
+        "frame": np.zeros((108, 192, 3), np.uint8), "error": None})
+    at = camera_settings_page(monkeypatch)
+    at.selectbox(key="cs_choice").set_value("exit").run()
+    at.button(key=submit("cs_exit_", "webcam", "Test connection")).click().run()
+    assert at.success[0].value == "Connected: 1920×1080, codec h264"
+    assert len(at.get("image")) == 1
 
 
 def test_settings_page_masks_rtsp_password(monkeypatch, tmp_db):

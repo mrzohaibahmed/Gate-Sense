@@ -52,11 +52,11 @@ def lookup(name: str, file_values: dict | None = None) -> str | None:
     return value or None
 
 
-def missing_variables(source) -> list[str]:
+def missing_variables(source, extra: dict | None = None) -> list[str]:
     names = placeholders(source)
     if not names:
         return []
-    values = _values()
+    values = {**_values(), **{k: v for k, v in (extra or {}).items() if v}}
     return sorted({n for n in names if lookup(n, values) is None})
 
 
@@ -71,21 +71,23 @@ def _userinfo_end(text: str) -> int:
     return m.end() + at + 1 if at >= 0 else 0
 
 
-def expand(source):
+def expand(source, extra: dict | None = None):
     """Source with ${VAR} replaced; webcam indexes and sources without placeholders are returned unchanged.
 
+    `extra` values win over everything (the Camera settings page tests a typed, not yet saved password).
     Raises MissingVariables (a ValueError) listing every variable that isn't set.
     """
     if isinstance(source, int) or not placeholders(source):
         return source
-    if missing := missing_variables(source):
+    if missing := missing_variables(source, extra):
         raise MissingVariables(missing)
     text = str(source)
     values = _values()
+    extra = {k: v for k, v in (extra or {}).items() if v}
     userinfo_end = _userinfo_end(text)
 
     def substitute(m: re.Match) -> str:
-        value = lookup(m.group(1), values)
+        value = extra.get(m.group(1)) or lookup(m.group(1), values)
         return quote(value, safe="") if m.start() < userinfo_end else value
 
     return PLACEHOLDER.sub(substitute, text)

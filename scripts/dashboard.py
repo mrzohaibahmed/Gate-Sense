@@ -116,6 +116,7 @@ def main() -> int:
         "--server.port", str(config.DASHBOARD_PORT),
         "--server.headless", "true",
         "--browser.gatherUsageStats", "false",
+        "--client.toolbarMode", "minimal",  # no "Deploy" button or developer menu
     ]
     print(f"GateSense dashboard: {url()}  (stop it with stop.bat, or close this window)")
     config.RUN_DIR.mkdir(parents=True, exist_ok=True)

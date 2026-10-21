@@ -13,8 +13,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st  # noqa: E402
 
+from app import config  # noqa: E402
 from dashboard import auth  # noqa: E402
 from dashboard.common import claim_camera, manager  # noqa: E402
+
+config.refresh_cameras()  # pick up cameras.json edited or deleted by hand, without a restart
 
 st.set_page_config(page_title="GateSense", page_icon=":material/door_front:", layout="wide")
 
@@ -30,6 +33,7 @@ nav = st.navigation(
         st.Page("views/people.py", title="People", icon=":material/group:"),
         st.Page("views/enrollment.py", title="Enrollment", icon=":material/person_add:"),
         st.Page("views/cameras.py", title="Cameras", icon=":material/linked_camera:"),
+        st.Page("views/camera_settings.py", title="Camera settings", icon=":material/video_settings:"),
         st.Page("views/corrections.py", title="Corrections", icon=":material/edit_note:"),
         st.Page("views/settings.py", title="Settings", icon=":material/settings:"),
     ]

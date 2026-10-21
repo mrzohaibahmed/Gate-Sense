@@ -152,6 +152,12 @@ def add_person(conn, code: str, name: str, department: str | None, shift: str | 
     return cur.lastrowid
 
 
+def log_change(conn, user: str, action: str, target: str, details: dict, reason: str) -> None:
+    """Audit a settings change (e.g. cameras) that has no row of its own in the database."""
+    with conn:
+        _audit(conn, user, action, target, details, reason)
+
+
 def log_face_data_deleted(conn, code: str, details: dict, reason: str, user: str, deactivate: bool) -> None:
     """Audit a face-data deletion (photos and embeddings); attendance history is untouched."""
     with conn:

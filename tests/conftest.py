@@ -20,3 +20,7 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "RUN_DIR", data / "run")
     monkeypatch.setattr(config, "LOG_DIR", data / "logs")
     monkeypatch.setattr(config, "LIVE_DIR", data / "live")
+    # The real cameras.json (if any) must not leak into tests: start from the defaults every time.
+    monkeypatch.setattr(config, "CAMERAS_FILE", tmp_path / "cameras.json")
+    monkeypatch.setattr(config, "CAMERAS", [dict(c) for c in config.DEFAULT_CAMERAS])
+    monkeypatch.setattr(config, "_cameras_signature", None)  # matches the (missing) temporary cameras.json

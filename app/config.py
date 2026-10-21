@@ -100,6 +100,9 @@ LIVE_REFRESH_SECONDS = 5  # live events page auto-refresh
 LIVE_EVENT_LIMIT = 50  # events shown on the live page
 
 # --- Cameras ---------------------------------------------------------------
+# Cameras are normally managed on the dashboard's Camera settings page, which saves them to
+# CAMERAS_FILE (cameras.json in the project folder; no passwords in it). When that file exists it
+# replaces DEFAULT_CAMERAS below; delete it to go back to these defaults.
 # Run one recognize.py per camera: --camera <name>. The first entry is the default.
 # source: an int for a local webcam index, a video file path, or an RTSP URL.
 #   Never put a camera password here: use a ${VAR} placeholder and set the variable in .env
@@ -108,7 +111,7 @@ LIVE_EVENT_LIMIT = 50  # events shown on the live page
 # direction: "IN" for entrance, "OUT" for exit.
 # mirror (optional): show the live view flipped left-right, like a mirror. Display only; recognition
 #   uses the original frame. Handy for a webcam facing you; usually off for gate cameras.
-CAMERAS = [
+DEFAULT_CAMERAS = [
     {"name": "entrance", "source": 0, "direction": "IN", "mirror": True},
     # Testing with one webcam: entrance and exit share webcam 0, so run one at a time (two at once is refused).
     # With a second USB webcam, set this to 1 to run both together.
@@ -118,3 +121,49 @@ CAMERAS = [
     # {"name": "gate-exit", "direction": "OUT",
     #  "source": "rtsp://gatesense:${GATESENSE_CAM_PASS}@192.168.1.102:554/Streaming/Channels/101"},
 ]
+CAMERAS_FILE = Path(os.environ.get("GATESENSE_CAMERAS_FILE") or ROOT_DIR / "cameras.json")
+
+
+_cameras_signature = None  # (mtime, size) of the cameras file when CAMERAS was last loaded; None = no file
+
+
+def _signature(path: Path):
+    try:
+        st = path.stat()
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return None
+
+
+def refresh_cameras() -> bool:
+    """Reload CAMERAS if CAMERAS_FILE was changed, created or deleted since the last load (the dashboard
+    calls this on every page run, so hand edits apply without a restart). True if reloaded."""
+    global CAMERAS
+    if _signature(CAMERAS_FILE) == _cameras_signature:
+        return False
+    CAMERAS = load_cameras()
+    return True
+
+
+def load_cameras(path: Path | None = None) -> list[dict]:
+    """Cameras from CAMERAS_FILE if it exists (written by the Camera settings page), else DEFAULT_CAMERAS.
+
+    A file that can't be read falls back to the defaults (with a message) rather than stopping the app.
+    """
+    import json
+
+    global _cameras_signature
+    path = path or CAMERAS_FILE
+    _cameras_signature = _signature(path)
+    if not path.is_file():
+        return [dict(c) for c in DEFAULT_CAMERAS]
+    try:
+        entries = json.loads(path.read_text(encoding="utf-8"))["cameras"]
+        return [{"name": e["name"], "source": e["source"], "direction": e["direction"],
+                 "mirror": bool(e.get("mirror"))} for e in entries]
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"WARNING: could not read {path} ({e}); using DEFAULT_CAMERAS from app/config.py")
+        return [dict(c) for c in DEFAULT_CAMERAS]
+
+
+CAMERAS = load_cameras()
