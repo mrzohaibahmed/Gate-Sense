@@ -85,6 +85,13 @@ def _literal_password(url: str) -> bool:
     return bool(password) and not re.fullmatch(r"(\$\{[A-Za-z_][A-Za-z0-9_]*\})+", password)
 
 
+def public_source(source):
+    """The source as it may be shown: ${VAR} placeholders kept (they aren't secrets), a typed-in password masked."""
+    if isinstance(source, int):
+        return source
+    return mask_source(source) if _literal_password(str(source)) else str(source)
+
+
 def build(entry: dict, others: list[dict]) -> dict:
     """Validate a form entry and compute its `source`; raises ValueError with a message for the page."""
     e = {k: v for k, v in entry.items() if v is not None}
@@ -98,6 +105,8 @@ def build(entry: dict, others: list[dict]) -> dict:
         raise ValueError("direction must be IN (entrance) or OUT (exit)")
     kind = e.get("type")
     out = {"name": name, "direction": e["direction"], "mirror": bool(e.get("mirror")), "type": kind}
+    if e.get("roi"):
+        out["roi"] = check_roi(e["roi"])
 
     if kind == "webcam":
         index = int(e.get("index", 0))
@@ -141,6 +150,20 @@ def build(entry: dict, others: list[dict]) -> dict:
     else:
         raise ValueError(f"unknown camera type {kind!r}")
     return out
+
+
+def check_roi(roi) -> dict:
+    """Region of interest as fractions of the frame: {"x", "y", "w", "h"} in 0..1, inside the frame.
+
+    Stored with the camera; the worker doesn't apply it yet.
+    """
+    try:
+        x, y, w, h = (float(roi[k]) for k in ("x", "y", "w", "h"))
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("roi needs x, y, w and h as fractions of the frame (0 to 1)") from None
+    if not (0 <= x < 1 and 0 <= y < 1 and 0 < w <= 1 and 0 < h <= 1 and x + w <= 1.0001 and y + h <= 1.0001):
+        raise ValueError("roi must lie inside the frame: x, y from 0, w, h above 0, x + w and y + h at most 1")
+    return {"x": x, "y": y, "w": w, "h": h}
 
 
 def save(cams: list[dict], path: Path | None = None) -> None:
@@ -199,6 +222,8 @@ def upsert(entry: dict, user: str, conn, running: set[str] = frozenset(), passwo
     old = next((c for c in cams if c["name"] == entry.get("name")), None)
     if old:
         _check_stopped(old["name"], running)
+        if "roi" not in entry and old.get("roi"):  # the dashboard form has no ROI: keep the one set by the API
+            entry = {**entry, "roi": old["roi"]}
     others = [c for c in cams if c is not old]
     new = build(entry, others)
     if password:
@@ -245,7 +270,9 @@ def move(name: str, step: int) -> None:
 
 
 def test_connection(source, timeout: float = 12.0, frames=None, extra: dict | None = None) -> dict:
-    """Open the source briefly; returns {"ok", "width", "height", "codec", "frame", "error"} (error masked).
+    """Open the source briefly; returns {"ok", "width", "height", "fps", "codec", "frame", "error"} (error masked).
+
+    fps is what the camera or file reports (None if it doesn't say; webcams often don't).
 
     `extra`: variables not saved yet, e.g. a password typed in the form. `frames` is injectable for tests
     (anything with latest()/stop()/codec/last_error).
@@ -253,7 +280,7 @@ def test_connection(source, timeout: float = 12.0, frames=None, extra: dict | No
     from app.camera import open_capture
     from app.frame_source import FrameSource, kind, open_rtsp
 
-    result = {"ok": False, "width": None, "height": None, "codec": None, "frame": None, "error": None}
+    result = {"ok": False, "width": None, "height": None, "fps": None, "codec": None, "frame": None, "error": None}
     try:
         stream = sources.expand(source, extra)
     except sources.MissingVariables as e:
@@ -271,9 +298,13 @@ def test_connection(source, timeout: float = 12.0, frames=None, extra: dict | No
         while time.monotonic() < deadline:
             got = frames.latest()
             if got:
+                # The reader stores the first frame a moment before the source passes on codec and fps.
+                settle = time.monotonic() + 1.0
+                while getattr(frames, "codec", "") is None and time.monotonic() < settle:
+                    time.sleep(0.02)
                 frame = got[1]
                 result.update(ok=True, frame=frame.copy(), width=frame.shape[1], height=frame.shape[0],
-                              codec=getattr(frames, "codec", None))
+                              codec=getattr(frames, "codec", None), fps=getattr(frames, "reported_fps", None))
                 return result
             time.sleep(0.05)
         error = getattr(frames, "last_error", None)

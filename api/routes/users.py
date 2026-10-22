@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field, field_validator
 from api import auth
 from api.auth import CurrentUser, require_permission
 from api.db import parse_ts
+from api.paging import ListParams, Page, global_list_params, paginate
 from api.permissions import Role
+from api.schemas import Reason
 
 router = APIRouter(prefix="/api/users", tags=["users"], responses=auth.PROTECTED_RESPONSES)
 manage = require_permission("users:manage")
@@ -30,17 +32,6 @@ class UserOut(BaseModel):
 def out(row: dict) -> UserOut:
     return UserOut(**{**row, "created_at": parse_ts(row["created_at"]), "last_login_at": parse_ts(row["last_login_at"]),
                       "locked_until": parse_ts(row["locked_until"])})
-
-
-class Reason(BaseModel):
-    reason: str = Field(min_length=1, description="why (goes to the audit log)")
-
-    @field_validator("reason")
-    @classmethod
-    def not_blank(cls, v: str) -> str:
-        if not v.strip():
-            raise ValueError("a reason is required")
-        return v.strip()
 
 
 class NewUser(Reason):
@@ -79,9 +70,13 @@ def keep_an_admin(request: Request, row: dict, what: str) -> None:
         raise HTTPException(409, f"Can't {what} the last active admin.")
 
 
-@router.get("", response_model=list[UserOut])
-def list_users(request: Request, _: CurrentUser = Depends(manage)) -> list[UserOut]:
-    return [out(r) for r in auth.db_of(request).users()]
+@router.get("", response_model=Page[UserOut])
+def list_users(request: Request, params: ListParams = Depends(global_list_params),
+               _: CurrentUser = Depends(manage)) -> dict:
+    """User accounts aren't per site, so there is no site_id filter. Default sort: username."""
+    page = paginate(auth.db_of(request).users(), params, ("username", "full_name", "email", "role"),
+                    ("id", "username", "full_name", "role", "active", "created_at", "last_login_at"), "username")
+    return {**page, "items": [out(r) for r in page["items"]]}
 
 
 @router.post("", response_model=UserOut, status_code=201)
@@ -99,7 +94,7 @@ def create_user(body: NewUser, request: Request, admin: CurrentUser = Depends(ma
 
 
 @router.patch("/{user_id}/role", response_model=UserOut)
-def change_role(user_id: int, body: RoleChange, request: Request, admin: CurrentUser = Depends(manage)) -> UserOut:
+def change_user_role(user_id: int, body: RoleChange, request: Request, admin: CurrentUser = Depends(manage)) -> UserOut:
     row = target(request, user_id)
     if row["role"] == body.role:
         return out(row)
@@ -112,7 +107,7 @@ def change_role(user_id: int, body: RoleChange, request: Request, admin: Current
 
 
 @router.post("/{user_id}/deactivate", response_model=UserOut)
-def deactivate(user_id: int, body: Reason, request: Request, admin: CurrentUser = Depends(manage)) -> UserOut:
+def deactivate_user(user_id: int, body: Reason, request: Request, admin: CurrentUser = Depends(manage)) -> UserOut:
     row = target(request, user_id)
     if row["id"] == admin.id:
         raise HTTPException(409, "You can't deactivate your own account.")
@@ -124,7 +119,7 @@ def deactivate(user_id: int, body: Reason, request: Request, admin: CurrentUser 
 
 
 @router.post("/{user_id}/activate", response_model=UserOut)
-def activate(user_id: int, body: Reason, request: Request, admin: CurrentUser = Depends(manage)) -> UserOut:
+def activate_user(user_id: int, body: Reason, request: Request, admin: CurrentUser = Depends(manage)) -> UserOut:
     row = target(request, user_id)
     auth.db_of(request).update_user(user_id, {"active": 1, "failed_logins": 0, "locked_until": None},
                                     audit=(admin.username, "activate_user", {"active": [row["active"], 1]},
@@ -133,7 +128,7 @@ def activate(user_id: int, body: Reason, request: Request, admin: CurrentUser = 
 
 
 @router.post("/{user_id}/reset-password", response_model=UserOut)
-def reset_password(user_id: int, body: PasswordReset, request: Request,
+def reset_user_password(user_id: int, body: PasswordReset, request: Request,
                    admin: CurrentUser = Depends(manage)) -> UserOut:
     """Set a temporary password: the user must change it at next login. Ends their sessions and any lockout."""
     row = target(request, user_id)

@@ -185,6 +185,8 @@ class FrameSource:
             conn = _Connection(self.source, self._opener, self._store, self._clock)
             reason = self._watch(conn)
             conn.abandon()
+            if conn.frames and self.codec is None:  # it ended before being announced (e.g. a very short file)
+                self.codec, self.reported_fps = conn.codec, conn.reported_fps
             if reason is None:  # stopped
                 break
             was_live = conn.frames > 0

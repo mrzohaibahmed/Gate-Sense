@@ -58,6 +58,8 @@ env/
 # Site-specific camera list (IPs, user names), written by the Camera settings page.
 # cameras.example.json is the committed template.
 cameras.json
+# Settings changed through the API (PATCH /api/settings), applied over app/config.py.
+settings.json
 
 # Editors / OS
 .vscode/

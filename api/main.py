@@ -10,6 +10,7 @@ the health check needs a login and a permission (api/permissions.py).
 
 import time
 from contextlib import asynccontextmanager
+from functools import cache
 from datetime import datetime
 from typing import Literal
 
@@ -20,8 +21,8 @@ from starlette.concurrency import run_in_threadpool
 
 from api import __version__, auth
 from api.db import Database
+from api.routes import attendance, audit, cameras, people, settings, sites, users
 from api.routes import auth as auth_routes
-from api.routes import cameras, users
 from api.workers import WorkerManager
 from app import config
 
@@ -42,8 +43,17 @@ class Health(BaseModel):
     database: DatabaseStatus
 
 
-def create_app(workers: WorkerManager | None = None, database: Database | None = None) -> FastAPI:
-    """`workers` and `database` are injectable for tests."""
+@cache
+def face_models():
+    """Detector and recognizer for re-enrollment, loaded on first use (a few seconds)."""
+    from app.detector import Detector
+    from app.recognizer import Recognizer
+
+    return Detector(), Recognizer()
+
+
+def create_app(workers: WorkerManager | None = None, database: Database | None = None, models=None) -> FastAPI:
+    """`workers`, `database` and `models` (a callable returning (detector, recognizer)) are injectable for tests."""
     manager = workers or WorkerManager()
     database = database or Database()
 
@@ -61,8 +71,10 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
                 print(f"Camera {camera}: {result}", flush=True)
 
     app = FastAPI(title="GateSense API", version=__version__, lifespan=lifespan,
-                  description="Log in with POST /api/auth/login (it sets the session cookie this page then sends).")
+                  description="Log in with POST /api/auth/login (it sets the session cookie this page then sends).",
+                  generate_unique_id_function=lambda route: route.name)  # operation ids = function names
     app.state.workers, app.state.db, app.state.started = manager, database, time.time()
+    app.state.face_models = models or face_models
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.API_CORS_ORIGINS,
@@ -84,7 +96,6 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
             started=datetime.fromtimestamp(started), uptime_seconds=round(time.time() - started, 1), database=db,
         )
 
-    app.include_router(auth_routes.router)
-    app.include_router(users.router)
-    app.include_router(cameras.router)
+    for module in (auth_routes, users, attendance, people, cameras, sites, audit, settings):
+        app.include_router(module.router)
     return app

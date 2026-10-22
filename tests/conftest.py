@@ -24,3 +24,8 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CAMERAS_FILE", tmp_path / "cameras.json")
     monkeypatch.setattr(config, "CAMERAS", [dict(c) for c in config.DEFAULT_CAMERAS])
     monkeypatch.setattr(config, "_cameras_signature", None)  # matches the (missing) temporary cameras.json
+    # Likewise a real settings.json: tests start from the values written in app/config.py.
+    monkeypatch.setattr(config, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(config, "_settings_signature", None)
+    for name, value in config.DEFAULT_SETTINGS.items():
+        monkeypatch.setattr(config, name, value)

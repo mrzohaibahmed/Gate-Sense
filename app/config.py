@@ -171,6 +171,78 @@ DEFAULT_CAMERAS = [
 ]
 CAMERAS_FILE = Path(os.environ.get("GATESENSE_CAMERAS_FILE") or ROOT_DIR / "cameras.json")
 
+# --- Settings changed through the API (PATCH /api/settings) ------------------------------------------
+# Only these can be changed there. The changes are saved to SETTINGS_FILE (settings.json, git-ignored)
+# and applied over the values above when this module is imported, so app/config.py stays the one place
+# the code reads them from. A camera worker reads them when it starts: restart running cameras to apply.
+# name: (type, minimum, maximum, meaning)
+EDITABLE_SETTINGS = {
+    "MATCH_THRESHOLD": (float, 0.2, 0.9, "minimum cosine similarity to accept a match"),
+    "MATCH_MARGIN": (float, 0.0, 0.5, "the best person must beat the second-best by this much"),
+    "DET_THRESHOLD": (float, 0.1, 0.95, "minimum face detector confidence"),
+    "MIN_FACE_PX": (int, 20, 1000, "minimum face width in camera pixels"),
+    "MIN_BLUR_VAR": (float, 0.0, 1000.0, "minimum sharpness (variance of Laplacian)"),
+    "BEST_FRAMES_PER_TRACK": (int, 1, 20, "frames embedded and kept per tracked face"),
+    "VOTE_MIN_AGREE": (int, 1, 20, "kept frames one person must win to be recorded (at most BEST_FRAMES_PER_TRACK)"),
+    "TRACK_LOST_SECONDS": (float, 0.2, 30.0, "a track not seen for this long is closed"),
+    "COOLDOWN_SECONDS": (int, 0, 86400, "debounce: the same person on the same camera is ignored for this long"),
+    "PROCESS_FPS": (int, 1, 30, "frames processed per second"),
+}
+SETTINGS_FILE = Path(os.environ.get("GATESENSE_SETTINGS_FILE") or ROOT_DIR / "settings.json")
+DEFAULT_SETTINGS = {name: globals()[name] for name in EDITABLE_SETTINGS}  # the values written above
+_settings_signature = None
+
+
+def check_setting(name: str, value):
+    """The value converted to the setting's type; ValueError if it isn't editable or is out of range."""
+    if name not in EDITABLE_SETTINGS:
+        raise ValueError(f"{name} can't be changed here")
+    kind, low, high, _ = EDITABLE_SETTINGS[name]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or (kind is int and value != int(value)):
+        raise ValueError(f"{name} must be {'a whole number' if kind is int else 'a number'}")
+    value = kind(value)
+    if not low <= value <= high:
+        raise ValueError(f"{name} must be between {low} and {high}")
+    return value
+
+
+def load_settings(path: Path | None = None) -> dict:
+    """Apply SETTINGS_FILE over the defaults; returns the overrides applied. A bad file or value is skipped."""
+    import json
+
+    global _settings_signature
+    path = path or SETTINGS_FILE
+    _settings_signature = _signature(path)
+    values = dict(DEFAULT_SETTINGS)
+    overrides = {}
+    if path.is_file():
+        try:
+            stored = json.loads(path.read_text(encoding="utf-8"))["settings"]
+            for name, value in stored.items():
+                try:
+                    overrides[name] = values[name] = check_setting(name, value)
+                except ValueError as e:
+                    print(f"WARNING: {path.name}: {e}; using the default")
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+            print(f"WARNING: could not read {path} ({e}); using the settings in app/config.py")
+            overrides = {}
+            values = dict(DEFAULT_SETTINGS)
+    if values["VOTE_MIN_AGREE"] > values["BEST_FRAMES_PER_TRACK"]:
+        print("WARNING: VOTE_MIN_AGREE is more than BEST_FRAMES_PER_TRACK; using the defaults for both")
+        for name in ("VOTE_MIN_AGREE", "BEST_FRAMES_PER_TRACK"):
+            values[name] = DEFAULT_SETTINGS[name]
+            overrides.pop(name, None)
+    globals().update(values)
+    return overrides
+
+
+def refresh_settings() -> bool:
+    """Reload the settings if SETTINGS_FILE changed since the last load (like refresh_cameras). True if reloaded."""
+    if _signature(SETTINGS_FILE) == _settings_signature:
+        return False
+    load_settings()
+    return True
+
 
 _cameras_signature = None  # (mtime, size) of the cameras file when CAMERAS was last loaded; None = no file
 
@@ -215,3 +287,4 @@ def load_cameras(path: Path | None = None) -> list[dict]:
 
 
 CAMERAS = load_cameras()
+load_settings()

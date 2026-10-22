@@ -6,7 +6,8 @@ which picks a backend from ``config.DATABASE_URL`` (None = SQLite at
 dashboard and the camera workers share one schema and one set of queries
 (corrections and their audit rows included). Users and sessions (Phase 2)
 are queried here; every change to a user writes its audit row in the same
-transaction.
+transaction. The data endpoints (Phase 3) call app.db's functions wherever
+the dashboard has one, and page events and the audit log in SQL.
 
 Moving to PostgreSQL later means adding a backend here (and porting app.db's
 queries, which the camera workers use too); the API code stays as it is and
@@ -16,7 +17,7 @@ not supported, rather than silently using SQLite.
 
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from app import config
@@ -34,6 +35,11 @@ def ts(dt: datetime | None) -> str | None:
 
 def parse_ts(value: str | None) -> datetime | None:
     return None if value is None else datetime.fromisoformat(value)
+
+
+def like(text: str) -> str:
+    """A LIKE pattern matching `text` anywhere (its % and _ taken literally; use with ESCAPE '!')."""
+    return "%" + text.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
 
 
 USER_COLUMNS = ("id, username, full_name, email, role, password_hash, active, created_at, last_login_at, "
@@ -88,6 +94,15 @@ class Database:
         finally:
             conn.close()
 
+    @contextmanager
+    def conn(self):
+        """A plain connection, for app.db functions that manage their own transactions."""
+        conn = self.connect()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
     def status(self) -> dict:
         """{"status": "ok" | "missing" | "error", "backend": ..., "detail": ...}; never creates the database."""
         try:
@@ -117,6 +132,31 @@ class Database:
     def audit_entries(self, limit: int = 500) -> list[dict]:
         with self.transaction() as conn:
             return [dict(r) for r in app_db.audit_entries(conn, limit)]
+
+    AUDIT_SORT = {"timestamp": "timestamp", "id": "id", "user": "user", "action": "action", "target": "target"}
+
+    def audit_page(self, params, start: datetime | None = None, end: datetime | None = None,
+                   user: str | None = None, action: str | None = None) -> tuple[list[dict], int]:
+        """One page of the audit log; `end` is exclusive."""
+        from api.paging import limit_offset, order_by
+
+        where, args = [], []
+        for cond, value in (("timestamp >= ?", ts(start)), ("timestamp < ?", ts(end)), ("user = ?", user),
+                            ("action = ?", action)):
+            if value is not None:
+                where.append(cond)
+                args.append(value)
+        if params.q:
+            where.append("(" + " OR ".join(f"{col} LIKE ? ESCAPE '!'" for col in ("user", "target", "details",
+                                                                                   "reason")) + ")")
+            args += [like(params.q)] * 4
+        clause = ("WHERE " + " AND ".join(where) + " ") if where else ""
+        limit, page = limit_offset(params)
+        order = order_by(params, self.AUDIT_SORT, "-timestamp", "id DESC")
+        with self.conn() as conn:
+            total = conn.execute("SELECT count(*) FROM audit_log " + clause, args).fetchone()[0]
+            rows = conn.execute(f"SELECT * FROM audit_log {clause}{order} {limit}", (*args, *page)).fetchall()
+        return [dict(r) for r in rows], total
 
     # --- Users ---------------------------------------------------------------------
 
@@ -206,3 +246,154 @@ class Database:
     def session_count(self, user_id: int) -> int:
         with self.transaction() as conn:
             return conn.execute("SELECT count(*) FROM sessions WHERE user_id = ?", (user_id,)).fetchone()[0]
+
+    # --- Sites -----------------------------------------------------------------------
+
+    def sites(self) -> list[dict]:
+        with self.conn() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT s.id, s.name, s.timezone, "
+                "(SELECT count(*) FROM cameras c WHERE c.site_id = s.id) AS cameras, "
+                "(SELECT count(*) FROM persons p WHERE p.site_id = s.id) AS people FROM sites s")]
+
+    def site(self, site_id: int) -> dict | None:
+        return next((s for s in self.sites() if s["id"] == site_id), None)
+
+    def create_site(self, name: str, timezone: str, actor: str, reason: str) -> int:
+        with self.transaction() as conn:
+            cur = conn.execute("INSERT INTO sites (name, timezone) VALUES (?, ?)", (name, timezone))
+            app_db.write_audit(conn, actor, "add_site", f"site:{name}", {"timezone": timezone}, reason)
+            return cur.lastrowid
+
+    def update_site(self, site_id: int, changes: dict, actor: str, reason: str) -> None:
+        with self.transaction() as conn:
+            old = dict(conn.execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone())
+            diff = {k: [old[k], v] for k, v in changes.items() if old[k] != v}
+            if not diff:
+                return
+            sets = ", ".join(f"{k} = ?" for k in diff)
+            conn.execute(f"UPDATE sites SET {sets} WHERE id = ?", (*(v[1] for v in diff.values()), site_id))
+            app_db.write_audit(conn, actor, "edit_site", f"site:{old['name']}", diff, reason)
+
+    def delete_site(self, site_id: int, actor: str, reason: str) -> None:
+        with self.transaction() as conn:
+            old = conn.execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone()
+            conn.execute("DELETE FROM sites WHERE id = ?", (site_id,))
+            app_db.write_audit(conn, actor, "delete_site", f"site:{old['name']}", {"timezone": old["timezone"]},
+                               reason)
+
+    # --- People ------------------------------------------------------------------------
+
+    def people(self) -> list[dict]:
+        with self.conn() as conn:
+            return [dict(r) for r in conn.execute(
+                "SELECT p.id, p.employee_code, p.name, p.department, p.shift, p.active, p.site_id, "
+                "s.name AS site FROM persons p LEFT JOIN sites s ON s.id = p.site_id")]
+
+    def person(self, person_id: int) -> dict | None:
+        return next((p for p in self.people() if p["id"] == person_id), None)
+
+    def add_person(self, code: str, name: str, department: str | None, shift: str | None, site_id: int | None,
+                   actor: str, reason: str) -> int:
+        with self.conn() as conn:
+            return app_db.add_person(conn, code, name, department, shift, reason, actor, site_id)
+
+    def update_person(self, person_id: int, name: str, department: str | None, shift: str | None,
+                      site_id: int | None, actor: str, reason: str) -> None:
+        with self.conn() as conn:
+            app_db.update_person(conn, person_id, name, department, shift, reason, actor, site_id)
+
+    def set_person_active(self, person_id: int, active: bool, actor: str, reason: str) -> None:
+        with self.conn() as conn:
+            app_db.set_person_active(conn, person_id, active, reason, actor)
+
+    # --- Cameras (the list itself is cameras.json; the table gives ids and sites) ------------
+
+    def cameras(self, configured: list[dict]) -> list[dict]:
+        """Table rows for the configured cameras (added if missing, as the dashboard does)."""
+        with self.conn() as conn:
+            app_db.ensure_cameras(conn, configured)
+            return [dict(r) for r in conn.execute(
+                "SELECT c.id, c.name, c.direction, c.site_id, s.name AS site FROM cameras c "
+                "LEFT JOIN sites s ON s.id = c.site_id")]
+
+    def set_camera_row(self, name: str, source, direction: str, site_id: int | None) -> int:
+        """Add or update the camera's table row (source stored masked, as recognize.py does)."""
+        with self.conn() as conn:
+            camera_id = app_db.upsert_camera(conn, name, source, direction)
+            if site_id is not None:
+                with conn:
+                    conn.execute("UPDATE cameras SET site_id = ? WHERE id = ?", (site_id, camera_id))
+            return camera_id
+
+    def log_change(self, actor: str, action: str, target: str, details: dict, reason: str) -> None:
+        with self.conn() as conn:
+            app_db.log_change(conn, actor, action, target, details, reason)
+
+    def events_by_camera(self, day: date) -> dict[int, int]:
+        """Non-voided events per camera id on `day`."""
+        start, end = day.isoformat(), (day + timedelta(days=1)).isoformat()
+        with self.conn() as conn:
+            return {r[0]: r[1] for r in conn.execute(
+                "SELECT camera_id, count(*) FROM attendance_events WHERE timestamp >= ? AND timestamp < ? "
+                "AND voided = 0 GROUP BY camera_id", (start, end))}
+
+    # --- Daily attendance (the same summaries as the dashboard's Today page) ---------------
+
+    def day_summaries(self, day: date) -> tuple[list, dict[str, int]]:
+        with self.conn() as conn:
+            return app_db.day_summaries(conn, day)
+
+    # --- Events ----------------------------------------------------------------------------
+
+    EVENT_SORT = {"timestamp": "e.timestamp", "id": "e.id", "name": "p.name", "employee_code": "p.employee_code",
+                  "camera": "c.name", "direction": "c.direction", "score": "e.match_score"}
+
+    def events(self, params, start: datetime | None = None, end: datetime | None = None,
+               camera_id: int | None = None, direction: str | None = None,
+               person_id: int | None = None) -> tuple[list[dict], int]:
+        """One page of raw events (manual and voided ones included); `end` is exclusive."""
+        from api.paging import limit_offset, order_by
+
+        where, args = [], []
+        for cond, value in (("e.timestamp >= ?", ts(start)), ("e.timestamp < ?", ts(end)),
+                            ("e.camera_id = ?", camera_id), ("c.direction = ?", direction),
+                            ("e.person_id = ?", person_id), ("c.site_id = ?", params.site_id)):
+            if value is not None:
+                where.append(cond)
+                args.append(value)
+        if params.q:
+            where.append("(" + " OR ".join(f"{col} LIKE ? ESCAPE '!'" for col in ("p.name", "p.employee_code",
+                                                                                   "c.name")) + ")")
+            args += [like(params.q)] * 3
+        clause = ("WHERE " + " AND ".join(where) + " ") if where else ""
+        limit, page = limit_offset(params)
+        order = order_by(params, self.EVENT_SORT, "-timestamp", "e.id DESC")
+        with self.conn() as conn:
+            total = conn.execute("SELECT count(*) FROM attendance_events e JOIN persons p ON p.id = e.person_id "
+                                 "JOIN cameras c ON c.id = e.camera_id " + clause, args).fetchone()[0]
+            rows = conn.execute(f"{app_db.EVENT_COLUMNS}{clause}{order} {limit}", (*args, *page)).fetchall()
+        return [dict(r) for r in rows], total
+
+    def event(self, event_id: int) -> dict | None:
+        with self.conn() as conn:
+            row = conn.execute(app_db.EVENT_COLUMNS + "WHERE e.id = ?", (event_id,)).fetchone()
+        return dict(row) if row else None
+
+    def recent_events(self, person_id: int, since: date) -> list[dict]:
+        with self.conn() as conn:
+            return [dict(r) for r in conn.execute(
+                app_db.EVENT_COLUMNS + "WHERE e.person_id = ? AND e.timestamp >= ? ORDER BY e.timestamp DESC",
+                (person_id, since.isoformat()))]
+
+    def add_manual_event(self, person_id: int, camera_id: int, when: datetime, actor: str, reason: str) -> int:
+        with self.conn() as conn:
+            return app_db.add_manual_event(conn, person_id, camera_id, when, reason, actor)
+
+    def edit_event_time(self, event_id: int, when: datetime, actor: str, reason: str) -> None:
+        with self.conn() as conn:
+            app_db.edit_event_time(conn, event_id, when, reason, actor)
+
+    def set_event_voided(self, event_id: int, voided: bool, actor: str, reason: str) -> None:
+        with self.conn() as conn:
+            app_db.set_event_voided(conn, event_id, voided, reason, actor)

@@ -18,6 +18,8 @@ in PRAGMA user_version and run by connect() in one transaction. They only add
 tables, columns and rows; nothing existing is changed or deleted. Before the
 first step runs on a database that has data, a copy goes to backups/ next to it.
 Step 1 adds the API's users, sessions and sites (every camera in one default site).
+Step 2 gives people a site too, and events an original_timestamp: the time an
+event had before its first correction (edit_event_time keeps it).
 """
 
 import json
@@ -139,7 +141,17 @@ def _v1_users_sessions_sites(conn: sqlite3.Connection) -> None:
     conn.execute(f"UPDATE cameras SET site_id = {DEFAULT_SITE} WHERE site_id IS NULL")
 
 
-VERSIONS = [_v1_users_sessions_sites]  # PRAGMA user_version = how many of these have run
+def _v2_person_sites_original_times(conn: sqlite3.Connection) -> None:
+    """Data endpoints (Phase 3): persons.site_id (existing people in the default site) and
+    attendance_events.original_timestamp (set when a correction first changes an event's time)."""
+    if "site_id" not in _columns(conn, "persons"):
+        conn.execute("ALTER TABLE persons ADD COLUMN site_id INTEGER REFERENCES sites(id)")
+    conn.execute(f"UPDATE persons SET site_id = {DEFAULT_SITE} WHERE site_id IS NULL")
+    if "original_timestamp" not in _columns(conn, "attendance_events"):
+        conn.execute("ALTER TABLE attendance_events ADD COLUMN original_timestamp TEXT")
+
+
+VERSIONS = [_v1_users_sessions_sites, _v2_person_sites_original_times]  # PRAGMA user_version = how many have run
 
 
 def _has_data(conn) -> bool:
@@ -234,7 +246,8 @@ def sync_persons(conn: sqlite3.Connection, codes: list[str], removed: list[str] 
     with conn:
         for code in codes:
             conn.execute(
-                "INSERT INTO persons (employee_code, name) VALUES (?, ?) ON CONFLICT(employee_code) DO NOTHING",
+                f"INSERT INTO persons (employee_code, name, site_id) VALUES (?, ?, {DEFAULT_SITE}) "
+                "ON CONFLICT(employee_code) DO NOTHING",
                 (code, code),
             )
         for code in removed:
@@ -242,17 +255,22 @@ def sync_persons(conn: sqlite3.Connection, codes: list[str], removed: list[str] 
 
 
 def add_person(conn, code: str, name: str, department: str | None, shift: str | None,
-               reason: str, user: str) -> int:
-    """Add a new active person (from the dashboard's Enrollment page)."""
+               reason: str, user: str, site_id: int | None = None) -> int:
+    """Add a new active person (dashboard Enrollment page, API). `site_id` None = the default site."""
     if not name.strip():
         raise ValueError("name is required")
     if conn.execute("SELECT 1 FROM persons WHERE employee_code = ?", (code,)).fetchone():
         raise ValueError(f"employee code {code!r} already exists")
     row = {"name": name.strip(), "department": (department or "").strip() or None,
            "shift": (shift or "").strip() or None}
+    if site_id is not None:
+        _site(conn, site_id)
+        row["site_id"] = site_id
     with conn:
-        cur = conn.execute("INSERT INTO persons (employee_code, name, department, shift) VALUES (?, ?, ?, ?)",
-                           (code, row["name"], row["department"], row["shift"]))
+        cur = conn.execute(
+            f"INSERT INTO persons (employee_code, name, department, shift, site_id) "
+            f"VALUES (?, ?, ?, ?, COALESCE(?, {DEFAULT_SITE}))",
+            (code, row["name"], row["department"], row["shift"], site_id))
         _audit(conn, user, "add_person", f"person:{code}", row, reason)
     return cur.lastrowid
 
@@ -291,6 +309,20 @@ def list_persons(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute("SELECT * FROM persons ORDER BY name").fetchall()
 
 
+def _site(conn, site_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"no site with id {site_id}")
+    return row
+
+
+def _site(conn, site_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"no site with id {site_id}")
+    return row
+
+
 def _person(conn, person_id: int) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM persons WHERE id = ?", (person_id,)).fetchone()
     if row is None:
@@ -307,18 +339,22 @@ def set_person_active(conn, person_id: int, active: bool, reason: str, user: str
 
 
 def update_person(conn, person_id: int, name: str, department: str | None, shift: str | None,
-                  reason: str, user: str) -> None:
+                  reason: str, user: str, site_id: int | None = None) -> None:
+    """Change name, department, shift (and site, if given); audited with the old and new values."""
     if not name.strip():
         raise ValueError("name is required")
     new = {"name": name.strip(), "department": (department or "").strip() or None, "shift": (shift or "").strip() or None}
+    if site_id is not None:
+        _site(conn, site_id)
+        new["site_id"] = site_id
     with conn:
         old = _person(conn, person_id)
         changes = {k: [old[k], v] for k, v in new.items() if old[k] != v}
         if not changes:
             return
         _audit(conn, user, "edit_person", f"person:{old['employee_code']}", changes, reason)
-        conn.execute("UPDATE persons SET name = ?, department = ?, shift = ? WHERE id = ?",
-                     (new["name"], new["department"], new["shift"], person_id))
+        sets = ", ".join(f"{k} = ?" for k in new)
+        conn.execute(f"UPDATE persons SET {sets} WHERE id = ?", (*new.values(), person_id))
 
 
 # --- Cameras ------------------------------------------------------------------
@@ -370,7 +406,8 @@ def add_event(
 
 
 EVENT_COLUMNS = (
-    "SELECT e.id, e.timestamp, e.match_score, e.snapshot_path, e.manual, e.voided, "
+    "SELECT e.id, e.timestamp, e.match_score, e.snapshot_path, e.manual, e.voided, e.original_timestamp, "
+    "e.person_id, e.camera_id, c.site_id, "
     "p.employee_code, p.name, c.name AS camera, c.direction FROM attendance_events e "
     "JOIN persons p ON p.id = e.person_id JOIN cameras c ON c.id = e.camera_id "
 )
@@ -411,11 +448,13 @@ def add_manual_event(conn, person_id: int, camera_id: int, timestamp: datetime, 
 
 
 def edit_event_time(conn, event_id: int, timestamp: datetime, reason: str, user: str) -> None:
+    """Re-time an event. The time before its first correction stays in original_timestamp (and the audit log)."""
     with conn:
         old = _event(conn, event_id)
         _audit(conn, user, "edit_event", f"event:{event_id}",
                {"person": old["employee_code"], "timestamp": [old["timestamp"], _ts(timestamp)]}, reason)
-        conn.execute("UPDATE attendance_events SET timestamp = ? WHERE id = ?", (_ts(timestamp), event_id))
+        conn.execute("UPDATE attendance_events SET original_timestamp = COALESCE(original_timestamp, timestamp), "
+                     "timestamp = ? WHERE id = ?", (_ts(timestamp), event_id))
 
 
 def set_event_voided(conn, event_id: int, voided: bool, reason: str, user: str) -> None:
@@ -453,14 +492,22 @@ def events_for_day(conn: sqlite3.Connection, day: date) -> list[Event]:
     return [Event(r["employee_code"], datetime.fromisoformat(r["timestamp"]), r["direction"]) for r in rows]
 
 
-def refresh_daily(conn: sqlite3.Connection, day: date) -> list[DaySummary]:
-    """Recompute daily_attendance for `day` from the raw events and return it."""
+def day_summaries(conn: sqlite3.Connection, day: date) -> tuple[list[DaySummary], dict[str, int]]:
+    """A day's summaries (every active person, plus anyone with events), and employee_code -> person id.
+
+    Read-only: the Today page (via refresh_daily) and the API both use this, so they always agree.
+    """
     ids = person_ids(conn)
     events = events_for_day(conn, day)
     # Include people with events even if they were deactivated since.
     for code in {e.person for e in events} - ids.keys():
         ids[code] = conn.execute("SELECT id FROM persons WHERE employee_code = ?", (code,)).fetchone()["id"]
-    summaries = summarize_day(events, list(ids))
+    return summarize_day(events, list(ids)), ids
+
+
+def refresh_daily(conn: sqlite3.Connection, day: date) -> list[DaySummary]:
+    """Recompute daily_attendance for `day` from the raw events and return it."""
+    summaries, ids = day_summaries(conn, day)
     with conn:
         conn.execute("DELETE FROM daily_attendance WHERE date = ?", (day.isoformat(),))
         for s in summaries:

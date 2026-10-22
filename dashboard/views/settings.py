@@ -4,9 +4,10 @@ import streamlit as st
 from app import config
 from app.camera import mask_source
 
+config.refresh_settings()  # pick up changes made through the API (settings.json)
 st.title("Settings")
-st.caption("Read-only. Change values in app/config.py, then restart the dashboard and the camera workers. "
-           "Cameras are added and edited on the Camera settings page.")
+st.caption("Read-only. Change values in app/config.py (or, as an admin, through the API's /api/settings), then "
+           "restart the camera workers. Cameras are added and edited on the Camera settings page.")
 
 GROUPS = {
     "Recognition": [

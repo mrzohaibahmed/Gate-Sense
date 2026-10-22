@@ -40,24 +40,24 @@ def test_existing_database_keeps_its_data(tmp_path, capsys):
     before = dump(path)
 
     conn = db.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.VERSIONS) == 1
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.VERSIONS) == 2
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert {"users", "sessions", "sites"} <= tables
     sites = [tuple(r) for r in conn.execute("SELECT id, name, timezone FROM sites")]
     assert sites == [(1, config.DEFAULT_SITE_NAME, config.DEFAULT_SITE_TIMEZONE)]
     assert [r["site_id"] for r in conn.execute("SELECT site_id FROM cameras ORDER BY id")] == [1, 1]
+    assert [r["site_id"] for r in conn.execute("SELECT site_id FROM persons ORDER BY id")] == [1, 1]
+    assert [r[0] for r in conn.execute("SELECT original_timestamp FROM attendance_events")] == [None, None]
     conn.close()
 
     after = dump(path)
-    for table in OLD_TABLES:
-        if table == "cameras":  # the same rows, plus the new site_id column
-            assert [row[:-1] for row in after[table]] == before[table]
-        else:
-            assert after[table] == before[table], table
+    for table in OLD_TABLES:  # the same rows; cameras, persons and events have one new column at the end
+        grown = table in ("cameras", "persons", "attendance_events")
+        assert [row[:-1] if grown else row for row in after[table]] == before[table], table
 
     backups = list((tmp_path / "backups").glob("attendance-v0-*.db"))
     assert len(backups) == 1 and dump(backups[0]) == before  # the untouched copy
-    assert "upgraded from version 0 to 1" in capsys.readouterr().out
+    assert "upgraded from version 0 to 2" in capsys.readouterr().out
 
     db.connect(path).close()  # already upgraded: nothing runs, no second copy
     assert len(list((tmp_path / "backups").iterdir())) == 1 and dump(path) == after
@@ -66,7 +66,7 @@ def test_existing_database_keeps_its_data(tmp_path, capsys):
 def test_new_database_gets_everything_without_a_backup(tmp_path):
     path = tmp_path / "new.db"
     conn = db.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
     cam = db.upsert_camera(conn, "gate", 0, "IN")
     db.ensure_cameras(conn, [{"name": "gate2", "source": 1, "direction": "OUT"}])
     assert [r["site_id"] for r in conn.execute("SELECT site_id FROM cameras ORDER BY id")] == [1, 1] and cam == 1
@@ -79,4 +79,20 @@ def test_connect_without_migrate_skips_the_checks(tmp_path):
     db.connect(path).close()
     conn = db.connect(path, migrate=False)
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    conn.close()
+
+
+def test_a_correction_keeps_the_original_time(tmp_path):
+    from datetime import datetime
+
+    conn = db.connect(tmp_path / "c.db")
+    db.sync_persons(conn, ["1234"])
+    cam = db.upsert_camera(conn, "entrance", 0, "IN")
+    pid = db.person_ids(conn)["1234"]
+    assert conn.execute("SELECT site_id FROM persons WHERE id = ?", (pid,)).fetchone()[0] == 1
+    eid = db.add_event(conn, pid, cam, datetime(2026, 10, 20, 9, 1), 0.7, None)
+    db.edit_event_time(conn, eid, datetime(2026, 10, 20, 8, 55), "badge was earlier", "hr1")
+    db.edit_event_time(conn, eid, datetime(2026, 10, 20, 8, 50), "checked the CCTV", "hr1")
+    row = conn.execute("SELECT timestamp, original_timestamp FROM attendance_events WHERE id = ?", (eid,)).fetchone()
+    assert tuple(row) == ("2026-10-20 08:50:00", "2026-10-20 09:01:00")  # the first time is kept
     conn.close()

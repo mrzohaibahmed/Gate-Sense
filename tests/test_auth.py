@@ -3,6 +3,7 @@
 A fake clock replaces api.auth.now, so lockout and session expiry are tested without waiting.
 """
 
+import re
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -204,7 +205,7 @@ def test_usernames_are_case_insensitive(app):
 ENDPOINTS = {
     "me": ("GET", "/api/auth/me", None),
     "cameras": ("GET", "/api/cameras", None),
-    "camera start": ("POST", "/api/cameras/no-such-camera/start", None),  # past the check: 404
+    "camera start": ("POST", "/api/cameras/99999/start", None),  # past the check: 404
     "users": ("GET", "/api/users", None),
     "create user": ("POST", "/api/users", {"username": "made-by-{role}", "role": "viewer",
                                             "password": "temporary-pw-1", "reason": "new starter"}),
@@ -250,7 +251,7 @@ def test_every_endpoint_except_login_and_health_needs_a_login(app):
     assert len(paths) >= 10
     public_seen = set()
     for path, methods in paths.items():
-        url = path.replace("{user_id}", "1").replace("{name}", "entrance")
+        url = re.sub(r"\{[^}]+\}", "1", path)
         for method in methods:
             if path in PUBLIC_PATHS:
                 public_seen.add(path)
@@ -262,8 +263,12 @@ def test_every_endpoint_except_login_and_health_needs_a_login(app):
 
 @pytest.fixture
 def camera_app(clock, tmp_path):
+    from app import camera_settings
+
+    camera_settings.save([{**c, "type": "webcam" if isinstance(c["source"], int) else "file", "mirror": False}
+                          for c in CAMERAS])  # the camera list the API shows = the fake workers' cameras
     run, logs, live_dir = tmp_path / "run", tmp_path / "logs", tmp_path / "live"
-    inner = AppWorkerManager(CAMERAS, script=FAKE, run_dir=run, log_dir=logs, live_dir=live_dir,
+    inner = AppWorkerManager(None, script=FAKE, run_dir=run, log_dir=logs, live_dir=live_dir,
                              extra_args=("--no-window", "--run-dir", str(run), "--frames", "--live-dir", str(live_dir)))
     application = create_app(workers=WorkerManager(inner))
     try:
@@ -276,13 +281,14 @@ def camera_app(clock, tmp_path):
 
 def test_guard_starts_and_stops_a_camera_viewer_cannot(camera_app):
     guard, viewer = as_role(camera_app, "guard"), as_role(camera_app, "viewer")
-    assert viewer.post("/api/cameras/c/start").status_code == 403
-    r = guard.post("/api/cameras/c/start")
+    c = {cam["name"]: cam for cam in viewer.get("/api/cameras").json()["items"]}["c"]["id"]
+    assert viewer.post(f"/api/cameras/{c}/start").status_code == 403
+    r = guard.post(f"/api/cameras/{c}/start")
     assert r.status_code == 200 and r.json()["held_by"] == "api"
-    wait_for(lambda: {c["camera"]: c for c in viewer.get("/api/cameras").json()}["c"]["state"] == "running")
-    busy = guard.post("/api/cameras/c/start")
+    wait_for(lambda: guard.get(f"/api/cameras/{c}").json()["worker"]["state"] == "running")
+    busy = guard.post(f"/api/cameras/{c}/start")
     assert busy.status_code == 409 and "already running" in busy.json()["detail"]
-    assert guard.post("/api/cameras/c/stop").json() == {"camera": "c", "result": "stopped cleanly"}
+    assert guard.post(f"/api/cameras/{c}/stop").json() == {"camera": "c", "result": "stopped cleanly"}
     assert [(a["user"], a["target"]) for a in audit(camera_app, "start_camera")] == [("guard1", "camera:c")]
     assert [(a["user"], a["target"]) for a in audit(camera_app, "stop_camera")] == [("guard1", "camera:c")]
 
@@ -373,7 +379,7 @@ def test_admin_creates_users_with_a_temporary_password(app):
     row = audit(app, "create_user")[-1]
     assert (row["user"], row["target"], row["reason"]) == ("admin", "user:sara.k", "new HR officer")
     assert "temporary-pw-1" not in row["details"] and "argon2" not in row["details"]
-    assert [u["username"] for u in a.get("/api/users").json()] == ["admin", "sara.k"]
+    assert [u["username"] for u in a.get("/api/users").json()["items"]] == ["admin", "sara.k"]
 
     c, r = login(app, "sara.k", "temporary-pw-1")
     assert r.json()["must_change_password"] is True
