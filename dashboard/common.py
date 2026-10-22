@@ -9,7 +9,7 @@ from contextlib import closing
 import streamlit as st
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 
-from app import config, db
+from app import config, db, workers
 from app.workers import WorkerManager
 
 
@@ -20,21 +20,28 @@ def _camera_claims() -> dict[str, float]:
 
 
 def claim_camera(on: bool) -> None:
-    """Record whether this browser session has the Enrollment page camera switched on."""
+    """Record whether this browser session has the Enrollment page camera switched on.
+
+    Also written to data/run/_enrollment_camera.json, so the API refuses webcam workers while it is on.
+    """
     ctx = get_script_run_ctx()
     sid = ctx.session_id if ctx else "no-session"
+    claims = _camera_claims()
     if on:
-        _camera_claims()[sid] = time.time()
-    else:
-        _camera_claims().pop(sid, None)
+        claims[sid] = time.time()
+    elif claims.pop(sid, None) is None:
+        return  # nothing changed (every page run calls this)
+    workers.write_enrollment_claims(dict(claims))
 
 
 def camera_claimed() -> bool:
     """Is the Enrollment camera on in any session? (Claims expire after ENROLL_CAMERA_CLAIM_SECONDS.)"""
     claims = _camera_claims()
-    for sid, seen in list(claims.items()):
-        if time.time() - seen > config.ENROLL_CAMERA_CLAIM_SECONDS:
-            claims.pop(sid, None)
+    expired = [sid for sid, seen in claims.items() if time.time() - seen > config.ENROLL_CAMERA_CLAIM_SECONDS]
+    for sid in expired:
+        claims.pop(sid, None)
+    if expired:
+        workers.write_enrollment_claims(dict(claims))
     return bool(claims)
 
 

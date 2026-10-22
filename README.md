@@ -82,7 +82,7 @@ Before relying on a camera, check its picture (stop that camera's worker first i
 .venv\Scripts\python -m app.probe_camera 0 --seconds 10                # webcam index or a video file
 ```
 
-For 20 seconds (or `--seconds`) it prints the codec, resolution, input fps, time per frame, and the width and score of every face it detects. Walk past the camera while it runs. The summary gives the median face width in the frame the worker processes (resized to 640 px) and warns "faces too small" if it is under 80 px. One snapshot with the face boxes is saved to `data/probe/<camera>_<time>.jpg` (git-ignored). Passwords are masked.
+For 20 seconds (or `--seconds`) it prints the codec, resolution, input fps, time per frame, and the width and score of every face it detects. Walk past the camera while it runs. The summary gives the median face width in camera pixels (the worker detects on a 640 px copy, but checks quality and recognizes on the full-resolution frame) and warns "faces too small" if it is under 80 px. One snapshot with the face boxes is saved to `data/probe/<camera>_<time>.jpg` (git-ignored). Passwords are masked.
 
 ## Record attendance
 
@@ -125,7 +125,7 @@ start.bat                                          # or, in this window:
 Open http://localhost:8501. Stop with `stop.bat` (or Ctrl+C in the dashboard window). It listens on localhost only (`DASHBOARD_HOST` in `app/config.py`) and Streamlit's usage statistics are turned off. Pages:
 
 - **Live events**: the latest recorded attendance events with snapshot thumbnails, refreshing every 5 seconds. Only events show here: a face appears once its vote is won, and not again during the 5-minute cool-down.
-- **Live view**: each running camera's latest processed frame (face boxes, track ID, name or "unknown", score, skip reason), refreshing every second, with fps and frame age, plus its last 20 decisions: skips, unknowns (below threshold, low margin), matches with the vote count, events and cool-downs. A frame older than 5 seconds shows "camera not sending frames". The same view is at the top of the Cameras page.
+- **Live view**: each running camera's latest processed frame (face boxes, track ID, name or "unknown", score, skip reason), refreshing every second, with fps and frame age, plus its last 20 decisions with the face width in camera pixels: skips, unknowns (below threshold, low margin), matches with the vote count, events and cool-downs. A frame older than 5 seconds shows "camera not sending frames". The same view is at the top of the Cameras page.
 - **Today**: counts and a table of who is present, missing an exit, missing an entry or absent.
 - **Reports**: daily or monthly reports, downloadable as Excel or CSV.
 - **People**: list everyone, edit name, department and shift, activate or deactivate. Inactive people are not recorded by the cameras.
@@ -135,6 +135,16 @@ Open http://localhost:8501. Stop with `stop.bat` (or Ctrl+C in the dashboard win
 - **Camera settings**: add, edit, test and remove cameras: webcam (number), Hikvision IP camera (IP, port, user, password, channel, main/sub stream; the RTSP URL is built for you), another RTSP camera (URL with `${VARIABLE}` for the password) or a video file, plus direction (IN/OUT) and mirror. **Test connection** shows one picture with its resolution and codec. Cameras are saved to `cameras.json` in the project folder (git-ignored, because IPs and user names belong to each site; `cameras.example.json` is the committed template, and hand edits to `cameras.json` are picked up without a restart); a Hikvision password goes to `.env` as `GATESENSE_CAM_<NAME>_PASS`, never into `cameras.json`, and is never shown again (only "set" / "NOT SET"). A running camera must be stopped before it can be changed or deleted; names can't be changed after creation. Every change is in the audit log.
 - **Settings**: read-only view of the thresholds, vote and cool-down settings and camera sources (RTSP passwords hidden).
 - **Corrections**: add a manual event (for example a missing OUT), change an event's time, or void and restore an event. A reason is required and every change goes to the audit log, which can be viewed and exported. Nothing is deleted.
+
+## API (FastAPI, first phase)
+
+A JSON API runs next to the dashboard, for a future web front end (a Vite dev server on `http://localhost:5173` is the only browser origin allowed):
+
+```
+start-api.bat                         (or: .venv\Scripts\python -m api.run)
+```
+
+It listens on `http://127.0.0.1:8000` (this PC only; `API_HOST` / `API_PORT` in `app/config.py`). `GET /api/health` returns the version, uptime and database status; interactive docs are at `/docs`. Press Ctrl+C in its window to stop it: camera workers it started are stopped first. A camera can only run in one process at a time: the API refuses a camera that the dashboard, the command line or the API already runs (or the webcam while the dashboard's Enrollment camera is on), and the worker itself locks the camera so two starts at the same moment can't both open it. There is no login on the API yet, so it has no endpoints that change anything.
 
 ## Tests
 

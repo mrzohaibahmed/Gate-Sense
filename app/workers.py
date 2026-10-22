@@ -4,9 +4,14 @@ Protocol (files under config.RUN_DIR, so CLI-started workers are visible too):
 - <camera>.json  status written by the worker every WORKER_STATUS_SECONDS:
                  pid, source, started, updated, state (loading/running/stopped), fps, reason.
 - <camera>.stop  created by the manager to ask the worker to exit cleanly.
-A worker started by the dashboard also gets --parent-pid and exits by itself
-if the dashboard process is gone, so stopping the dashboard leaves no orphans.
-Worker output goes to config.LOG_DIR/<camera>.log.
+- camera-<camera>.lock, webcam-<index>.lock  OS locks the worker holds while it runs
+                 (acquire_camera), so two processes can never open the same camera, even
+                 when the dashboard and the API start it at the same moment.
+- _enrollment_camera.json  the dashboard's Enrollment camera switch, so other processes
+                 (the API) know the webcam is taken.
+A worker started by the dashboard (or the API) also gets --parent-pid, which it
+writes to its status file, and exits by itself if that process is gone, so
+stopping the dashboard leaves no orphans. Worker output goes to config.LOG_DIR/<camera>.log.
 """
 
 import json
@@ -104,6 +109,97 @@ def dashboard_pid(run_dir: Path | None = None) -> int | None:
     return data["pid"] if data and pid_alive(data.get("pid")) else None
 
 
+def dashboard_pids(run_dir: Path | None = None) -> set[int]:
+    """The running dashboard's launcher and Streamlit PIDs (a worker it started has the Streamlit one as parent)."""
+    data = _read_json(status_path(DASHBOARD, run_dir))
+    if not data or not pid_alive(data.get("pid")):
+        return set()
+    return {pid for pid in (data.get("pid"), data.get("streamlit_pid")) if pid}
+
+
+ENROLL_CAMERA = "_enrollment_camera"  # file name for the dashboard's Enrollment camera switch
+
+
+def write_enrollment_claims(sessions: dict[str, float], run_dir: Path | None = None) -> None:
+    """Mirror the dashboard's Enrollment camera claims ({session id: last seen}) to a file other processes read."""
+    path = status_path(ENROLL_CAMERA, run_dir)
+    if sessions:
+        _write_json(path, {"pid": os.getpid(), "sessions": sessions})
+    else:
+        path.unlink(missing_ok=True)
+
+
+def enrollment_camera_claimed(run_dir: Path | None = None) -> int | None:
+    """PID of the dashboard whose Enrollment page has the camera switched on (claims expire), else None."""
+    data = _read_json(status_path(ENROLL_CAMERA, run_dir))
+    if not data or not pid_alive(data.get("pid")):
+        return None
+    now = time.time()
+    fresh = any(now - seen <= config.ENROLL_CAMERA_CLAIM_SECONDS for seen in data.get("sessions", {}).values())
+    return data["pid"] if fresh else None
+
+
+class ProcessLock:
+    """An exclusive OS lock on <run dir>/<key>.lock, held until release() or the end of the process.
+
+    The operating system drops it when the process ends, even when it is killed, so a crashed worker never
+    leaves a stale lock behind. Only workers take these locks; managers never probe them (a probe could make
+    a worker that is starting at that moment fail).
+    """
+
+    def __init__(self, key: str, run_dir: Path | None = None):
+        self.path = Path(run_dir or config.RUN_DIR) / f"{key}.lock"
+        self._file = None
+
+    def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        f = open(self.path, "a+b")
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            return False
+        self._file = f
+        return True
+
+    def release(self) -> None:
+        if self._file is None:
+            return
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                self._file.seek(0)
+                msvcrt.locking(self._file.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            self._file.close()
+            self._file = None
+
+
+def acquire_camera(camera: str, source, run_dir: Path | None = None) -> list[ProcessLock] | None:
+    """Lock the camera (and its webcam index) for this process; None if another process holds either."""
+    keys = [f"camera-{camera}"]
+    if source is not None and is_webcam(parse_source(str(source))):
+        keys.append(f"webcam-{parse_source(str(source))}")
+    held = []
+    for key in keys:
+        lock = ProcessLock(key, run_dir)
+        if not lock.acquire():
+            for other in held:
+                other.release()
+            return None
+        held.append(lock)
+    return held
+
+
 def live_status(camera: str, run_dir: Path | None = None) -> dict | None:
     """The camera's status if its worker process is alive and hasn't reported stopping, else None."""
     data = _read_json(status_path(camera, run_dir))
@@ -180,7 +276,7 @@ class WorkerRuntime:
             if state == "stopped":
                 health["state"] = "stopped"
         _write_json(self.status_file, {
-            "camera": self.camera, "pid": os.getpid(),
+            "camera": self.camera, "pid": os.getpid(), "parent_pid": self.parent_pid,
             "source": self.source if self.source is None or isinstance(self.source, int) else mask_source(self.source),
             "started": self.started.isoformat(timespec="seconds"), "updated": time.time(),
             "state": state, "fps": round(self.fps, 1), "frames": self.frames, "reason": reason,
@@ -235,6 +331,7 @@ class WorkerStatus:
     detail: str = ""  # stop reason or exit code of the last run
     warning: str | None = None  # camera problem reported by the worker
     health: dict | None = None  # frame source health (state, size, fps, last frame, reconnects, last error)
+    parent_pid: int | None = None  # the process that started it (--parent-pid); None = command line
 
 
 class WorkerManager:
@@ -300,10 +397,15 @@ class WorkerManager:
                 return WorkerStatus(
                     name, state, data["pid"], datetime.fromisoformat(data["started"]), data.get("fps"),
                     cam["source"] if data.get("source") is None else data["source"], managed=proc is not None,
-                    warning=data.get("warning"), health=data.get("health"),
+                    warning=data.get("warning"), health=data.get("health"), parent_pid=data.get("parent_pid"),
                 )
             detail = (data or {}).get("reason") or self._exit.get(name, "")
             return WorkerStatus(name, "stopped", source=cam["source"], detail=detail)
+
+    def managed(self) -> list[str]:
+        """Cameras whose worker this process started and is still running."""
+        with self._lock:
+            return [name for name in list(self._procs) if self._proc(name)]
 
     def statuses(self) -> list[WorkerStatus]:
         return [self.status(c["name"]) for c in self.cameras]
@@ -393,7 +495,7 @@ class WorkerManager:
 
     def stop_all(self) -> None:
         """Stop every worker this dashboard started (called when the dashboard exits)."""
-        for name in list(self._procs):
+        for name in self.managed():
             try:
                 self.stop(name)
             except Exception:  # noqa: BLE001  best effort at shutdown

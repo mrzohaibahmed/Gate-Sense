@@ -6,9 +6,10 @@
 
 Opens the source through FrameSource (RTSP: FFmpeg over TCP; webcams and files:
 the normal OpenCV opener), runs for 20 seconds and prints the codec, resolution,
-input fps, time per frame, and the width and score of every detected face. The
-summary warns when the median face is narrower than MIN_FACE_PX in the frame the
-worker processes (resized to FRAME_WIDTH). One snapshot with face boxes is saved
+input fps, time per frame, and the width and score of every detected face. Like
+the worker, it detects on a FRAME_WIDTH copy and measures faces in camera pixels;
+the summary warns when the median face is narrower than MIN_FACE_PX camera pixels
+(the quality filter's limit). One snapshot with face boxes is saved
 to data/probe/<camera>_<time>.jpg (git-ignored: it may show faces). Camera
 passwords are masked in all output. Runs alongside nothing else on a webcam:
 stop that camera's worker first.
@@ -27,7 +28,7 @@ import cv2
 
 from app import config, sources
 from app.camera import mask_source, open_capture, parse_source
-from app.detector import resize_to_width
+from app.detector import detection_scale, resize_to_width, scale_detection
 from app.frame_source import FrameSource, kind, open_rtsp
 from app.images import write_image
 
@@ -50,8 +51,8 @@ class ProbeResult:
 
     @property
     def median_width(self) -> float | None:
-        """Median face width in the processed frame (what the quality filter checks)."""
-        return statistics.median(f[2] for f in self.faces) if self.faces else None
+        """Median face width in camera pixels (what the worker's quality filter checks)."""
+        return statistics.median(f[1] for f in self.faces) if self.faces else None
 
     @property
     def too_small(self) -> bool:
@@ -108,14 +109,14 @@ def probe(source, label: str, seconds: float, detector, frames=None, out=print,
             detect_times.append(time.perf_counter() - t0)
             result.frames += 1
             last_frame = frame
-            scale = frame.shape[1] / small.shape[1]
+            scale = detection_scale(frame, small)
             boxes = []
             for d in dets:
-                cam_px = round(d.width * scale)
-                result.faces.append((t, cam_px, d.width, d.score))
-                out(f"  t={t:5.1f}s  face width {cam_px:4d} px (camera), {d.width:3d} px (processed)  "
+                full = scale_detection(d, scale)  # the same face in camera pixels, as in the worker
+                result.faces.append((t, full.width, d.width, d.score))
+                out(f"  t={t:5.1f}s  face width {full.width:4d} px (camera), {d.width:3d} px (processed)  "
                     f"score {d.score:.2f}")
-                boxes.append((d.bbox * scale, cam_px, d.score))
+                boxes.append((full.bbox, full.width, d.score))
             if boxes and (best is None or len(boxes) > len(best[2])):
                 best = (len(boxes), frame, boxes)
     finally:
@@ -159,13 +160,13 @@ def report(r: ProbeResult, shown: str, out=print) -> None:
     if r.median_width is None:
         out("Faces      none detected: stand or walk where people will pass the camera.")
     else:
-        widths = [f[1] for f in r.faces]
-        out(f"Faces      median width {r.median_width:.0f} px in the processed {config.FRAME_WIDTH} px frame "
-            f"({statistics.median(widths):.0f} px in the camera image); quality filter needs {config.MIN_FACE_PX} px")
+        processed = statistics.median(f[2] for f in r.faces)
+        out(f"Faces      median width {r.median_width:.0f} px in the camera image ({processed:.0f} px in the "
+            f"{config.FRAME_WIDTH} px detection frame); quality filter needs {config.MIN_FACE_PX} camera px")
         if r.too_small:
             out(f"WARNING: {SMALL_FACES}")
-            out(f"         (Frames are resized to {config.FRAME_WIDTH} px wide before detection, so a higher "
-                "resolution alone keeps faces the same width there; zoom or distance does change it.)")
+            out("         (The quality filter and recognition use the camera's full resolution, so a higher "
+                "resolution, zoom or a closer camera all help.)")
     if r.snapshot:
         out(f"Snapshot   {r.snapshot}")
 

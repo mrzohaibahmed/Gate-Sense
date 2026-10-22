@@ -10,4 +10,8 @@ python-dotenv==1.2.4
 streamlit-webrtc==0.79.0
 aiortc==1.15.0
 av==17.1.0
+fastapi==0.159.1
+uvicorn[standard]==0.54.0
+pydantic==2.14.1
+httpx2==2.16.0  # FastAPI's TestClient (starlette.testclient)
 pytest==9.1.1

@@ -5,6 +5,10 @@ back with its box, detector score and 5 landmarks (left eye, right eye, nose,
 left mouth corner, right mouth corner). Before a face is embedded it must pass
 the quality filter: wide enough, sharp enough and roughly facing the camera.
 All limits come from ``app.config``.
+
+The camera workers detect on a FRAME_WIDTH copy of the frame (``resize_to_width``)
+and move each face back to the camera's pixels with ``scale_detection``, so the
+quality filter, the embedding and the snapshot all use the full-resolution frame.
 """
 
 from dataclasses import dataclass
@@ -67,6 +71,21 @@ def resize_to_width(img: np.ndarray, width: int = config.FRAME_WIDTH) -> np.ndar
     return cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
 
+def detection_scale(frame: np.ndarray, small: np.ndarray) -> float:
+    """Factor from `small` (``resize_to_width(frame)``) back to `frame` pixels.
+
+    resize_to_width scales both axes by the same factor, so the width ratio is exact for y as well.
+    """
+    return frame.shape[1] / small.shape[1]
+
+
+def scale_detection(det: Detection, scale: float) -> Detection:
+    """The same face in an image `scale` times as large: box and landmarks in that image's pixels."""
+    if scale == 1:
+        return det
+    return Detection(bbox=det.bbox * scale, kps=det.kps * scale, score=det.score)
+
+
 def blur_score(img: np.ndarray, bbox: np.ndarray) -> float | None:
     """Variance of Laplacian of the face crop resized to 112x112; None if the crop is empty."""
     h, w = img.shape[:2]
@@ -103,7 +122,10 @@ def quality_score(det: Detection) -> float:
 
 
 def check_quality(img: np.ndarray, det: Detection) -> str | None:
-    """Return why the face fails the quality filter, or None if it passes."""
+    """Return why the face fails the quality filter, or None if it passes.
+
+    Measured in `img`'s pixels: the worker passes the full-resolution frame, so MIN_FACE_PX is camera pixels.
+    """
     if det.width < config.MIN_FACE_PX:
         return f"too small ({det.width}px < {config.MIN_FACE_PX})"
     blur = blur_score(img, det.bbox)

@@ -11,6 +11,7 @@
 - No model training. Enroll each person from 5 to 10 photos, turned into 512-d embeddings.
 - Match by cosine similarity with a configurable threshold, starting at 0.45.
 - CPU speed: process 5 to 10 fps, detect on frames about 640 px wide, recognize only the best few frames per person.
+- Full resolution after detection: the worker detects and tracks on the `FRAME_WIDTH` copy (`resize_to_width`), then `detector.scale_detection(det, detection_scale(frame, small))` moves box and landmarks to camera pixels; the quality filter (`MIN_FACE_PX` = camera px), ArcFace alignment and snapshot use the full frame. Tracking, voting, cool-down, the drawn view and the live JPEG stay at detection size. A frame already ≤ 640 px (webcam) isn't resized, so it's the same frame and detection objects as before. Live decisions carry `face_px` (camera px); the probe's median/warning are camera px too.
 - Load only the `detection` and `recognition` modules (`allowed_modules`); buffalo_s also ships gender/age and landmark models we don't use.
 - Tracking: ByteTrack from **supervision** (MIT), pinned to **0.30.9**, the last release that includes it (0.31 moved it to Roboflow's separate `trackers` package). Not Ultralytics (AGPL).
 - Per track: embed only the best `BEST_FRAMES_PER_TRACK` frames; record when one person wins `VOTE_MIN_AGREE` of them.
@@ -18,6 +19,9 @@
 - Cool-down per (person, camera), seeded from the DB on start. For video files, event time = run start + video position.
 - Storage: SQLite at `data/attendance.db` (WAL mode for several camera processes). Embeddings stay in `data/gallery.npz` for now. Day = calendar date (shift windows later).
 - Dashboard: **Streamlit** (single Python app reading `data/attendance.db`), bound to **localhost**. FastAPI + React maybe later.
+- API (Phase 1, FastAPI): `api/` next to `app/` and the dashboard; `python -m api.run` / `start-api.bat` serve `api.main:create_app` (factory) on `API_HOST:API_PORT` (127.0.0.1:8000). CORS only for `API_CORS_ORIGINS` (`http://localhost:5173`, Vite). No login yet, so no routes that change anything until auth exists; only `GET /api/health` (version, uptime, database status; 503 if the database can't be read; never creates it). Pinned: fastapi 0.159.1, uvicorn[standard] 0.54.0, pydantic 2.14.1; tests need httpx2 2.16.0 (starlette 1.9's TestClient warns on plain httpx).
+- API workers: `api.workers.WorkerManager` wraps `app.workers.WorkerManager` (same recognize.py processes and run-dir files as the dashboard); started in the lifespan (`open()` writes `data/run/_api.json`, a second API is refused) and `close()` stops the workers this API started, in parallel. `start()` raises `CameraBusy` when any process already runs the camera (says who: `held_by` = api / dashboard / command line / other, from `parent_pid` in the worker status file and `_dashboard.json`'s pids), when another worker has the same webcam, or while the dashboard's Enrollment camera is on (`dashboard/common.claim_camera` mirrors claims to `data/run/_enrollment_camera.json`). Backstop: recognize.py takes OS locks `camera-<name>.lock` and `webcam-<index>.lock` (`workers.acquire_camera`, msvcrt/fcntl; freed by the OS even on a kill) before opening the camera, so simultaneous starts can't both open it. Managers never probe the locks.
+- API database: `api/db.py` `Database` is the API's only data access; backend from `config.DATABASE_URL` (env `GATESENSE_DATABASE_URL`; None = SQLite at `DB_PATH`), SQLite reuses `app.db`. `postgresql://` is recognised and refused ("not supported yet"); PostgreSQL needs a backend there plus porting `app.db` (the workers use it too).
 - Admin login: one password from `GATESENSE_ADMIN_PASSWORD`, read from the environment or from `.env` in the project root (python-dotenv, `override=False`, so a real environment variable wins). Loaded by both `scripts/dashboard.py` and `dashboard/auth.py` via `app/env.py`. Never hard-code, print or log it; only say where it was found. No password in either = refuse to run. `.env` is git-ignored; `.env.example` is the template. Tests never read the real `.env` (see `tests/conftest.py`).
 - Corrections never delete: add manual events, re-time, void/restore. Every change (events and people) needs a reason and writes `audit_log` in the same transaction.
 - `enroll.py` adds new people and deactivates removed ones (folder gone from known/), but never re-activates someone an admin deactivated. People added on the dashboard with no photos yet are not deactivated.
@@ -63,6 +67,11 @@ app/
   workers.py     worker runtime (status/stop files, parent watchdog) and WorkerManager
   live.py        live frame + decisions writer/reader, stale-frame message, camera health
   fileutil.py    atomic writes (temp file + os.replace with Windows retries)
+api/
+  main.py        FastAPI app factory create_app(workers, database): lifespan, CORS, GET /api/health
+  workers.py     WorkerManager for the API: holder, CameraBusy, fps/last frame/last error, open/close
+  db.py          Database: the API's only data access; backend from config.DATABASE_URL
+  run.py         `python -m api.run`: uvicorn on API_HOST:API_PORT (refuses if already running / port taken)
 dashboard/
   main.py        Streamlit entry (login gate + navigation); not app.py, which would shadow the app package
   auth.py        admin login
@@ -78,10 +87,12 @@ scripts/
   today.py       print a day's attendance (--date)
   dashboard.py   start the dashboard on DASHBOARD_HOST:DASHBOARD_PORT (--open, --preflight)
   stop.py        stop all camera workers, then the dashboard (stop.bat)
-start.bat, stop.bat    Windows double-click start/stop
+start.bat, stop.bat    Windows double-click start/stop (dashboard)
+start-api.bat          Windows double-click start of the API (Ctrl+C stops it and its workers)
 known/<person>/*.jpg   enrollment photos (git-ignored)
 data/                  gallery.npz, attendance.db, snapshots/, run/, logs/, live/ (all git-ignored)
-tests/                 pytest tests (fakes.py: fake detector/recognizer; fake_worker.py: fake recognize.py)
+tests/                 pytest tests (fakes.py: fake detector/recognizer; fake_worker.py: fake recognize.py,
+                       --frames = fake frame source; test_api.py: FastAPI TestClient)
 ```
 
 The InsightFace models download to `%USERPROFILE%\.insightface\models\buffalo_s` on first run.
@@ -100,6 +111,7 @@ All commands from the project root, using the venv:
 .venv\Scripts\python scripts\today.py                                      # today's attendance
 .venv\Scripts\python -m app.probe_camera entrance                          # check a camera's picture (20 s)
 start.bat / stop.bat                                                       # start / stop everything (double-click)
+.venv\Scripts\python -m api.run                                            # API on 127.0.0.1:8000 (or start-api.bat)
 .venv\Scripts\python scripts\dashboard.py                                  # dashboard (password from .env or env var)
 .venv\Scripts\python -m pytest                                             # tests (dashboard via AppTest)
 ```

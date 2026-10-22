@@ -27,11 +27,11 @@ MODEL_MODULES = ["detection", "recognition"]  # skip the pack's gender/age and l
 
 # --- Detection -------------------------------------------------------------
 DET_SIZE = (640, 640)  # detector input size
-FRAME_WIDTH = 640  # frames are resized to this width before detection
+FRAME_WIDTH = 640  # frames are resized to this width for detection only (quality, embedding: full frame)
 DET_THRESHOLD = 0.5  # minimum detector confidence
 
 # --- Quality filter (applied before embedding) ----------------------------
-MIN_FACE_PX = 80  # minimum face box width in pixels
+MIN_FACE_PX = 80  # minimum face box width in camera pixels (full-resolution frame, not the FRAME_WIDTH copy)
 MIN_BLUR_VAR = 60.0  # minimum variance of Laplacian on the face resized to 112x112 (lower = blurrier)
 MAX_YAW_RATIO = 0.30  # nose offset from the eye midpoint / eye distance (0 = facing straight on)
 PITCH_RANGE = (0.25, 0.75)  # (nose - eyes) / (mouth - eyes) vertically; about 0.5 when level
@@ -126,6 +126,14 @@ ENV_PATH = Path(os.environ.get("GATESENSE_ENV_FILE") or ROOT_DIR / ".env")
 DASHBOARD_USER = "admin"  # name written to the audit log
 LIVE_REFRESH_SECONDS = 5  # live events page auto-refresh
 LIVE_EVENT_LIMIT = 50  # events shown on the live page
+
+# --- API (FastAPI, api/) --------------------------------------------------------
+API_HOST = "127.0.0.1"  # bind address: this PC only
+API_PORT = 8000
+API_CORS_ORIGINS = ["http://localhost:5173"]  # browsers may call the API only from the Vite dev server
+# Database URL for the API's data-access module (api/db.py). None = SQLite at DB_PATH. sqlite:/// URLs work
+# today; a postgresql:// URL is recognised and reported as not supported until that backend is written.
+DATABASE_URL = os.environ.get("GATESENSE_DATABASE_URL") or None
 
 # --- Cameras ---------------------------------------------------------------
 # Cameras are normally managed on the dashboard's Camera settings page, which saves them to

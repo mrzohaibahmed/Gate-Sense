@@ -82,16 +82,32 @@ def test_no_faces():
     assert any("none detected" in line for line in out)
 
 
-def test_widths_in_camera_and_processed_pixels():
-    class Fixed:
-        def detect(self, img):  # one 100 px face in the processed (resized) frame
-            return [Detection(np.array([100, 100, 200, 200], np.float32), np.zeros((5, 2), np.float32), 0.8)]
+class Fixed:
+    def __init__(self, size=100):
+        self.size = size
 
+    def detect(self, img):  # one face of `size` px in the processed (resized) frame
+        assert img.shape[1] == config.FRAME_WIDTH
+        box = np.array([100, 100, 100 + self.size, 100 + self.size], np.float32)
+        return [Detection(box, np.zeros((5, 2), np.float32), 0.8)]
+
+
+def test_widths_in_camera_and_processed_pixels():
     out = []
     big = np.zeros((720, 1280, 3), np.uint8)
     r = run(source_of(big), out, detector=Fixed())
     assert r.faces[0][1:3] == (200, 100)  # 1280 px camera frame is processed at 640 px
-    assert r.median_width == 100  # the 80 px check uses the processed frame, like the quality filter
+    assert r.median_width == 200  # the 80 px check uses camera pixels, like the worker's quality filter
+    assert "median width 200 px in the camera image (100 px in the 640 px detection frame)" in "\n".join(out)
+
+
+def test_small_in_detection_frame_but_wide_enough_in_camera_pixels():
+    out = []
+    r = run(source_of(np.zeros((1080, 1920, 3), np.uint8)), out, detector=Fixed(40))
+    assert r.faces[0][1:3] == (120, 40)  # 40 px at 640 is 120 camera px: passes MIN_FACE_PX
+    assert not r.too_small and not any("WARNING" in line for line in out)
+    r = run(source_of(np.zeros((1080, 1920, 3), np.uint8)), out, detector=Fixed(20))
+    assert r.median_width == 60 and r.too_small  # 60 camera px is too small
 
 
 def test_snapshot_has_face_boxes():

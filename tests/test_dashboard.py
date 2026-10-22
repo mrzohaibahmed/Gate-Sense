@@ -100,7 +100,7 @@ def test_live_view_shows_frame_and_decisions(monkeypatch, tmp_db):
     w = live.LiveWriter("entrance")
     w.decision("skip", 1, detail="blurry (var 41 < 60)")
     w.decision("unknown", 1, "waqas", 0.41, None, "below threshold")
-    w.decision("match", 2, "waqas", 0.62, None, "vote 1/3")
+    w.decision("match", 2, "waqas", 0.62, None, "vote 1/3", face_px=150)
     w.frame(np.full((48, 64, 3), 120, np.uint8), fps=7.9)
 
     at = logged_in(monkeypatch)
@@ -111,6 +111,7 @@ def test_live_view_shows_frame_and_decisions(monkeypatch, tmp_db):
     df = at.dataframe[0].value
     assert list(df["Decision"]) == ["✅ match", "❌ unknown", "⏭ skip"]  # newest first
     assert list(df["Detail"]) == ["vote 1/3", "below threshold", "blurry (var 41 < 60)"]
+    assert df["Face px"].iloc[0] == 150 and df["Face px"].iloc[1:].isna().all()  # camera pixels; none given
 
 
 def test_live_view_stale_frame(monkeypatch, tmp_db):

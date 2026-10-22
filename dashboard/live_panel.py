@@ -34,9 +34,12 @@ def render(status: WorkerStatus) -> None:
         st.dataframe(
             pd.DataFrame([{
                 "Time": d["time"], "Track": d["track"], "Decision": KINDS.get(d["kind"], d["kind"]),
-                "Name": d["name"] or "", "Score": d["score"], "Second": d["second"], "Detail": d["detail"],
+                "Name": d["name"] or "", "Score": d["score"], "Second": d["second"],
+                "Face px": d.get("face_px"), "Detail": d["detail"],  # face_px: camera pixels (absent in old files)
             } for d in decisions]),
             hide_index=True,
+            column_config={"Face px": st.column_config.NumberColumn(
+                "Face px", format="%d", help="Face width in camera pixels (full-resolution frame)")},
         )
     else:
         st.caption("No decisions yet: no face has been tracked on this camera.")

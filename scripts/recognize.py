@@ -1,8 +1,11 @@
 """Attendance worker for one camera: recognize, track, vote and record IN/OUT events.
 
 Run one instance per camera from app/config.py CAMERAS. Each frame (about
-PROCESS_FPS per second, ~FRAME_WIDTH px) goes through: detect -> ByteTrack ->
-quality filter -> embed the track's best frames -> match -> vote. When a
+PROCESS_FPS per second) goes through: detect -> ByteTrack -> quality filter ->
+embed the track's best frames -> match -> vote. Detection and tracking run on
+a FRAME_WIDTH px copy; the faces are then scaled back to the camera's pixels,
+so the quality filter (MIN_FACE_PX is camera pixels), the ArcFace alignment
+and the snapshot use the full-resolution frame. When a
 track's vote is won, an event is written to data/attendance.db with a face
 snapshot in data/snapshots/, unless the person is still in the cool-down for
 this camera. Every match decision is logged (time, track, name or unknown,
@@ -41,7 +44,9 @@ import cv2  # noqa: E402
 from app import config, db, frame_source, sources, workers  # noqa: E402
 from app.attendance import Cooldown  # noqa: E402
 from app.camera import is_live, mask_source, open_capture, parse_source  # noqa: E402
-from app.detector import Detector, check_quality, quality_score, resize_to_width  # noqa: E402
+from app.detector import (  # noqa: E402
+    Detector, check_quality, detection_scale, quality_score, resize_to_width, scale_detection,
+)
 from app.gallery import Gallery, Match  # noqa: E402
 from app.images import crop_face, write_image  # noqa: E402
 from app.live import CameraHealth, LiveWriter  # noqa: E402
@@ -130,6 +135,9 @@ class Recorder:
 class Pipeline:
     """Detect, track, check quality, embed, match, vote and record one frame; returns the annotated view.
 
+    Detection, tracking and the view use the FRAME_WIDTH copy; the quality filter, embedding and snapshot use
+    the full-resolution frame, with each face's box and landmarks scaled back to it.
+
     With `mirror`, only the returned view is flipped left-right (like a mirror or a video call); detection,
     recognition and snapshots use the original frame, the same orientation as the enrollment photos.
     """
@@ -143,10 +151,26 @@ class Pipeline:
         self.tracks: dict[int, TrackState] = {}
         self.times = deque(maxlen=20)
         self.stats = Counter()
+        self.frame_size: tuple[int, int] | None = None  # camera frame (width, height), logged when it changes
+
+    def log_size(self, frame, small, stamp: str) -> None:
+        """Log the camera and detection sizes on the first frame, and again if the camera's resolution changes."""
+        size = (frame.shape[1], frame.shape[0])
+        if size == self.frame_size:
+            return
+        self.frame_size = size
+        full, det = f"{size[0]}x{size[1]}", f"{small.shape[1]}x{small.shape[0]}"
+        if small is frame:
+            print(f"{stamp}  frame size {full}: detection and recognition both at {full} (no resize)")
+        else:
+            print(f"{stamp}  frame size {full}: detection at {det} (scale {detection_scale(frame, small):.2f}), "
+                  f"quality filter, embeddings and snapshots at the full {full}")
 
     def process(self, frame, t: float, now: datetime, stamp: str):
         t0 = time.perf_counter()
         small = resize_to_width(frame)
+        scale = detection_scale(frame, small)
+        self.log_size(frame, small, stamp)
         marks = []  # (bbox, color, text, thickness), drawn at the end onto the (possibly mirrored) view
 
         def mark(det, color, text, thickness=2):
@@ -167,28 +191,30 @@ class Pipeline:
             if track.decided:
                 mark(det, GREEN, f"#{tid} {track.decided}")
                 continue
-            skip = check_quality(small, det)
+            full = scale_detection(det, scale)  # the same face in the camera's pixels
+            skip = check_quality(frame, full)
             if skip:
                 print(f"{stamp}  track{tid:<4} {'skip':<12} {skip}")
                 self.stats[f"skip: {skip.split(' (')[0]}"] += 1
-                self.live.decision("skip", tid, detail=skip)
+                self.live.decision("skip", tid, detail=skip, face_px=full.width)
                 mark(det, GRAY, f"#{tid} skip: {skip.split(' (')[0]}")
                 continue
-            q = quality_score(det)
+            q = quality_score(full)
             if not track.wants(q):
                 mark(det, YELLOW, f"#{tid} ...")
                 continue
-            m = self.gallery.match(self.recognizer.embed(small, det))
+            m = self.gallery.match(self.recognizer.embed(frame, full))
             log_match(stamp, tid, m)
-            track.add(Sample(q, m, crop_face(small, det.bbox, config.SNAPSHOT_SIZE)))
+            track.add(Sample(q, m, crop_face(frame, full.bbox, config.SNAPSHOT_SIZE)))
             if m.name:
                 self.stats["matched"] += 1
                 votes = sum(s.match.name == m.name for s in track.samples)
                 self.live.decision("match", tid, m.name, m.score, m.second_score,
-                                   f"vote {votes}/{config.VOTE_MIN_AGREE}")
+                                   f"vote {votes}/{config.VOTE_MIN_AGREE}", face_px=full.width)
             else:
                 self.stats[f"unknown: {m.reason}"] += 1
-                self.live.decision("unknown", tid, m.best_name, m.score, m.second_score, m.reason)
+                self.live.decision("unknown", tid, m.best_name, m.score, m.second_score, m.reason,
+                                   face_px=full.width)
             mark(det, GREEN if m.name else RED, f"#{tid} {m.name or 'unknown'} {m.score:.2f}")
             won = track.vote()
             if won:
@@ -239,6 +265,12 @@ def main() -> int:
     if other:
         print(f"ERROR: webcam {source} is already in use by the {other} worker.")
         return 1
+    # Held until this process ends, so a second process (dashboard, API or command line) can't open this camera
+    # or webcam even if it passed the checks above at the same moment.
+    locks = workers.acquire_camera(cam["name"], source)
+    if locks is None:
+        print(f"ERROR: {cam['name']} (or its webcam) is already open in another worker process.")
+        return 1
 
     runtime = workers.WorkerRuntime(cam["name"], source, args.parent_pid)
     live = LiveWriter(cam["name"])
@@ -248,6 +280,8 @@ def main() -> int:
     finally:
         runtime.close(reason)
         live.clear()
+        for lock in locks:
+            lock.release()
         print(f"Worker stopped: {reason}")
     return 1 if reason in FAILURES or reason.startswith("missing environment variable") else 0
 
