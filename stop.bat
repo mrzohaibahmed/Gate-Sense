@@ -1,5 +1,5 @@
 @echo off
-rem GateSense: stop every camera worker cleanly, then the dashboard.
+rem GateSense: stop every camera worker cleanly, then the app.
 setlocal
 cd /d "%~dp0"
 set "PY=.venv\Scripts\python.exe"

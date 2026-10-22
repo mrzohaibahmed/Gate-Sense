@@ -6,6 +6,11 @@ the first admin if there are no users (api/auth.py), opens the worker manager
 started. Browsers may call the API only from config.API_CORS_ORIGINS (the
 Vite dev server), with the session cookie. Every endpoint except login and
 the health check needs a login and a permission (api/permissions.py).
+
+GateSense runs as one app: the built web dashboard (web/dist) is served at /
+(api/web.py), with security headers and a request size limit on everything
+(api/security.py), and the nightly backup / snapshot cleanup runs inside the
+lifespan (api/maintenance.py).
 """
 
 import asyncio
@@ -20,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from api import __version__, auth
+from api import __version__, auth, maintenance, security, web
 from api.db import Database
 from api.live import EventHub, FrameHub
 from api.routes import attendance, audit, cameras, enrollment, live, people, settings, sites, system, users
@@ -67,10 +72,12 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
             print(message, flush=True)
         manager.open(f"http://{config.API_HOST}:{config.API_PORT}")
         live_updates = asyncio.create_task(app.state.events.run())
+        nightly = asyncio.create_task(maintenance.run_loop(database))
         try:
             yield
         finally:
             live_updates.cancel()
+            nightly.cancel()
             for camera, result in await run_in_threadpool(manager.close):
                 print(f"Camera {camera}: {result}", flush=True)
 
@@ -104,4 +111,8 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
 
     for module in (auth_routes, users, attendance, people, enrollment, live, cameras, sites, audit, settings, system):
         app.include_router(module.router)
+    web.mount(app)  # last: its catch-all route sends every other path to the dashboard
+    # Outermost last: the size limit and the headers apply to everything, CORS answers included.
+    app.add_middleware(security.BodySizeLimit)
+    app.add_middleware(security.SecurityHeaders)
     return app

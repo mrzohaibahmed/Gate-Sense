@@ -29,3 +29,11 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "_settings_signature", None)
     for name, value in config.DEFAULT_SETTINGS.items():
         monkeypatch.setattr(config, name, value)
+    # Tests log in many times a minute from one address: a fresh, generous login rate limit for each test
+    # (tests/test_production.py checks the real one). The web build is never the real web/dist.
+    from api import auth
+
+    monkeypatch.setattr(config, "LOGIN_RATE_LIMIT", 10_000)
+    monkeypatch.setattr(auth, "login_limit", auth.RateLimit())
+    monkeypatch.setattr(config, "WEB_DIST", tmp_path / "no-web-dist")
+    monkeypatch.setattr(config, "MAINTENANCE_CHECK_SECONDS", 3600)

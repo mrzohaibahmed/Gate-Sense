@@ -122,6 +122,7 @@ ENROLL_CAMERA_CLAIM_SECONDS = 600  # the Enrollment page camera switch blocks we
 
 # --- Processing rate -------------------------------------------------------
 PROCESS_FPS = 8  # frames per second actually processed (5 to 10 on CPU)
+SNAPSHOT_RETENTION_DAYS = 30  # the nightly job deletes event snapshots older than this (the events stay)
 
 # --- Attendance --------------------------------------------------------------
 COOLDOWN_SECONDS = 5 * 60  # ignore the same person on the same camera for this long
@@ -138,9 +139,35 @@ LIVE_REFRESH_SECONDS = 5  # live events page auto-refresh
 LIVE_EVENT_LIMIT = 50  # events shown on the live page
 
 # --- API (FastAPI, api/) --------------------------------------------------------
-API_HOST = "127.0.0.1"  # bind address: this PC only
-API_PORT = 8000
+# GateSense runs as one app: the API also serves the built web dashboard (web/dist) at /.
+
+
+def _server_setting(name: str) -> str | None:
+    """A server setting from the environment, else from .env (read here only; .env is never loaded wholesale)."""
+    if os.environ.get(name):
+        return os.environ[name]
+    path = Path(os.environ.get("GATESENSE_ENV_FILE") or ROOT_DIR / ".env")
+    if path.is_file():
+        from dotenv import dotenv_values
+
+        return dotenv_values(path).get(name) or None
+    return None
+
+
+API_HOST = _server_setting("GATESENSE_HOST") or "127.0.0.1"  # bind address: 127.0.0.1 = this PC only
+API_PORT = int(_server_setting("GATESENSE_PORT") or 8000)
+# HTTPS: both files (PEM) to serve over https. Required when API_HOST isn't this PC, unless GATESENSE_ALLOW_HTTP=1
+# (then a warning: passwords and the session cookie would cross the network unencrypted).
+SSL_CERTFILE = _server_setting("GATESENSE_SSL_CERTFILE")
+SSL_KEYFILE = _server_setting("GATESENSE_SSL_KEYFILE")
+ALLOW_HTTP = _server_setting("GATESENSE_ALLOW_HTTP") == "1"
+HTTPS = bool(SSL_CERTFILE and SSL_KEYFILE)
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 API_CORS_ORIGINS = ["http://localhost:5173"]  # browsers may call the API only from the Vite dev server
+WEB_DIST = Path(os.environ.get("GATESENSE_WEB_DIST") or ROOT_DIR / "web" / "dist")  # the built React app
+MAX_REQUEST_BYTES = 10_000_000  # larger request bodies are refused (413): enrollment photos are the biggest
+LOGIN_RATE_LIMIT = 10  # login attempts per IP address per LOGIN_RATE_WINDOW_SECONDS (on top of the account lockout)
+LOGIN_RATE_WINDOW_SECONDS = 60
 # Database URL for the API's data-access module (api/db.py). None = SQLite at DB_PATH. sqlite:/// URLs work
 # today; a postgresql:// URL is recognised and reported as not supported until that backend is written.
 DATABASE_URL = os.environ.get("GATESENSE_DATABASE_URL") or None
@@ -150,12 +177,17 @@ API_FIRST_ADMIN = "admin"  # created on the API's first start (no users yet) wit
 SESSION_COOKIE = "gatesense_session"
 SESSION_HOURS = 8  # a session ends after this long without activity; each request extends it
 SESSION_REFRESH_SECONDS = 60  # extend the session (database write + new cookie) at most this often
-SESSION_COOKIE_SECURE = False  # True once the API is served over HTTPS (the cookie is then never sent over HTTP)
+SESSION_COOKIE_SECURE = HTTPS  # over HTTPS the cookie is marked Secure (never sent over plain HTTP)
 LOGIN_MAX_FAILURES = 5  # wrong passwords in a row before the account is locked
 LOGIN_LOCK_MINUTES = 15
 PASSWORD_MIN_LENGTH = 10  # for passwords set through the API (the first admin password is changed at first login)
 DEFAULT_SITE_NAME = "Main site"  # every camera belongs to a site; existing ones go here
 DEFAULT_SITE_TIMEZONE = "local"  # IANA name, or "local" = this PC's time zone (event times are local time)
+
+# --- Nightly maintenance (api/maintenance.py, while the app runs) -----------------------------------
+BACKUP_HOUR = 2  # the nightly backup runs once a day at or after this hour (local time)
+BACKUP_RETENTION_DAYS = 14  # nightly backups older than this are deleted (manual and upgrade copies are kept)
+MAINTENANCE_CHECK_SECONDS = 600  # how often the app checks whether the nightly job is due
 
 # --- Cameras ---------------------------------------------------------------
 # Cameras are normally managed on the dashboard's Camera settings page, which saves them to
@@ -197,6 +229,7 @@ EDITABLE_SETTINGS = {
     "TRACK_LOST_SECONDS": (float, 0.2, 30.0, "a track not seen for this long is closed"),
     "COOLDOWN_SECONDS": (int, 0, 86400, "debounce: the same person on the same camera is ignored for this long"),
     "PROCESS_FPS": (int, 1, 30, "frames processed per second"),
+    "SNAPSHOT_RETENTION_DAYS": (int, 1, 3650, "face snapshots of events are deleted after this many days"),
 }
 SETTINGS_FILE = Path(os.environ.get("GATESENSE_SETTINGS_FILE") or ROOT_DIR / "settings.json")
 DEFAULT_SETTINGS = {name: globals()[name] for name in EDITABLE_SETTINGS}  # the values written above

@@ -788,6 +788,7 @@ const LABELS: Record<string, string> = {
   match_threshold: "Match threshold",
   match_margin: "Margin over the second-best",
   cooldown_seconds: "Debounce (cool-down, seconds)",
+  snapshot_retention_days: "Keep event snapshots (days)",
 };
 
 function RecognitionTab() {
@@ -891,6 +892,19 @@ function SystemTab() {
     ["People", `${s.people} (${s.enrolled} enrolled)`],
     ["Face data", bytes(s.gallery_bytes)],
     ["Cameras running", s.cameras_running],
+    ["Snapshots", `${bytes(s.maintenance.snapshots_bytes)} · kept ${s.maintenance.snapshot_retention_days} days`],
+    [
+      "Nightly backup",
+      s.maintenance.last_run ? (
+        <span className={s.maintenance.last_ok ? undefined : "text-destructive"}>
+          {s.maintenance.last_ok ? "last run " : "failed "}
+          {s.maintenance.last_run.replace("T", " ").slice(0, 16)}
+          {s.maintenance.last_error ? ` (${s.maintenance.last_error})` : ""}
+        </span>
+      ) : (
+        `not run yet (daily after ${String(s.maintenance.backup_hour).padStart(2, "0")}:00)`
+      ),
+    ],
   ];
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -917,7 +931,10 @@ function SystemTab() {
           </Button>
         </CardHeader>
         {s.backups.length === 0 ? (
-          <p className="p-4 text-sm text-muted-foreground">No backups yet. They go to data/backups/.</p>
+          <p className="p-4 text-sm text-muted-foreground">
+            No backups yet. They go to data/backups/; nightly ones are kept {s.maintenance.backup_retention_days} days,
+            "Back up now" copies until you delete them.
+          </p>
         ) : (
           <ul className="max-h-72 divide-y overflow-auto text-sm">
             {s.backups.map((b) => (

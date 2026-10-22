@@ -22,6 +22,22 @@ copy .env.example .env
 
 ## Start and stop (Windows)
 
+GateSense is one app: double-click **start.bat**. It checks everything first (and builds the web dashboard when it
+changed, if Node.js is installed), starts GateSense in a minimized window and opens `http://localhost:8000` in the
+browser. **stop.bat** stops the cameras cleanly, then the app. On the first start the account `admin` gets the
+`GATESENSE_ADMIN_PASSWORD` from `.env` and must change it at the first login.
+
+Other computers: set `GATESENSE_HOST=0.0.0.0` (and `GATESENSE_PORT` if 8000 is taken). Then GateSense requires
+HTTPS: `GATESENSE_SSL_CERTFILE` and `GATESENSE_SSL_KEYFILE` (PEM files); `GATESENSE_ALLOW_HTTP=1` runs without it,
+with a warning (passwords would cross the network unencrypted). To start at boot without anyone logged in, run
+`scripts\install_service.ps1` from an administrator PowerShell (needs NSSM from https://nssm.cc).
+
+Every night (after 02:00, while GateSense runs) the database and the face data are backed up to `data/backups/`
+(kept 14 days; "Back up now" copies are kept until you delete them), and event snapshots older than 30 days are
+deleted (the attendance itself is kept). Both are on Settings > System; the snapshot period is a setting.
+
+The older Streamlit dashboard (below) still works for now.
+
 Double-click **`start.bat`** in the project folder. It checks the setup and the admin password, starts the dashboard in a minimized "GateSense dashboard" window and opens http://localhost:8501 in your browser. If GateSense is already running it just opens the browser. Start the cameras from the dashboard's **Cameras** page.
 
 Double-click **`stop.bat`** to stop everything: every camera worker is stopped cleanly first (also ones started from the command line), then the dashboard. Closing the "GateSense dashboard" window also stops it; camera workers notice and exit on their own.

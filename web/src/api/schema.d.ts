@@ -755,7 +755,7 @@ export interface paths {
         /**
          * Backup Now
          * @description Copy the database (consistent, while cameras keep writing: SQLite's online backup) and the face gallery to
-         *     data/backups/. Audited.
+         *     data/backups/. Audited. Manual copies are never deleted automatically (nightly ones after BACKUP_RETENTION_DAYS).
          */
         post: operations["backup_now"];
         delete?: never;
@@ -1377,6 +1377,35 @@ export interface components {
             /** Password */
             password: string;
         };
+        /** Maintenance */
+        Maintenance: {
+            /**
+             * Last Run
+             * @description the last nightly job (backup, old backups, old snapshots)
+             */
+            last_run: string | null;
+            /** Last Ok */
+            last_ok: boolean | null;
+            /** Last Error */
+            last_error: string | null;
+            /**
+             * Backup Hour
+             * @description the nightly job runs once a day at or after this hour
+             */
+            backup_hour: number;
+            /**
+             * Backup Retention Days
+             * @description nightly backups are kept this long
+             */
+            backup_retention_days: number;
+            /**
+             * Snapshot Retention Days
+             * @description event snapshots are kept this long (setting)
+             */
+            snapshot_retention_days: number;
+            /** Snapshots Bytes */
+            snapshots_bytes: number;
+        };
         /** NewUser */
         NewUser: {
             /**
@@ -1983,6 +2012,7 @@ export interface components {
             backups: components["schemas"]["Backup"][];
             /** Cameras Running */
             cameras_running: number;
+            maintenance: components["schemas"]["Maintenance"];
         };
         /** TestResult */
         TestResult: {

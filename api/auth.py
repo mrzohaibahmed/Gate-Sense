@@ -21,6 +21,8 @@ import hashlib
 import os
 import re
 import secrets
+import threading
+from collections import deque
 from datetime import datetime, timedelta
 
 from argon2 import PasswordHasher
@@ -134,11 +136,45 @@ def bootstrap_admin(db: Database) -> str | None:
 # --- Login / logout -----------------------------------------------------------------
 
 
+class RateLimit:
+    """At most LOGIN_RATE_LIMIT login attempts per client IP per LOGIN_RATE_WINDOW_SECONDS (sliding window).
+
+    Slows down password guessing across many user names; the per-account lockout handles one name."""
+
+    def __init__(self):
+        self._hits: dict[str, deque[datetime]] = {}
+        self._lock = threading.Lock()
+
+    def check(self, key: str, at: datetime) -> int | None:
+        """Count an attempt; None if allowed, else the seconds until the next one is."""
+        window = timedelta(seconds=config.LOGIN_RATE_WINDOW_SECONDS)
+        with self._lock:
+            hits = self._hits.setdefault(key, deque())
+            while hits and at - hits[0] >= window:
+                hits.popleft()
+            if len(hits) >= config.LOGIN_RATE_LIMIT:
+                return max(1, int((hits[0] + window - at).total_seconds()) + 1)
+            hits.append(at)
+            if len(self._hits) > 10_000:  # forget idle addresses
+                for k in [k for k, v in self._hits.items() if not v]:
+                    del self._hits[k]
+            return None
+
+
+login_limit = RateLimit()
+
+
 def login(db: Database, username: str, password: str, request: Request) -> tuple[str, dict]:
     """Check the password and open a session; returns (cookie token, user). Raises HTTPException otherwise."""
     name = normalize_username(username)
     info = client(request)
     t = now()
+    if wait := login_limit.check(info["ip"] or "unknown", t):
+        db.audit(name or "(empty)", "login_rate_limited", f"user:{name}", info,
+                 f"more than {config.LOGIN_RATE_LIMIT} login attempts in {config.LOGIN_RATE_WINDOW_SECONDS} s "
+                 "from this address")
+        raise HTTPException(429, f"Too many login attempts. Wait {wait} seconds and try again.",
+                            headers={"Retry-After": str(wait)})
     user = db.user(username=name)
 
     def fail(status: int, detail: str, action: str, reason: str, **extra) -> HTTPException:
