@@ -70,6 +70,11 @@ class WorkerManager:
     def run_dir(self) -> Path:
         return self._mgr.run_dir
 
+    @property
+    def cameras(self) -> list[dict]:
+        config.refresh_cameras()
+        return self._mgr.cameras
+
     # --- Lifespan ----------------------------------------------------------------
 
     def open(self, url: str | None = None) -> None:

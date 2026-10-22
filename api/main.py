@@ -1,9 +1,11 @@
 """FastAPI app factory: `create_app()`; `python -m api.run` serves it on API_HOST:API_PORT.
 
-The lifespan opens the worker manager (data/run/_api.json) and, on shutdown,
-stops every camera worker this API started. Browsers may call the API only
-from config.API_CORS_ORIGINS (the Vite dev server). There is no login yet:
-the server binds to 127.0.0.1 only.
+The lifespan creates or upgrades the database (users, sessions, sites), creates
+the first admin if there are no users (api/auth.py), opens the worker manager
+(data/run/_api.json) and, on shutdown, stops every camera worker this API
+started. Browsers may call the API only from config.API_CORS_ORIGINS (the
+Vite dev server), with the session cookie. Every endpoint except login and
+the health check needs a login and a permission (api/permissions.py).
 """
 
 import time
@@ -16,10 +18,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from api import __version__
+from api import __version__, auth
 from api.db import Database
+from api.routes import auth as auth_routes
+from api.routes import cameras, users
 from api.workers import WorkerManager
 from app import config
+
+PUBLIC_PATHS = {"/api/health", "/api/auth/login"}  # the only endpoints without require_permission
 
 
 class DatabaseStatus(BaseModel):
@@ -44,24 +50,31 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.started = time.time()
+        database.connect().close()  # create or upgrade the tables before anything uses them
+        if message := auth.bootstrap_admin(database):
+            print(message, flush=True)
         manager.open(f"http://{config.API_HOST}:{config.API_PORT}")
         try:
             yield
         finally:
             for camera, result in await run_in_threadpool(manager.close):
-                print(f"Camera {camera}: {result}")
+                print(f"Camera {camera}: {result}", flush=True)
 
-    app = FastAPI(title="GateSense API", version=__version__, lifespan=lifespan)
+    app = FastAPI(title="GateSense API", version=__version__, lifespan=lifespan,
+                  description="Log in with POST /api/auth/login (it sets the session cookie this page then sends).")
     app.state.workers, app.state.db, app.state.started = manager, database, time.time()
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.API_CORS_ORIGINS,
+        allow_credentials=True,  # the session cookie
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["*"],
     )
 
-    @app.get("/api/health", response_model=Health)
+    @app.get("/api/health", response_model=Health, tags=["system"])
     def health(response: Response) -> Health:
+        """Public (no login), for monitoring: version, uptime and database status. 503 if the database can't be
+        read."""
         db = DatabaseStatus(**database.status())
         if db.status == "error":
             response.status_code = 503
@@ -71,4 +84,7 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
             started=datetime.fromtimestamp(started), uptime_seconds=round(time.time() - started, 1), database=db,
         )
 
+    app.include_router(auth_routes.router)
+    app.include_router(users.router)
+    app.include_router(cameras.router)
     return app

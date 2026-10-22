@@ -12,10 +12,17 @@ Manual events have ``manual = 1`` and ``match_score = 0``.
 
 Timestamps are local time stored as ISO text ("YYYY-MM-DD HH:MM:SS"). WAL mode
 lets one recognize.py per camera and the dashboard use the database at once.
+
+Schema changes after the first version are numbered steps (VERSIONS), tracked
+in PRAGMA user_version and run by connect() in one transaction. They only add
+tables, columns and rows; nothing existing is changed or deleted. Before the
+first step runs on a database that has data, a copy goes to backups/ next to it.
+Step 1 adds the API's users, sessions and sites (every camera in one default site).
 """
 
 import json
 import sqlite3
+from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -82,21 +89,119 @@ def _ts(dt: datetime | None) -> str | None:
     return None if dt is None else dt.isoformat(sep=" ", timespec="seconds")
 
 
-def connect(path: Path | None = None) -> sqlite3.Connection:
-    """Open the database (default ``config.DB_PATH``), creating or upgrading the tables."""
+DEFAULT_SITE = "(SELECT MIN(id) FROM sites)"  # SQL for the default site's id
+
+
+def _columns(conn, table: str) -> set[str]:
+    return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _v1_users_sessions_sites(conn: sqlite3.Connection) -> None:
+    """API login (Phase 2): users, sessions, sites; cameras.site_id, existing cameras in one default site.
+
+    Roles are not constrained here: the list lives in api/permissions.py, so adding one needs no table rebuild.
+    """
+    conn.execute("""CREATE TABLE IF NOT EXISTS sites (
+        id       INTEGER PRIMARY KEY,
+        name     TEXT NOT NULL UNIQUE,
+        timezone TEXT NOT NULL
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS users (
+        id                   INTEGER PRIMARY KEY,
+        username             TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        full_name            TEXT NOT NULL DEFAULT '',
+        email                TEXT,
+        role                 TEXT NOT NULL,
+        password_hash        TEXT NOT NULL,
+        active               INTEGER NOT NULL DEFAULT 1,
+        created_at           TEXT NOT NULL,
+        last_login_at        TEXT,
+        must_change_password INTEGER NOT NULL DEFAULT 0,
+        failed_logins        INTEGER NOT NULL DEFAULT 0,
+        locked_until         TEXT
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS sessions (
+        id         INTEGER PRIMARY KEY,
+        user_id    INTEGER NOT NULL REFERENCES users(id),
+        token_hash TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        ip         TEXT,
+        user_agent TEXT
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
+    if conn.execute("SELECT 1 FROM sites LIMIT 1").fetchone() is None:
+        conn.execute("INSERT INTO sites (name, timezone) VALUES (?, ?)",
+                     (config.DEFAULT_SITE_NAME, config.DEFAULT_SITE_TIMEZONE))
+    if "site_id" not in _columns(conn, "cameras"):
+        # Nullable: SQLite only adds a REFERENCES column with a NULL default; filled in just below.
+        conn.execute("ALTER TABLE cameras ADD COLUMN site_id INTEGER REFERENCES sites(id)")
+    conn.execute(f"UPDATE cameras SET site_id = {DEFAULT_SITE} WHERE site_id IS NULL")
+
+
+VERSIONS = [_v1_users_sessions_sites]  # PRAGMA user_version = how many of these have run
+
+
+def _has_data(conn) -> bool:
+    return any(conn.execute(f"SELECT 1 FROM {t} LIMIT 1").fetchone()
+               for t in ("persons", "cameras", "attendance_events", "audit_log"))
+
+
+def _backup(conn: sqlite3.Connection, path: Path, version: int) -> Path:
+    folder = path.parent / "backups"
+    folder.mkdir(parents=True, exist_ok=True)
+    dest = folder / f"{path.stem}-v{version}-{datetime.now():%Y%m%d-%H%M%S}.db"
+    with closing(sqlite3.connect(dest)) as out:
+        conn.backup(out)
+    return dest
+
+
+def _upgrade(conn: sqlite3.Connection, path: Path) -> None:
+    """Run the VERSIONS steps this database hasn't had, in one transaction (other processes wait for it)."""
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= len(VERSIONS):
+        return
+    # The copy is made before the write lock: SQLite's backup can't read through a connection that holds it.
+    backup = _backup(conn, path, version) if _has_data(conn) else None
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]  # another process may have just done it
+        if version >= len(VERSIONS):
+            conn.rollback()
+            return
+        for number, step in enumerate(VERSIONS[version:], start=version + 1):
+            step(conn)
+            conn.execute(f"PRAGMA user_version = {number}")
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    print(f"Database {path.name} upgraded from version {version} to {len(VERSIONS)}"
+          + (f" (copy of the old one: {backup})" if backup else ""))
+
+
+def connect(path: Path | None = None, migrate: bool = True) -> sqlite3.Connection:
+    """Open the database (default ``config.DB_PATH``), creating or upgrading the tables.
+
+    migrate=False skips the table checks, for callers that already ran them on this file (the API does
+    this once at start, not on every request).
+    """
     path = path or config.DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    if not migrate:
+        return conn
     conn.executescript(SCHEMA)
     for table, columns in MIGRATIONS.items():
-        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        existing = _columns(conn, table)
         for col, decl in columns.items():
             if col not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
     conn.commit()
+    _upgrade(conn, path)
     return conn
 
 
@@ -150,6 +255,11 @@ def add_person(conn, code: str, name: str, department: str | None, shift: str | 
                            (code, row["name"], row["department"], row["shift"]))
         _audit(conn, user, "add_person", f"person:{code}", row, reason)
     return cur.lastrowid
+
+
+def write_audit(conn, user: str, action: str, target: str, details: dict, reason: str) -> None:
+    """An audit row inside the caller's transaction (api/db.py makes its changes and their audit rows together)."""
+    _audit(conn, user, action, target, details, reason)
 
 
 def log_change(conn, user: str, action: str, target: str, details: dict, reason: str) -> None:
@@ -217,7 +327,7 @@ def update_person(conn, person_id: int, name: str, department: str | None, shift
 def upsert_camera(conn: sqlite3.Connection, name: str, source: str | int, direction: str) -> int:
     with conn:
         conn.execute(
-            "INSERT INTO cameras (name, source, direction) VALUES (?, ?, ?) "
+            f"INSERT INTO cameras (name, source, direction, site_id) VALUES (?, ?, ?, {DEFAULT_SITE}) "
             "ON CONFLICT(name) DO UPDATE SET source = excluded.source, direction = excluded.direction",
             (name, mask_source(source), direction),  # never store a camera password
         )
@@ -229,7 +339,8 @@ def ensure_cameras(conn: sqlite3.Connection, cameras: list[dict]) -> None:
     with conn:
         for cam in cameras:
             conn.execute(
-                "INSERT INTO cameras (name, source, direction) VALUES (?, ?, ?) ON CONFLICT(name) DO NOTHING",
+                f"INSERT INTO cameras (name, source, direction, site_id) VALUES (?, ?, ?, {DEFAULT_SITE}) "
+                "ON CONFLICT(name) DO NOTHING",
                 (cam["name"], mask_source(cam["source"]), cam["direction"]),
             )
 

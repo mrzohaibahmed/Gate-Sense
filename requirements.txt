@@ -13,5 +13,6 @@ av==17.1.0
 fastapi==0.159.1
 uvicorn[standard]==0.54.0
 pydantic==2.14.1
+argon2-cffi==25.1.0
 httpx2==2.16.0  # FastAPI's TestClient (starlette.testclient)
 pytest==9.1.1

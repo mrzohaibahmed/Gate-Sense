@@ -29,6 +29,12 @@ CAMERAS = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def admin_password(monkeypatch):
+    """The API creates its first admin from this on start (tests/test_auth.py covers that)."""
+    monkeypatch.setenv(config.DASHBOARD_PASSWORD_ENV, "first-admin-password")
+
+
 def wait_for(predicate, timeout: float = 20.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -106,18 +112,23 @@ def test_health_ok():
     assert abs((datetime.now() - datetime.fromisoformat(body["started"])).total_seconds()) < 60
 
 
-def test_health_without_a_database_does_not_create_one():
-    with TestClient(create_app()) as client:
-        r = client.get("/api/health")
-    assert r.status_code == 200
-    assert r.json()["status"] == "degraded" and r.json()["database"]["status"] == "missing"
+def test_status_of_a_missing_database_does_not_create_it():
+    status = Database().status()
+    assert status["status"] == "missing" and status["backend"] == "sqlite"
     assert not config.DB_PATH.exists()
 
 
-def test_health_unreadable_database_is_503():
-    config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    config.DB_PATH.write_bytes(b"this is not a database" * 100)
+def test_the_api_creates_the_database_on_start():
     with TestClient(create_app()) as client:
+        assert client.get("/api/health").json()["database"]["status"] == "ok"
+    assert config.DB_PATH.is_file()
+
+
+def test_health_unreadable_database_is_503():
+    with TestClient(create_app()) as client:
+        config.DB_PATH.write_bytes(b"this is not a database" * 100)  # broken while running
+        for suffix in ("-wal", "-shm"):
+            config.DB_PATH.with_name(config.DB_PATH.name + suffix).unlink(missing_ok=True)
         r = client.get("/api/health")
     assert r.status_code == 503
     assert r.json()["status"] == "degraded" and r.json()["database"]["status"] == "error"
@@ -126,13 +137,13 @@ def test_health_unreadable_database_is_503():
 def test_postgresql_url_is_recognised_but_not_supported_yet():
     database = Database("postgresql://gatesense@localhost/gatesense")
     assert database.backend == "postgresql"
-    with TestClient(create_app(database=database)) as client:
-        r = client.get("/api/health")
-    assert r.status_code == 503
-    assert r.json()["database"]["backend"] == "postgresql"
-    assert "PostgreSQL is not supported yet" in r.json()["database"]["detail"]
+    status = database.status()
+    assert status["status"] == "error" and "PostgreSQL is not supported yet" in status["detail"]
     with pytest.raises(RuntimeError, match="not supported"):
         database.connect()
+    with pytest.raises(RuntimeError, match="PostgreSQL is not supported yet"):
+        with TestClient(create_app(database=database)):
+            pass  # the API refuses to start rather than use another database
 
 
 def test_database_url_from_config(tmp_path, monkeypatch):
@@ -141,7 +152,7 @@ def test_database_url_from_config(tmp_path, monkeypatch):
     database = Database()
     assert database.path == path and database.status()["status"] == "missing"
     database.connect().close()  # creates the schema, like the dashboard and the workers
-    assert database.status() == {"status": "ok", "backend": "sqlite", "detail": "5 tables"}
+    assert database.status() == {"status": "ok", "backend": "sqlite", "detail": "8 tables"}
     assert not config.DB_PATH.exists()  # the default database was not touched
 
 

@@ -135,6 +135,18 @@ API_CORS_ORIGINS = ["http://localhost:5173"]  # browsers may call the API only f
 # today; a postgresql:// URL is recognised and reported as not supported until that backend is written.
 DATABASE_URL = os.environ.get("GATESENSE_DATABASE_URL") or None
 
+# --- API users and login (api/auth.py; roles and permissions: api/permissions.py) ----------------
+API_FIRST_ADMIN = "admin"  # created on the API's first start (no users yet) with the GATESENSE_ADMIN_PASSWORD
+SESSION_COOKIE = "gatesense_session"
+SESSION_HOURS = 8  # a session ends after this long without activity; each request extends it
+SESSION_REFRESH_SECONDS = 60  # extend the session (database write + new cookie) at most this often
+SESSION_COOKIE_SECURE = False  # True once the API is served over HTTPS (the cookie is then never sent over HTTP)
+LOGIN_MAX_FAILURES = 5  # wrong passwords in a row before the account is locked
+LOGIN_LOCK_MINUTES = 15
+PASSWORD_MIN_LENGTH = 10  # for passwords set through the API (the first admin password is changed at first login)
+DEFAULT_SITE_NAME = "Main site"  # every camera belongs to a site; existing ones go here
+DEFAULT_SITE_TIMEZONE = "local"  # IANA name, or "local" = this PC's time zone (event times are local time)
+
 # --- Cameras ---------------------------------------------------------------
 # Cameras are normally managed on the dashboard's Camera settings page, which saves them to
 # CAMERAS_FILE (cameras.json in the project folder; no passwords in it). When that file exists it
