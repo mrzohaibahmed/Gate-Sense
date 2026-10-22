@@ -71,6 +71,10 @@ class WorkerManager:
         return self._mgr.run_dir
 
     @property
+    def live_dir(self) -> Path:
+        return self._mgr.live_dir
+
+    @property
     def cameras(self) -> list[dict]:
         config.refresh_cameras()
         return self._mgr.cameras

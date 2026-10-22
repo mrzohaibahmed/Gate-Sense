@@ -5,6 +5,10 @@ and drew boxes on, no extra detection) and <camera>.json (fps, frame time and
 the last LIVE_DECISIONS decisions), at most every LIVE_FRAME_SECONDS, both
 atomically. The dashboard reads them; a frame older than LIVE_STALE_SECONDS
 means the camera isn't sending frames. The files are deleted when the worker stops.
+
+While the API streams a camera it keeps <camera>.watch fresh (mark_watched); the
+worker then writes the frame up to STREAM_FPS times a second (LiveWriter.watched),
+so the stream gets every processed frame, encoded once for all viewers.
 """
 
 import json
@@ -32,6 +36,28 @@ def info_path(camera: str, live_dir: Path | None = None) -> Path:
     return Path(live_dir or config.LIVE_DIR) / f"{camera}.json"
 
 
+def watch_path(camera: str, live_dir: Path | None = None) -> Path:
+    return Path(live_dir or config.LIVE_DIR) / f"{camera}.watch"
+
+
+def mark_watched(camera: str, live_dir: Path | None = None) -> None:
+    """Called by the API about once a second while at least one client streams this camera."""
+    path = watch_path(camera, live_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+
+
+def unwatch(camera: str, live_dir: Path | None = None) -> None:
+    watch_path(camera, live_dir).unlink(missing_ok=True)
+
+
+def is_watched(camera: str, live_dir: Path | None = None) -> bool:
+    try:
+        return time.time() - watch_path(camera, live_dir).stat().st_mtime <= config.STREAM_WATCH_SECONDS
+    except OSError:
+        return False
+
+
 def clear(camera: str, live_dir: Path | None = None) -> None:
     for path in (frame_path(camera, live_dir), info_path(camera, live_dir)):
         path.unlink(missing_ok=True)
@@ -49,6 +75,7 @@ class LiveWriter:
         self.clock = clock
         self._last = None
         self.started: float | None = None  # wall time the camera loop began
+        self._watched, self._watch_checked = False, None
 
     def start(self) -> None:
         """Mark the start of the camera loop (after model loading); the frame wait is measured from here."""
@@ -65,10 +92,20 @@ class LiveWriter:
             "face_px": None if face_px is None else int(face_px), "detail": detail,
         })
 
-    def frame(self, img: np.ndarray, fps: float | None = None, warning: str | None = None) -> bool:
-        """Write the frame and info if LIVE_FRAME_SECONDS have passed; True if written."""
+    def watched(self) -> bool:
+        """Is the API streaming this camera? (The .watch file is checked at most twice a second.)"""
         now = self.clock()
-        if self._last is not None and now - self._last < self.interval:
+        if self._watch_checked is None or now - self._watch_checked >= 0.5:
+            self._watch_checked = now
+            self._watched = is_watched(self.camera, self.live_dir)
+        return self._watched
+
+    def frame(self, img: np.ndarray, fps: float | None = None, warning: str | None = None) -> bool:
+        """Write the frame and info if LIVE_FRAME_SECONDS have passed (1 / STREAM_FPS while watched); True if
+        written."""
+        now = self.clock()
+        interval = min(self.interval, 1.0 / config.STREAM_FPS) if self.watched() else self.interval
+        if self._last is not None and now - self._last < interval:
             return False
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, config.LIVE_JPEG_QUALITY])
         if not ok:

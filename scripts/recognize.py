@@ -231,8 +231,15 @@ class Pipeline:
                 del self.tracks[tid]
 
         # A new image either way, so the capture's buffer is never drawn on.
-        view = cv2.flip(small, 1) if self.mirror else small.copy()
+        # While the API streams this camera, draw the view from the full frame (up to STREAM_MAX_WIDTH) so the
+        # stream is sharper; otherwise the detection-size copy, as before.
+        base = small
+        if self.live.watched() and frame.shape[1] > small.shape[1]:
+            base = resize_to_width(frame, config.STREAM_MAX_WIDTH)
+        view = cv2.flip(base, 1) if self.mirror else base.copy()
+        k = view.shape[1] / small.shape[1]  # detection-copy pixels -> view pixels
         for bbox, color, text, thickness in marks:
+            bbox = tuple(v * k for v in bbox)
             draw(view, mirror_box(bbox, view.shape[1]) if self.mirror else bbox, color, text, thickness)
         self.times.append(time.perf_counter() - t0)
         return view

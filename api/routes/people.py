@@ -34,6 +34,7 @@ class Person(BaseModel):
     site_id: int | None
     site: str | None
     photos: int = Field(description="photos in known/<employee code>/")
+    photo_url: str | None = Field(None, description="the first photo, for a thumbnail (logged-in users only)")
     embeddings: int = Field(description="photos in the recognition gallery (accepted at the last enrollment)")
 
 
@@ -76,20 +77,20 @@ class ReenrollResult(BaseModel):
     embeddings: int
 
 
-def counts(code: str, gallery: dict[str, int]) -> tuple[int, int]:
+def photo_files(code: str) -> list[str]:
     try:
-        photos = len(enrollment.photo_paths(enrollment.person_dir(code)))
+        return [p.name for p in enrollment.photo_paths(enrollment.person_dir(code))]
     except ValueError:  # a code that isn't a valid folder name has no photos
-        photos = 0
-    return photos, gallery.get(code, 0)
+        return []
 
 
 def rows(request: Request) -> list[dict]:
     gallery = enrollment.load_gallery().counts()
     out = []
     for p in auth.db_of(request).people():
-        photos, embeddings = counts(p["employee_code"], gallery)
-        out.append({**p, "active": bool(p["active"]), "photos": photos, "embeddings": embeddings})
+        files = photo_files(p["employee_code"])
+        out.append({**p, "active": bool(p["active"]), "photos": len(files), "embeddings": gallery.get(p["employee_code"], 0),
+                    "photo_url": f"/api/people/{p['id']}/photos/{files[0]}" if files else None})
     return out
 
 

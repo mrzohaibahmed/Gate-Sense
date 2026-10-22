@@ -207,6 +207,36 @@ def session_user(request: Request, response: Response, token: str | None = Depen
                        must_change_password=bool(s["must_change_password"]), session_expires=expires)
 
 
+def websocket_user(websocket, permission: str) -> tuple[CurrentUser, int] | str:
+    """(user, session id) for a WebSocket handshake, or why it is refused.
+
+    Browsers send cookies with WebSocket handshakes from any page, so the Origin must be this API itself or one of
+    API_CORS_ORIGINS (no Origin = not a browser). The session is checked like session_user's but not extended:
+    watching the live feed alone doesn't keep a session open.
+    """
+    origin = websocket.headers.get("origin")
+    host = websocket.headers.get("host", "")
+    if origin and origin not in config.API_CORS_ORIGINS and origin not in (f"http://{host}", f"https://{host}"):
+        return f"origin {origin} not allowed"
+    token = websocket.cookies.get(config.SESSION_COOKIE)
+    if not token:
+        return "not logged in"
+    db: Database = websocket.app.state.db
+    s = db.session(hash_token(token))
+    if s is None or parse_ts(s["expires_at"]) <= now() or not s["active"]:
+        return "session ended"
+    if s["must_change_password"]:
+        return "password change required"
+    if not allowed(s["role"], permission):
+        db.audit(s["username"], "permission_denied", "WEBSOCKET /api/ws", {"permission": permission, "role": s["role"]},
+                 f"role {s['role']} lacks {permission}")
+        return f"role {s['role']} lacks {permission}"
+    user = CurrentUser(id=s["user_id"], username=s["username"], full_name=s["full_name"], email=s["email"],
+                       role=s["role"], permissions=sorted(ROLE_PERMISSIONS.get(s["role"], ())),
+                       must_change_password=False, session_expires=parse_ts(s["expires_at"]))
+    return user, s["id"]
+
+
 def require_permission(permission: str, allow_password_change: bool = False):
     """Dependency for an endpoint: the user must be logged in and their role must have `permission`.
 

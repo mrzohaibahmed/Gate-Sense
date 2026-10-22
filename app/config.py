@@ -108,6 +108,16 @@ LIVE_FRAME_SECONDS = 0.5  # workers write their latest annotated frame at most t
 LIVE_JPEG_QUALITY = 75
 LIVE_DECISIONS = 20  # recent decisions kept per camera for the live view
 LIVE_STALE_SECONDS = 5.0  # an older frame shows "camera not sending frames"
+# Live video through the API (GET /api/cameras/{id}/stream). While someone watches, the API keeps
+# data/live/<camera>.watch fresh and the worker writes its annotated frame up to STREAM_FPS times a
+# second, drawn up to STREAM_MAX_WIDTH wide from the full camera frame; otherwise it stays at
+# LIVE_FRAME_SECONDS and the detection size. The frame is encoded once and shared by every viewer.
+STREAM_FPS = 8
+STREAM_MAX_WIDTH = 960
+STREAM_WATCH_SECONDS = 3.0  # a .watch file older than this = nobody is watching
+WS_POLL_SECONDS = 1.0  # /api/ws: new events and corrections are looked for this often (while clients are connected)
+WS_CAMERA_SECONDS = 2.0  # /api/ws: camera status messages (and session checks) this often
+WS_QUEUE = 200  # messages waiting for one WebSocket client; a client this far behind is disconnected
 ENROLL_CAMERA_CLAIM_SECONDS = 600  # the Enrollment page camera switch blocks webcam workers for up to this long
 
 # --- Processing rate -------------------------------------------------------

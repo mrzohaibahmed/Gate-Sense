@@ -397,3 +397,37 @@ class Database:
     def set_event_voided(self, event_id: int, voided: bool, actor: str, reason: str) -> None:
         with self.conn() as conn:
             app_db.set_event_voided(conn, event_id, voided, reason, actor)
+
+    # --- Live updates (/api/ws) ----------------------------------------------------------
+
+    def last_ids(self) -> tuple[int, int]:
+        """(newest event id, newest audit id): where a new WebSocket feed starts."""
+        with self.conn() as conn:
+            return (conn.execute("SELECT COALESCE(MAX(id), 0) FROM attendance_events").fetchone()[0],
+                    conn.execute("SELECT COALESCE(MAX(id), 0) FROM audit_log").fetchone()[0])
+
+    def events_after(self, event_id: int, limit: int = 200) -> list[dict]:
+        """Events added since `event_id` (by the camera workers or as corrections), oldest first."""
+        with self.conn() as conn:
+            return [dict(r) for r in conn.execute(app_db.EVENT_COLUMNS + "WHERE e.id > ? ORDER BY e.id LIMIT ?",
+                                                  (event_id, limit))]
+
+    def audit_after(self, audit_id: int, actions: tuple[str, ...], limit: int = 200) -> tuple[list[dict], int]:
+        """Audit rows with one of `actions` since `audit_id` (from the API or the dashboard), and the newest id seen."""
+        with self.conn() as conn:
+            newest = conn.execute("SELECT COALESCE(MAX(id), ?) FROM audit_log WHERE id > ?",
+                                  (audit_id, audit_id)).fetchone()[0]
+            marks = ", ".join("?" * len(actions))
+            rows = conn.execute(f"SELECT * FROM audit_log WHERE id > ? AND id <= ? AND action IN ({marks}) "
+                                "ORDER BY id LIMIT ?", (audit_id, newest, *actions, limit)).fetchall()
+        return [dict(r) for r in rows], newest
+
+    def sessions_alive(self, session_ids: list[int], now: datetime) -> set[int]:
+        """Which of these sessions still exist, haven't expired and belong to an active user."""
+        if not session_ids:
+            return set()
+        marks = ", ".join("?" * len(session_ids))
+        with self.conn() as conn:
+            return {r[0] for r in conn.execute(
+                f"SELECT s.id FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id IN ({marks}) "
+                "AND s.expires_at > ? AND u.active = 1", (*session_ids, ts(now)))}

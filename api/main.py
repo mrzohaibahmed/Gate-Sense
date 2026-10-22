@@ -8,6 +8,7 @@ Vite dev server), with the session cookie. Every endpoint except login and
 the health check needs a login and a permission (api/permissions.py).
 """
 
+import asyncio
 import time
 from contextlib import asynccontextmanager
 from functools import cache
@@ -21,7 +22,8 @@ from starlette.concurrency import run_in_threadpool
 
 from api import __version__, auth
 from api.db import Database
-from api.routes import attendance, audit, cameras, people, settings, sites, users
+from api.live import EventHub, FrameHub
+from api.routes import attendance, audit, cameras, enrollment, live, people, settings, sites, system, users
 from api.routes import auth as auth_routes
 from api.workers import WorkerManager
 from app import config
@@ -64,9 +66,11 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
         if message := auth.bootstrap_admin(database):
             print(message, flush=True)
         manager.open(f"http://{config.API_HOST}:{config.API_PORT}")
+        live_updates = asyncio.create_task(app.state.events.run())
         try:
             yield
         finally:
+            live_updates.cancel()
             for camera, result in await run_in_threadpool(manager.close):
                 print(f"Camera {camera}: {result}", flush=True)
 
@@ -75,6 +79,8 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
                   generate_unique_id_function=lambda route: route.name)  # operation ids = function names
     app.state.workers, app.state.db, app.state.started = manager, database, time.time()
     app.state.face_models = models or face_models
+    app.state.frames = FrameHub(lambda: manager.live_dir)
+    app.state.events = EventHub(database, manager)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.API_CORS_ORIGINS,
@@ -96,6 +102,6 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
             started=datetime.fromtimestamp(started), uptime_seconds=round(time.time() - started, 1), database=db,
         )
 
-    for module in (auth_routes, users, attendance, people, cameras, sites, audit, settings):
+    for module in (auth_routes, users, attendance, people, enrollment, live, cameras, sites, audit, settings, system):
         app.include_router(module.router)
     return app

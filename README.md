@@ -150,6 +150,18 @@ It listens on `http://127.0.0.1:8000` (this PC only; `API_HOST` / `API_PORT` in 
 
 **Data endpoints** (for the coming React dashboard; all listed with their response types at `/docs`): `/api/overview` (the day at a glance: present, inside now, left, absent, missing exit, arrivals per hour, every camera's status), `/api/attendance` (daily rows, the same as the Today page), `/api/events` (raw IN/OUT events with score and snapshot; `/api/snapshots/{id}` shows a snapshot to logged-in users only), `/api/attendance/corrections` (HR and admin: add an IN/OUT, change a time, void or restore an event; the original time is kept and every correction needs a reason), `/api/people` (list, profile with photos and recent attendance, add, edit, deactivate, re-enroll), `/api/cameras` (list with status, add, edit, start, stop, and `/api/cameras/test` to open a camera once and see its resolution and fps), `/api/sites`, `/api/audit` and `/api/settings` (thresholds and the cool-down; admin only, each change audited, applied to cameras started afterwards). Lists take `page`, `page_size`, `sort` (e.g. `-date`), `q` (search) and, where it applies, `site_id`. Camera passwords never appear in a response: sources keep their `${VAR}` placeholders. A camera's region of interest can be saved, but the camera worker doesn't use it yet.
 
+**Web dashboard (React).** With the API running, in a second window:
+
+```
+cd web
+npm install          (once)
+npm run dev
+```
+
+and open `http://localhost:5173`. It talks to the API through the development server (cookies and the live WebSocket included), so log in with your API account. Screens: Overview (today's figures, arrivals per hour, camera health, live events, people needing attention), Live cameras (1, 2, 4 or 9 per screen; full screen with the camera's events), Attendance (filters, columns, a side panel with the day's events, snapshots and corrections), People (profile with photos, a month calendar and history), Enrollment (a guided wizard using the browser's camera: front, slightly left, slightly right, then review and save), Audit log (filters, CSV export) and Settings (cameras with connection test and region of interest, sites, users and roles, recognition thresholds and debounce, system information and "Back up now"). Each role sees only its own menu items. Other commands: `npm test`, `npm run lint`, `npm run gen:api` (refresh the API types while the API runs).
+
+**Live video and live updates.** While logged in (admin, HR or guard), open `http://127.0.0.1:8000/api/cameras/1/stream` in the browser (or use it as an image source): the running camera's picture with face boxes and names, up to 8 frames a second and 960 px wide (`STREAM_FPS`, `STREAM_MAX_WIDTH` in `app/config.py`); `/api/cameras/1/snapshot.jpg` is one current frame. The camera encodes each frame once however many people watch, and goes back to its normal pace when nobody does. A web page can open the WebSocket `/api/ws` to get each new IN/OUT event, every camera's status every 2 seconds, and a notice after each correction.
+
 ## Tests
 
 ```

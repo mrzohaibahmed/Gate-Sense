@@ -36,13 +36,16 @@ def list_attendance(request: Request, params: ListParams = Depends(list_params),
                     date_from: date | None = Query(None, alias="from", description="first day (default today)"),
                     date_to: date | None = Query(None, alias="to", description="last day, inclusive"),
                     person: int | None = Query(None, description="person id"),
-                    status: Status | None = None, _: CurrentUser = Depends(read)) -> dict:
+                    status: Status | None = None,
+                    department: str | None = Query(None, description="exact department name"),
+                    _: CurrentUser = Depends(read)) -> dict:
     """One row per person per day: first IN, last OUT, worked time and status, computed from the events like the
     dashboard's Today page (voided events are ignored). site_id = the person's site. Default sort: -date, then name."""
     first, last = dates(date_from, date_to)
     rows = attendance_rows(auth.db_of(request), first, last)
     rows = [r for r in rows if (person is None or r["person_id"] == person) and (status is None or r["status"] == status)
-            and (params.site_id is None or r["site_id"] == params.site_id)]
+            and (params.site_id is None or r["site_id"] == params.site_id)
+            and (department is None or (r["department"] or "") == department)]
     return paginate(rows, params, ("name", "employee_code", "department"),
                     ("date", "name", "employee_code", "department", "first_in", "last_out", "worked_hours", "status"),
                     "-date", tiebreak="name")
