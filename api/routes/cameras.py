@@ -261,6 +261,8 @@ def test_camera(body: CameraTest, request: Request, _: CurrentUser = Depends(man
         cam = get_or_404(request, body.camera_id)
         if cam["state"] != "stopped":
             raise HTTPException(409, f"{cam['name']} is running: stop it first (a camera is never opened twice).")
+        if users := manager.camera_holds(cam["name"]):
+            raise HTTPException(409, f"{cam['name']} is in use by the enrollment wizard ({', '.join(users)}).")
         entry = entry_of(cam["name"])
     else:
         try:

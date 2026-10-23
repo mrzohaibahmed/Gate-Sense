@@ -21,6 +21,7 @@ export type Direction = AttendanceEvent["direction"];
 export type HourCount = S["HourCount"];
 export type StepInfo = S["StepInfo"];
 export type FrameCheck = S["FrameCheck"];
+export type EnrollmentSource = S["EnrollmentSource"];
 export type Review = S["Review"];
 export type SystemInfo = S["SystemInfo"];
 export type Backup = S["Backup"];

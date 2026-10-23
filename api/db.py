@@ -172,6 +172,18 @@ class Database:
                 row = conn.execute(f"SELECT {USER_COLUMNS} FROM users WHERE username = ?", (username,)).fetchone()
         return dict(row) if row else None
 
+    def preference(self, user_id: int, key: str) -> str | None:
+        with self.transaction() as conn:
+            row = conn.execute("SELECT value FROM user_preferences WHERE user_id = ? AND key = ?",
+                               (user_id, key)).fetchone()
+        return row[0] if row else None
+
+    def set_preference(self, user_id: int, key: str, value: str | None) -> None:
+        with self.transaction() as conn:
+            conn.execute("INSERT INTO user_preferences (user_id, key, value, updated) VALUES (?, ?, ?, ?) "
+                         "ON CONFLICT (user_id, key) DO UPDATE SET value = excluded.value, updated = excluded.updated",
+                         (user_id, key, value, datetime.now().isoformat(timespec="seconds")))
+
     def users(self) -> list[dict]:
         with self.transaction() as conn:
             return [dict(r) for r in conn.execute(f"SELECT {USER_COLUMNS} FROM users ORDER BY username")]

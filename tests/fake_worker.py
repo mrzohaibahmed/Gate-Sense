@@ -73,6 +73,7 @@ try:
             if args.decisions and seq % 5 == 0:
                 writer.decision("match", seq, "waqas", 0.71, 0.42, "vote 1/3", face_px=150)
                 writer.decision("skip", seq + 1, detail="too small (60px < 80)", face_px=60)
+            writer.full_frame(frame)
             writer.frame(frame, runtime.fps)
         runtime.tick(processed=True)
         stop = runtime.should_stop()

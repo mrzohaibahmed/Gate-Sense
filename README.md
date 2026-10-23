@@ -137,8 +137,11 @@ role (admin, HR, viewer, guard) sees only its own menu items.
   events are greyed and can be hidden).
 - **People**: profile with photos, a month calendar and history; edit name, department, shift and site (the employee
   code can't change); delete one photo or all face data (photos and embeddings; attendance stays); deactivate.
-- **Enrollment**: a guided wizard using the browser's camera (front, slightly left, slightly right, then review and
-  save), or **Photo files**: drop up to 10 photos, each checked with the same rules as `enroll.py` (one face, at
+- **Enrollment**: a guided wizard (front, slightly left, slightly right, then review and save). It asks **Which
+  camera?** when IP cameras are set up: this PC's webcam (in the browser), or an IP camera such as the Hikvision at
+  the gate, which GateSense reads itself at full resolution (its main stream) with a live preview and the same checks
+  on the centre of the picture; if that camera is recording attendance, its frames are shared and attendance goes
+  on. Each user's last choice is remembered. Or **Photo files**: drop up to 10 photos, each checked with the same rules as `enroll.py` (one face, at
   least 80 px wide, bright enough, turned at most 35°, tilted at most 25°, sharp), with a plain reason for every
   refused one. While the wizard has the webcam open, webcam camera workers can't start (and the wizard can't take
   the webcam from a running one); it gives the webcam back when it closes, or at the latest 90 seconds after the tab

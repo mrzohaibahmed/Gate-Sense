@@ -274,3 +274,167 @@ describe("the wizard's hold on the webcam", () => {
     await waitFor(() => expect(released()).toHaveLength(1));
   });
 });
+
+describe("which camera", () => {
+  const GATE = {
+    key: "camera:3",
+    kind: "camera",
+    label: "gate",
+    camera_id: 3,
+    direction: "IN",
+    site: "Main",
+    running: true,
+  };
+  const WEBCAM = { key: "webcam", kind: "webcam", label: "This PC's webcam", running: false };
+  let last: string | null;
+
+  beforeEach(() => {
+    last = "camera:3";
+    api = fakeApi({
+      "GET /api/enrollment/steps": () => STEPS,
+      "GET /api/people": () => page([]),
+      "POST /api/people": () => PERSON,
+      "GET /api/enrollment/sources": () => ({ sources: [WEBCAM, GATE], last }),
+      "POST /api/enrollment/webcam": () => ({ claim_id: "claim-1", expires_seconds: 90, renew_seconds: 20 }),
+      "POST /api/enrollment/sessions": () => ({
+        session_id: "s1",
+        camera_id: 3,
+        camera: "gate",
+        feed: "worker",
+        expires_seconds: 90,
+        renew_seconds: 20,
+      }),
+      "POST /api/enrollment/sessions/s1/check": () => ({
+        ok: good,
+        state: good ? "good" : "bad",
+        message: good ? "Good, hold still" : "Move closer",
+        yaw: 0,
+        pitch: 0,
+        face_px: 150,
+        score: 80,
+        box: [0.4, 0.3, 0.6, 0.6],
+        guide: [0.3, 0.2, 0.7, 0.8],
+        connected: true,
+        width: 1280,
+        height: 720,
+        feed: "worker",
+      }),
+      "POST /api/enrollment/sessions/s1/capture": (url) => ({
+        step: url.searchParams.get("step"),
+        image: `data:image/jpeg;base64,${btoa(url.searchParams.get("step") ?? "")}`,
+        width: 1280,
+        height: 720,
+      }),
+      "DELETE /api/enrollment/sessions/s1": () => new Response(null, { status: 204 }),
+      "POST /api/enrollment/review": (_url, body) => ({
+        photos: (body as { photos: { step: string }[] }).photos.map((p) => ({
+          step: p.step,
+          ok: true,
+          problem: null,
+          warnings: [],
+          yaw: 0,
+          pitch: 0,
+          score: 82,
+        })),
+        missing: [],
+        ready: true,
+      }),
+      "POST /api/people/7/enroll": () => ({ employee_code: "2001", saved: ["1.jpg"], accepted: 3, embeddings: 3 }),
+    });
+    vi.stubGlobal("fetch", api.fetchMock);
+  });
+
+  async function toChoice(camera = fakeCamera()) {
+    const r = renderWizard(camera);
+    await r.user.type(await screen.findByLabelText("Employee code"), "2001");
+    await r.user.type(screen.getByLabelText("Name"), "Erum");
+    await r.user.click(screen.getByRole("button", { name: "Add and continue" }));
+    await screen.findByRole("heading", { name: "Which camera?" });
+    return r;
+  }
+
+  it("preselects the last choice and takes the photos from the IP camera through the server", async () => {
+    good = true;
+    const { camera, user } = await toChoice();
+    expect(currentStep()).toHaveTextContent("Camera");
+    expect(screen.getByRole("radio", { name: /gate/ })).toBeChecked();
+    expect(screen.getByText(/recording attendance: its frames are shared/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Next: photos" }));
+
+    const preview = await screen.findByRole("img", { name: "Camera preview" });
+    expect(preview).toHaveAttribute("src", "/api/enrollment/sessions/s1/stream");
+    expect(api.find("POST", "/api/enrollment/sessions")[0]!.body).toEqual({ camera_id: 3 });
+    expect(camera.start).not.toHaveBeenCalled(); // the webcam isn't used
+    expect(await screen.findByText(/Shared with the running gate camera .* photo 1280×720/)).toBeInTheDocument();
+    for (const next of ["Slightly left", "Slightly right", "Review and save"]) {
+      await waitFor(() => expect(screen.getByRole("button", { name: "Capture" })).toBeEnabled());
+      await user.click(screen.getByRole("button", { name: "Capture" }));
+      await waitFor(() => expect(currentStep()).toHaveTextContent(next));
+    }
+    const steps = api.find("POST", "/api/enrollment/sessions/s1/capture").map((c) => c.url.searchParams.get("step"));
+    expect(steps).toEqual(["front", "left", "right"]);
+    await waitFor(() => expect(api.find("DELETE", "/api/enrollment/sessions/s1")).toHaveLength(1)); // released
+    expect(screen.getByRole("img", { name: "Front photo" }).className).not.toContain("-scale-x-100"); // not mirrored
+    await user.click(await screen.findByRole("button", { name: "Save enrollment" }));
+    expect(await screen.findByText(/Erum is enrolled/)).toBeInTheDocument();
+    const saved = api.find("POST", "/api/people/7/enroll")[0]!.body as { source: string; photos: { image: string }[] };
+    expect(saved.source).toBe("gate");
+    expect(saved.photos[0]!.image).toBe(`data:image/jpeg;base64,${btoa("front")}`); // the server's full-resolution crop
+  }, 15_000);
+
+  it("Back returns to the choice and closes the session; the webcam can be chosen instead", async () => {
+    const { camera, user } = await toChoice();
+    await user.click(screen.getByRole("button", { name: "Next: photos" }));
+    await screen.findByRole("img", { name: "Camera preview" });
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await screen.findByRole("heading", { name: "Which camera?" });
+    await waitFor(() => expect(api.find("DELETE", "/api/enrollment/sessions/s1")).toHaveLength(1));
+    await user.click(screen.getByRole("radio", { name: /webcam/ }));
+    await user.click(screen.getByRole("button", { name: "Next: photos" }));
+    await waitFor(() => expect(camera.start).toHaveBeenCalled());
+    expect(api.find("POST", "/api/enrollment/webcam")).toHaveLength(1);
+  });
+
+  it("starts on the webcam when that was the last choice", async () => {
+    last = "webcam";
+    await toChoice();
+    expect(screen.getByRole("radio", { name: /webcam/ })).toBeChecked();
+  });
+
+  it("explains a camera that is busy", async () => {
+    api = fakeApi({
+      "GET /api/enrollment/steps": () => STEPS,
+      "GET /api/people": () => page([]),
+      "POST /api/people": () => PERSON,
+      "GET /api/enrollment/sources": () => ({ sources: [WEBCAM, GATE], last: null }),
+      "POST /api/enrollment/sessions": () =>
+        apiError(409, "The gate camera is in use by the enrollment wizard (admin); wait until they finish."),
+    });
+    vi.stubGlobal("fetch", api.fetchMock);
+    const { user } = await toChoice();
+    await user.click(screen.getByRole("radio", { name: /gate/ }));
+    await user.click(screen.getByRole("button", { name: "Next: photos" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("in use by the enrollment wizard (admin)");
+    expect(screen.getByRole("button", { name: "Capture" })).toBeDisabled();
+  });
+
+  it("doesn't ask when there are no IP cameras", async () => {
+    api = fakeApi({
+      "GET /api/enrollment/steps": () => STEPS,
+      "GET /api/people": () => page([]),
+      "POST /api/people": () => PERSON,
+      "GET /api/enrollment/sources": () => ({ sources: [WEBCAM], last: null }),
+      "POST /api/enrollment/webcam": () => ({ claim_id: "claim-1", expires_seconds: 90, renew_seconds: 20 }),
+    });
+    vi.stubGlobal("fetch", api.fetchMock);
+    const camera = fakeCamera();
+    const { user } = renderWizard(camera);
+    await user.type(await screen.findByLabelText("Employee code"), "2001");
+    await user.type(screen.getByLabelText("Name"), "Erum");
+    await waitFor(() => expect(api.find("GET", "/api/enrollment/sources")).toHaveLength(1));
+    await user.click(screen.getByRole("button", { name: "Add and continue" }));
+    await waitFor(() => expect(camera.start).toHaveBeenCalled());
+    expect(screen.queryByRole("heading", { name: "Which camera?" })).not.toBeInTheDocument();
+    expect(screen.getByRole("list", { name: "Steps" })).not.toHaveTextContent("Camera");
+  });
+});

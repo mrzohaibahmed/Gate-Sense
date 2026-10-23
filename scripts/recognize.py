@@ -168,6 +168,7 @@ class Pipeline:
 
     def process(self, frame, t: float, now: datetime, stamp: str):
         t0 = time.perf_counter()
+        self.live.full_frame(frame)  # the raw frame, for the enrollment wizard if it uses this camera
         small = resize_to_width(frame)
         scale = detection_scale(frame, small)
         self.log_size(frame, small, stamp)

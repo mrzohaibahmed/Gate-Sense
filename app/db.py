@@ -151,7 +151,19 @@ def _v2_person_sites_original_times(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE attendance_events ADD COLUMN original_timestamp TEXT")
 
 
-VERSIONS = [_v1_users_sessions_sites, _v2_person_sites_original_times]  # PRAGMA user_version = how many have run
+def _v3_user_preferences(conn: sqlite3.Connection) -> None:
+    """Per-user preferences (e.g. the enrollment wizard's last camera choice): one value per (user, key)."""
+    conn.execute("""CREATE TABLE IF NOT EXISTS user_preferences (
+        user_id INTEGER NOT NULL REFERENCES users(id),
+        key     TEXT NOT NULL,
+        value   TEXT,
+        updated TEXT NOT NULL,
+        PRIMARY KEY (user_id, key)
+    )""")
+
+
+VERSIONS = [_v1_users_sessions_sites, _v2_person_sites_original_times,
+            _v3_user_preferences]  # PRAGMA user_version = how many have run
 
 
 def _has_data(conn) -> bool:

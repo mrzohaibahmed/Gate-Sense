@@ -268,3 +268,34 @@ def test_capture_errors():
 def test_is_live():
     assert is_live(0) and is_live("rtsp://cam/stream") and is_live("http://cam/mjpg")
     assert not is_live("clip.mp4") and not is_live(r"C:\videos\exit.mp4")
+
+
+def test_worker_shares_full_frames_only_while_the_wizard_asks(tmp_path):
+    clock = [100.0]
+    w = live.LiveWriter("gate", live_dir=tmp_path, clock=lambda: clock[0], background=False)
+    frame = np.full((1440, 2560, 3), 90, np.uint8)
+    assert not w.full_frame(frame) and not live.full_path("gate", tmp_path).exists()  # nobody asked
+    live.mark_enrolling("gate", tmp_path)
+    clock[0] += 1
+    assert w.full_frame(frame)
+    shared = cv2.imread(str(live.full_path("gate", tmp_path)))
+    assert shared.shape == frame.shape  # raw and full resolution, no boxes drawn
+    clock[0] += 0.05
+    assert not w.full_frame(frame)  # at most ENROLL_FEED_FPS a second
+    clock[0] += 1 / config.ENROLL_FEED_FPS
+    assert w.full_frame(frame)
+    live.enroll_path("gate", tmp_path).unlink()
+    clock[0] += 1
+    assert not w.full_frame(frame) and not live.full_path("gate", tmp_path).exists()  # stale: the frame goes
+
+
+def test_background_sharing_writes_the_newest_frame(tmp_path):
+    w = live.LiveWriter("gate", live_dir=tmp_path)
+    live.mark_enrolling("gate", tmp_path)
+    assert w.full_frame(np.full((48, 64, 3), 200, np.uint8))
+    deadline = time.monotonic() + 5
+    while not live.full_path("gate", tmp_path).exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert cv2.imread(str(live.full_path("gate", tmp_path))).shape == (48, 64, 3)
+    live.stop_enrolling("gate", tmp_path)
+    assert not live.full_path("gate", tmp_path).exists()

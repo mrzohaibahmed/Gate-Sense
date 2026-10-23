@@ -27,6 +27,7 @@ from starlette.concurrency import run_in_threadpool
 
 from api import __version__, auth, maintenance, security, web
 from api.db import Database
+from api.enroll_camera import EnrollCameras
 from api.live import EventHub, FrameHub
 from api.routes import (
     attendance, audit, cameras, enrollment, live, people, reports, settings, sites, system, users,
@@ -61,10 +62,13 @@ def face_models():
     return Detector(), Recognizer()
 
 
-def create_app(workers: WorkerManager | None = None, database: Database | None = None, models=None) -> FastAPI:
-    """`workers`, `database` and `models` (a callable returning (detector, recognizer)) are injectable for tests."""
+def create_app(workers: WorkerManager | None = None, database: Database | None = None, models=None,
+               enroll_opener=None) -> FastAPI:
+    """`workers`, `database`, `models` (a callable returning (detector, recognizer)) and `enroll_opener` (opens an
+    IP camera for the enrollment wizard: (source, name) -> newest-frame reader) are injectable for tests."""
     manager = workers or WorkerManager()
     database = database or Database()
+    enroll_cameras = EnrollCameras(manager, enroll_opener)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -80,6 +84,7 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
         finally:
             live_updates.cancel()
             nightly.cancel()
+            await run_in_threadpool(enroll_cameras.close_all)
             for camera, result in await run_in_threadpool(manager.close):
                 print(f"Camera {camera}: {result}", flush=True)
 
@@ -88,6 +93,7 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
                   generate_unique_id_function=lambda route: route.name)  # operation ids = function names
     app.state.workers, app.state.db, app.state.started = manager, database, time.time()
     app.state.face_models = models or face_models
+    app.state.enroll_cameras = enroll_cameras
     app.state.frames = FrameHub(lambda: manager.live_dir)
     app.state.events = EventHub(database, manager)
     app.add_middleware(

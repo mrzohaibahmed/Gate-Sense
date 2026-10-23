@@ -499,6 +499,131 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/enrollment/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Enrollment Sources
+         * @description The wizard's "Which camera?": this PC's webcam and every IP camera (ENROLL_IP_TYPES), with the user's last
+         *     choice. No camera sources or passwords.
+         */
+        get: operations["enrollment_sources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/enrollment/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Session
+         * @description Hold an IP camera for the wizard (or renew the hold). A running worker's frames are shared (attendance goes
+         *     on); otherwise the server opens the camera's main stream, and its worker can't start until the session ends.
+         *     Renew every renew_seconds; a session not renewed for expires_seconds lapses.
+         */
+        post: operations["open_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/enrollment/sessions/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Close Session
+         * @description Release the camera (the wizard closed). Closing a session that already lapsed is fine too.
+         */
+        delete: operations["close_session"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/enrollment/sessions/{session_id}/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check Session
+         * @description The same check as /api/enrollment/check, on the newest frame's enrollment window at full resolution.
+         */
+        post: operations["check_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/enrollment/sessions/{session_id}/capture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Capture Session
+         * @description Take the photo for a step: the newest frame's enrollment window at full resolution (not the preview), if it
+         *     passes the step's checks (409 with the reason otherwise). Nothing is saved yet: it goes to review and save.
+         */
+        post: operations["capture_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/enrollment/sessions/{session_id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream Session
+         * @description The wizard's live preview of an IP camera session (the checks and the photo use the full resolution). Ends
+         *     when the session ends.
+         */
+        get: operations["stream_session"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/enrollment/steps": {
         parameters: {
             query?: never;
@@ -1142,6 +1267,47 @@ export interface components {
             missing_variables: string[];
             worker: components["schemas"]["WorkerInfo"];
         };
+        /**
+         * CameraCheck
+         * @description FrameCheck for an IP camera session, plus whether frames arrive and the window's size.
+         */
+        CameraCheck: {
+            /** Ok */
+            ok: boolean;
+            /** State */
+            state: string;
+            /** Message */
+            message: string;
+            /** Yaw */
+            yaw: number | null;
+            /** Pitch */
+            pitch: number | null;
+            /** Face Px */
+            face_px: number | null;
+            /** Score */
+            score: number | null;
+            /** Box */
+            box: number[] | null;
+            /** Guide */
+            guide: number[];
+            /**
+             * Connected
+             * @description frames are arriving
+             */
+            connected: boolean;
+            /**
+             * Width
+             * @description the enrollment window at full resolution
+             */
+            width: number | null;
+            /** Height */
+            height: number | null;
+            /**
+             * Feed
+             * @enum {string}
+             */
+            feed: "camera" | "worker";
+        };
         /** CameraIn */
         CameraIn: {
             /**
@@ -1398,6 +1564,20 @@ export interface components {
              */
             timeout_seconds?: number;
         };
+        /** Captured */
+        Captured: {
+            /** Step */
+            step: string;
+            /**
+             * Image
+             * @description the full-resolution enrollment window, JPEG as a data: URL
+             */
+            image: string;
+            /** Width */
+            width: number;
+            /** Height */
+            height: number;
+        };
         /** Correction */
         Correction: {
             /**
@@ -1523,6 +1703,43 @@ export interface components {
             accepted: number;
             /** Embeddings */
             embeddings: number;
+        };
+        /** EnrollmentSource */
+        EnrollmentSource: {
+            /**
+             * Key
+             * @description "webcam" (this PC's webcam, in the browser) or "camera:<id>"
+             */
+            key: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "webcam" | "camera";
+            /** Label */
+            label: string;
+            /** Camera Id */
+            camera_id?: number | null;
+            /** Direction */
+            direction?: string | null;
+            /** Site */
+            site?: string | null;
+            /**
+             * Running
+             * @description its worker runs: the wizard shares its frames, attendance goes on
+             * @default false
+             */
+            running?: boolean;
+        };
+        /** EnrollmentSources */
+        EnrollmentSources: {
+            /** Sources */
+            sources: components["schemas"]["EnrollmentSource"][];
+            /**
+             * Last
+             * @description this user's last choice, if it still exists
+             */
+            last: string | null;
         };
         /** Event */
         Event: {
@@ -2148,6 +2365,11 @@ export interface components {
             reason: string;
             /** Photos */
             photos: components["schemas"]["PhotoIn"][];
+            /**
+             * Source
+             * @description where the photos came from: "webcam" or the camera name (for the audit log)
+             */
+            source?: string | null;
         };
         /** PhotosUpload */
         PhotosUpload: {
@@ -2224,6 +2446,35 @@ export interface components {
              * @enum {string}
              */
             role: "admin" | "hr" | "viewer" | "guard";
+        };
+        /** SessionIn */
+        SessionIn: {
+            /** Camera Id */
+            camera_id: number;
+            /**
+             * Session Id
+             * @description renew this session; omit (or a lapsed one) for a new one
+             */
+            session_id?: string | null;
+        };
+        /** SessionOut */
+        SessionOut: {
+            /** Session Id */
+            session_id: string;
+            /** Camera Id */
+            camera_id: number;
+            /** Camera */
+            camera: string;
+            /**
+             * Feed
+             * @description "worker": the running worker's frames are shared
+             * @enum {string}
+             */
+            feed: "camera" | "worker";
+            /** Expires Seconds */
+            expires_seconds: number;
+            /** Renew Seconds */
+            renew_seconds: number;
         };
         /** Setting */
         Setting: {
@@ -3907,6 +4158,286 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enrollment_sources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnrollmentSources"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    open_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionOut"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description another user's wizard has the camera, or its password variable is missing */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    close_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    check_session: {
+        parameters: {
+            query?: {
+                step?: string;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CameraCheck"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    capture_session: {
+        parameters: {
+            query?: {
+                step?: string;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Captured"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the newest frame doesn't pass the step's checks */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_session: {
+        parameters: {
+            query?: {
+                /** @description end after this many frames */
+                max_frames?: number | null;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description MJPEG: the enrollment window, up to ENROLL_PREVIEW_FPS a second and ENROLL_PREVIEW_WIDTH wide; use it as an <img> src */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "multipart/x-mixed-replace; boundary=frame": unknown;
+                };
             };
             /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
             401: {

@@ -114,6 +114,15 @@ WS_CAMERA_SECONDS = 2.0  # /api/ws: camera status messages (and session checks) 
 WS_QUEUE = 200  # messages waiting for one WebSocket client; a client this far behind is disconnected
 ENROLL_CAMERA_CLAIM_SECONDS = 90  # the enrollment wizard's webcam claim lapses if not renewed within this time
 ENROLL_CAMERA_RENEW_SECONDS = 20  # the wizard renews its claim this often while it has the webcam open
+# Enrollment from an IP camera (the wizard's "Which camera?"): the server reads the camera and checks the
+# centred enrollment window, the same guide box and steps as the webcam, at the camera's full resolution.
+ENROLL_IP_TYPES = ("hikvision", "rtsp")  # camera types offered in the wizard
+ENROLL_IP_WINDOW = 0.5  # the enrollment window: this share of the frame's width and height, centred
+ENROLL_FEED_FPS = 5  # a running worker shares this many full-resolution frames a second with the wizard
+ENROLL_FEED_WATCH_SECONDS = 3  # ... while the API keeps data/live/<camera>.enroll this fresh
+ENROLL_PREVIEW_FPS = 8  # the wizard's IP camera preview (MJPEG): frames a second
+ENROLL_PREVIEW_WIDTH = 960  # ... and its largest width (the checks and the photo use the full resolution)
+ENROLL_CAPTURE_QUALITY = 95  # JPEG quality of the frames a worker shares and of a captured photo
 
 # --- Processing rate -------------------------------------------------------
 PROCESS_FPS = 8  # frames per second actually processed (5 to 10 on CPU)

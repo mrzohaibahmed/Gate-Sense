@@ -525,7 +525,7 @@ def test_camera_passwords_never_appear_in_responses(app, monkeypatch, tmp_path):
 def test_openapi_lists_every_endpoint_with_a_response_model(app):
     spec = TestClient(app).get("/openapi.json").json()
     ops = [(m, p, o) for p, ms in spec["paths"].items() for m, o in ms.items()]
-    assert len(ops) == 59 and len({o["operationId"] for _, _, o in ops}) == 59  # + live, enrollment, system, Streamlit gaps
+    assert len(ops) == 65 and len({o["operationId"] for _, _, o in ops}) == 65  # + live, enrollment (IP cameras), system
     expected = {("get", "/api/overview"), ("get", "/api/attendance"), ("get", "/api/events"),
                 ("get", "/api/snapshots/{event_id}"), ("post", "/api/attendance/corrections"), ("get", "/api/people"),
                 ("post", "/api/people"), ("get", "/api/people/{person_id}"), ("patch", "/api/people/{person_id}"),

@@ -40,7 +40,7 @@ def test_existing_database_keeps_its_data(tmp_path, capsys):
     before = dump(path)
 
     conn = db.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.VERSIONS) == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.VERSIONS) == 3
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert {"users", "sessions", "sites"} <= tables
     sites = [tuple(r) for r in conn.execute("SELECT id, name, timezone FROM sites")]
@@ -57,7 +57,7 @@ def test_existing_database_keeps_its_data(tmp_path, capsys):
 
     backups = list((tmp_path / "backups").glob("attendance-v0-*.db"))
     assert len(backups) == 1 and dump(backups[0]) == before  # the untouched copy
-    assert "upgraded from version 0 to 2" in capsys.readouterr().out
+    assert "upgraded from version 0 to 3" in capsys.readouterr().out
 
     db.connect(path).close()  # already upgraded: nothing runs, no second copy
     assert len(list((tmp_path / "backups").iterdir())) == 1 and dump(path) == after
@@ -66,7 +66,7 @@ def test_existing_database_keeps_its_data(tmp_path, capsys):
 def test_new_database_gets_everything_without_a_backup(tmp_path):
     path = tmp_path / "new.db"
     conn = db.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
     cam = db.upsert_camera(conn, "gate", 0, "IN")
     db.ensure_cameras(conn, [{"name": "gate2", "source": 1, "direction": "OUT"}])
     assert [r["site_id"] for r in conn.execute("SELECT site_id FROM cameras ORDER BY id")] == [1, 1] and cam == 1

@@ -7,7 +7,8 @@ status/stop files under data/run/), and adds what the API needs:
   --parent-pid in its status file);
 - a clear CameraBusy error instead of opening a camera twice: a camera that
   any process already runs, a webcam another camera's worker uses, or the
-  webcam while the enrollment wizard holds it (claim_webcam). The worker
+  webcam or an IP camera while the enrollment wizard holds it (claim_webcam,
+  camera_holds from api.enroll_camera). The worker
   itself also takes an OS lock per camera and webcam (app.workers.acquire_camera),
   so even two starts at the same moment can't both open it;
 - fps, last frame time and last error per worker;
@@ -71,6 +72,13 @@ class WorkerManager:
         # Only this process starts workers for the dashboard, so the claims live here; one lock with start().
         self._claims: dict[str, tuple[str, float]] = {}
         self._lock = threading.RLock()
+        # Users whose wizard has this camera open on its own connection (set by api.enroll_camera.EnrollCameras).
+        self.camera_holds = lambda name: []
+
+    @property
+    def lock(self) -> threading.RLock:
+        """Held while a camera is started or claimed for enrollment, so the two can't cross."""
+        return self._lock
 
     @property
     def run_dir(self) -> Path:
@@ -156,6 +164,9 @@ class WorkerManager:
             if st.state != "stopped":
                 raise CameraBusy(f"{name} is already running ({self._describe(st)}, process {st.pid}); "
                                  "it can't be opened twice")
+            if users := self.camera_holds(name):
+                raise CameraBusy(f"{name} is in use by the enrollment wizard ({', '.join(users)}); "
+                                 "finish or close the enrollment first")
             source = self._mgr.camera(name)["source"]
             if is_webcam(parse_source(str(source))):
                 if other := app_workers.webcam_conflict(name, source, self._mgr.cameras, self.run_dir):
