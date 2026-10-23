@@ -1,4 +1,4 @@
-"""Cameras: the list (with each worker's status), add, change, start / stop, and a connection test.
+"""Cameras: the list (with each worker's status), add, change, start / stop, Auto on/off, and a connection test.
 
 The camera list is cameras.json (app/camera_settings.py); a
 camera's id, site and events are in the cameras table. Passwords never appear in a response: sources keep their
@@ -49,6 +49,10 @@ class Camera(BaseModel):
     direction: Direction
     type: CameraType
     mirror: bool
+    enabled: bool = Field(description="Auto: GateSense starts this camera when it starts and restarts it whenever "
+                                      "it stops (api/supervisor.py)")
+    auto_paused: bool = Field(description="Auto is on, but the camera was stopped by hand: it stays stopped until "
+                                          "it is started again")
     source: str | int = Field(description="webcam index, file path or RTSP URL with ${VAR} placeholders; "
                                           "never a password")
     roi: Roi | None
@@ -108,6 +112,11 @@ class TestResult(BaseModel):
     error: str | None = Field(description="why there was no picture (passwords masked)")
 
 
+class EnabledIn(BaseModel):
+    enabled: bool = Field(description="true: start this camera with GateSense and restart it whenever it stops")
+    reason: str = API_REASON
+
+
 class StopResult(BaseModel):
     camera: str
     result: str = Field(description='"stopped cleanly", "not running", or what happened instead')
@@ -129,6 +138,8 @@ def cameras(request: Request) -> list[dict]:
             **{k: e.get(k) for k in ("index", "ip", "port", "user", "channel", "stream", "path")},
             "id": row["id"], "position": position, "name": e["name"], "site_id": row["site_id"], "site": row["site"],
             "direction": e["direction"], "type": e.get("type") or "file", "mirror": bool(e.get("mirror")),
+            "enabled": bool(e.get("enabled")),
+            "auto_paused": bool(e.get("enabled")) and request.app.state.supervisor.paused(e["name"]),
             "source": camera_settings.public_source(source), "roi": e.get("roi"), "password_variable": var,
             "password_set": None if var is None else bool(camera_settings.password_status(var)),
             "missing_variables": sources.missing_variables(source), "worker": statuses[e["name"]],
@@ -237,18 +248,36 @@ def start_camera(camera_id: int, request: Request, user: CurrentUser = Depends(c
         raise HTTPException(409, str(e)) from None
     except WorkerError as e:
         raise HTTPException(400, str(e)) from None
+    request.app.state.supervisor.started_by_hand(name)  # Auto watches it again
     auth.db_of(request).audit(user.username, "start_camera", f"camera:{name}", {"pid": info.pid}, "started from the API")
     return info
 
 
 @router.post("/{camera_id}/stop", response_model=StopResult)
 def stop_camera(camera_id: int, request: Request, user: CurrentUser = Depends(control)) -> StopResult:
+    """Stop the camera's worker cleanly. A camera with Auto on stays stopped until it is started again."""
     name = get_or_404(request, camera_id)["name"]
+    request.app.state.supervisor.stopped_by_hand(name)  # first, so it isn't restarted the moment it stops
     result = request.app.state.workers.stop(name)
     if result != "not running":
         auth.db_of(request).audit(user.username, "stop_camera", f"camera:{name}", {"result": result},
                                   "stopped from the API")
     return StopResult(camera=name, result=result)
+
+
+@router.put("/{camera_id}/enabled", response_model=Camera)
+def set_camera_enabled(camera_id: int, body: EnabledIn, request: Request, user: CurrentUser = Depends(manage)) -> dict:
+    """Turn Auto on or off. On: GateSense starts the camera now (if stopped) and whenever GateSense starts, and
+    restarts it whenever it stops (5 s, then longer waits up to 5 minutes). Off: a running camera keeps running, but
+    is no longer restarted. Allowed while the camera runs. Audited (enable_camera / disable_camera)."""
+    cam = get_or_404(request, camera_id)
+    try:
+        with auth.db_of(request).conn() as conn:
+            camera_settings.set_enabled(cam["name"], body.enabled, user.username, conn, body.reason)
+    except ValueError as e:
+        raise HTTPException(422, str(e).capitalize() + ".") from None
+    request.app.state.supervisor.enabled_changed(cam["name"], body.enabled)
+    return get_or_404(request, camera_id)
 
 
 @router.post("/test", response_model=TestResult)

@@ -20,6 +20,11 @@ class Backup(BaseModel):
     file: str
     size_bytes: int
     created: datetime
+    files: list[str] = Field([], description="every file of the set: database, gallery, known/ photos (zip), "
+                                             "cameras.json, settings.json")
+    copied_to: str | None = Field(None, description="the second backup folder the set was copied to")
+    copy_error: str | None = Field(None, description="why the copy to the second folder failed (the set in "
+                                                     "data/backups/ is fine)")
 
 
 class Maintenance(BaseModel):
@@ -27,7 +32,8 @@ class Maintenance(BaseModel):
     last_ok: bool | None
     last_error: str | None
     backup_hour: int = Field(description="the nightly job runs once a day at or after this hour")
-    backup_retention_days: int = Field(description="nightly backups are kept this long")
+    backup_keep: int = Field(description="nightly backup sets kept in each backup folder")
+    backup_copy_dir: str | None = Field(description="second backup folder (GATESENSE_BACKUP_COPY_DIR), if set")
     snapshot_retention_days: int = Field(description="event snapshots are kept this long (setting)")
     snapshots_bytes: int
 
@@ -82,7 +88,8 @@ def system_info(request: Request, _: CurrentUser = Depends(manage)) -> SystemInf
         maintenance=Maintenance(
             last_run=datetime.fromisoformat(last["time"]) if last.get("time") else None, last_ok=last.get("ok"),
             last_error=last.get("error"), backup_hour=config.BACKUP_HOUR,
-            backup_retention_days=config.BACKUP_RETENTION_DAYS,
+            backup_keep=config.BACKUP_KEEP,
+            backup_copy_dir=str(config.BACKUP_COPY_DIR) if config.BACKUP_COPY_DIR else None,
             snapshot_retention_days=config.SNAPSHOT_RETENTION_DAYS, snapshots_bytes=maintenance.snapshot_bytes()))
 
 
@@ -92,14 +99,19 @@ class BackupIn(BaseModel):
 
 @router.post("/backup", response_model=Backup, status_code=201)
 async def backup_now(body: BackupIn, request: Request, admin: CurrentUser = Depends(manage)) -> Backup:
-    """Copy the database (consistent, while cameras keep writing: SQLite's online backup) and the face gallery to
-    data/backups/. Audited. Manual copies are never deleted automatically (nightly ones after BACKUP_RETENTION_DAYS)."""
+    """Make a backup set in data/backups/: the database (consistent while cameras keep writing: SQLite's online
+    backup, then an integrity check), the face gallery, the enrollment photos, cameras.json and settings.json; and
+    copy it to the second backup folder if one is set. Audited. Manual sets are never deleted automatically
+    (only the newest BACKUP_KEEP nightly sets are kept)."""
 
     def run() -> Backup:
-        dest = maintenance.backup_database(auth.db_of(request), maintenance.MANUAL)
-        return Backup(file=dest.name, size_bytes=dest.stat().st_size, created=datetime.now())
+        made = maintenance.make_backup(auth.db_of(request), maintenance.MANUAL)
+        return Backup(file=made.database.name, size_bytes=made.database.stat().st_size, created=datetime.now(),
+                      files=sorted(p.name for p in made.files.values()),
+                      copied_to=str(made.copied_to) if made.copied_to else None, copy_error=made.copy_error)
 
     result = await run_in_threadpool(run)
     await run_in_threadpool(auth.db_of(request).log_change, admin.username, "backup", "database",
-                            {"file": result.file, "bytes": result.size_bytes}, body.reason)
+                            {"file": result.file, "bytes": result.size_bytes, "files": result.files,
+                             "copied_to": result.copied_to, "copy_error": result.copy_error}, body.reason)
     return result

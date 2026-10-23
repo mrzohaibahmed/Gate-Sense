@@ -55,17 +55,18 @@ def _type_of(source) -> str:
 
 
 def entries(path: Path | None = None) -> list[dict]:
-    """The editable camera list: cameras.json if it exists, else the defaults from app/config.py."""
+    """The editable camera list: cameras.json if it exists, else the defaults from app/config.py.
+
+    A cameras.json that can't be read raises config.CamerasFileError: the defaults must never be saved over it.
+    """
     path = path or config.CAMERAS_FILE
     if path.is_file():
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))["cameras"]
-        except (OSError, ValueError, KeyError, TypeError):
-            pass  # config.load_cameras already warned; start again from the defaults
+        config.parse_cameras(path)  # raises CamerasFileError for a file that can't be read
+        return json.loads(path.read_text(encoding="utf-8"))["cameras"]
     out = []
     for cam in config.DEFAULT_CAMERAS:  # no file: the defaults, not a possibly stale in-memory list
         e = {"name": cam["name"], "direction": cam["direction"], "mirror": bool(cam.get("mirror")),
-             "type": _type_of(cam["source"]), "source": cam["source"]}
+             "enabled": bool(cam.get("enabled")), "type": _type_of(cam["source"]), "source": cam["source"]}
         if e["type"] == "webcam":
             e["index"] = cam["source"]
         elif e["type"] == "rtsp":
@@ -104,7 +105,8 @@ def build(entry: dict, others: list[dict]) -> dict:
     if e.get("direction") not in ("IN", "OUT"):
         raise ValueError("direction must be IN (entrance) or OUT (exit)")
     kind = e.get("type")
-    out = {"name": name, "direction": e["direction"], "mirror": bool(e.get("mirror")), "type": kind}
+    out = {"name": name, "direction": e["direction"], "mirror": bool(e.get("mirror")),
+           "enabled": bool(e.get("enabled")), "type": kind}
     if e.get("roi"):
         out["roi"] = check_roi(e["roi"])
 
@@ -174,6 +176,8 @@ def save(cams: list[dict], path: Path | None = None) -> None:
             "cameras": cams}
     atomic_write_bytes(path, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
     config.CAMERAS = config.load_cameras(path)
+    if path == config.CAMERAS_FILE:
+        config.CAMERAS_ERROR = None  # a good file again
 
 
 # --- Passwords in .env -------------------------------------------------------------------------
@@ -255,6 +259,21 @@ def delete(name: str, user: str, conn, running: set[str] = frozenset(), reason: 
     save([c for c in cams if c["name"] != name])
     db.log_change(conn, user, "delete_camera", f"camera:{name}",
                   {"type": gone["type"], "source": mask_source(gone["source"])}, reason.strip() or DEFAULT_REASON)
+
+
+def set_enabled(name: str, enabled: bool, user: str, conn, reason: str = "") -> bool:
+    """Turn automatic start/restart on or off for a camera (allowed while it runs); audited. False if unchanged."""
+    cams = entries()
+    cam = next((c for c in cams if c["name"] == name), None)
+    if cam is None:
+        raise ValueError(f"no camera called {name!r}")
+    if bool(cam.get("enabled")) == enabled:
+        return False
+    cam["enabled"] = enabled
+    save(cams)
+    db.log_change(conn, user, "enable_camera" if enabled else "disable_camera", f"camera:{name}",
+                  {"enabled": [not enabled, enabled]}, reason.strip() or DEFAULT_REASON)
+    return True
 
 
 def move(name: str, step: int) -> None:

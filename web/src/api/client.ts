@@ -136,6 +136,8 @@ export const api = {
     request("get", path, options),
   post: <P extends PathsWith<"post">>(path: P, options?: RequestOptions<Operation<P, "post">>) =>
     request("post", path, options),
+  put: <P extends PathsWith<"put">>(path: P, options?: RequestOptions<Operation<P, "put">>) =>
+    request("put", path, options),
   patch: <P extends PathsWith<"patch">>(path: P, options?: RequestOptions<Operation<P, "patch">>) =>
     request("patch", path, options),
   delete: <P extends PathsWith<"delete">>(path: P, options?: RequestOptions<Operation<P, "delete">>) =>

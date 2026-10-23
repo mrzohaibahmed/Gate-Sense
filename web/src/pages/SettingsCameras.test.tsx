@@ -18,6 +18,8 @@ const camera = (id: number, name: string, state = "stopped"): Camera => ({
   direction: id === 1 ? "IN" : "OUT",
   type: "webcam",
   mirror: false,
+  enabled: false,
+  auto_paused: false,
   source: 0,
   roi: null,
   index: 0,
@@ -37,6 +39,10 @@ beforeEach(() => {
       return cameras;
     },
     "DELETE /api/cameras/3": () => new Response(null, { status: 204 }),
+    "PUT /api/cameras/2/enabled": () => {
+      cameras = cameras.map((c) => (c.id === 2 ? { ...c, enabled: true } : c));
+      return cameras[1];
+    },
     "GET /api/cameras/2/log": () => ({
       camera: "exit",
       lines: ["08:00:01 started", "08:00:02 match waqas 0.71"],
@@ -90,6 +96,24 @@ describe("camera list in Settings", () => {
     await user.type(within(dialog).getByLabelText("Reason (required)"), "x");
     await user.click(within(dialog).getByRole("button", { name: "Delete camera" }));
     expect(await within(dialog).findByText(/is running: stop it/)).toBeInTheDocument();
+  });
+
+  it("turns Auto on for a camera and shows a camera paused by hand", async () => {
+    const user = userEvent.setup();
+    cameras[0] = { ...cameras[0]!, enabled: true, auto_paused: true };
+    renderRoutes(routes, "/settings", admin());
+    await screen.findByText("yard");
+    expect(screen.getByRole("switch", { name: "Start entrance automatically" })).toBeChecked();
+    expect(screen.getByText("paused")).toBeInTheDocument();
+    const exit = screen.getByRole("switch", { name: "Start exit automatically" });
+    expect(exit).not.toBeChecked();
+    await user.click(exit);
+    await waitFor(() => expect(api.find("PUT", "/api/cameras/2/enabled")).toHaveLength(1));
+    expect(api.find("PUT", "/api/cameras/2/enabled")[0]!.body).toEqual({
+      enabled: true,
+      reason: "changed in Settings > Cameras",
+    });
+    await waitFor(() => expect(screen.getByRole("switch", { name: "Start exit automatically" })).toBeChecked());
   });
 
   it("opens a camera's log", async () => {

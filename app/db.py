@@ -229,6 +229,24 @@ def connect(path: Path | None = None, migrate: bool = True) -> sqlite3.Connectio
     return conn
 
 
+def quick_check(path: Path | None = None) -> str | None:
+    """PRAGMA quick_check of the database, read-only: None if it is fine (or doesn't exist yet), else the problem.
+
+    The app refuses to start on a damaged database (restore one with scripts/restore.py) rather than write
+    attendance into it.
+    """
+    path = path or config.DB_PATH
+    if not path.is_file():
+        return None
+    try:
+        with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=10)) as conn:
+            rows = conn.execute("PRAGMA quick_check").fetchall()
+    except sqlite3.Error as e:
+        return f"{type(e).__name__}: {e}"
+    result = "; ".join(str(r[0]) for r in rows[:5])
+    return None if result == "ok" else result
+
+
 def require_reason(reason: str | None) -> None:
     if not reason or not reason.strip():
         raise ValueError("a reason is required")

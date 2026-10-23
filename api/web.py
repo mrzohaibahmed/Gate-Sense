@@ -2,7 +2,8 @@
 
 - /assets/* (Vite's hashed files) are served with a long cache; index.html never is, so a new build shows at once.
 - Any other path that isn't /api/... (or the API docs) gets index.html: the React router shows the page
-  (/attendance, /people/3, ...). Unknown /api/... paths stay JSON 404s.
+  (/attendance, /people/3, ...). Unknown /api/... paths stay JSON 404s, and so do paths that could reach outside
+  the build (absolute, drive letters, UNC, backslashes, ..): refused before the file system is touched.
 - Without a build, / explains how to make one (503).
 
 build_status() and build() are for start.bat (python -m api.run --preflight): rebuild when web/ is newer than the
@@ -11,7 +12,7 @@ build, if Node.js is installed.
 
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
@@ -37,6 +38,18 @@ class CachedAssets(StaticFiles):
         return response
 
 
+def safe_web_path(path: str) -> bool:
+    """Can `path` (from the URL) name a file inside the build? Checked on the text, before the file system is
+    touched: on Windows, joining "//host/share/x", "\\\\host\\share" or "C:/x" to the build folder gives a path
+    outside it, and resolving a UNC path already opens a network connection to that host (and sends this
+    account's credentials to it). So: no absolute paths, drive letters or other colons, backslashes or "..".
+    """
+    if not path or "\\" in path or ":" in path or "\0" in path or path.startswith("/"):
+        return False
+    posix, windows = PurePosixPath(path), PureWindowsPath(path)
+    return not (posix.is_absolute() or windows.drive or windows.root or ".." in posix.parts)
+
+
 def mount(app: FastAPI, dist: Path | None = None) -> None:
     """Serve the build. Call after every API router: the catch-all route must come last."""
     dist = Path(dist or config.WEB_DIST)
@@ -50,6 +63,8 @@ def mount(app: FastAPI, dist: Path | None = None) -> None:
     def web_app(path: str):
         if path == "api" or path.startswith("api/"):
             raise HTTPException(404, "Not Found")
+        if path and not safe_web_path(path):
+            raise HTTPException(404, "Not Found")  # never resolved: see safe_web_path
         if not index.is_file():
             return HTMLResponse(NOT_BUILT, status_code=503)
         if path:

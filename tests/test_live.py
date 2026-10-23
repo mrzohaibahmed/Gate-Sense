@@ -256,13 +256,46 @@ def test_capture_keeps_newest_frame():
     cap.stop()
 
 
-def test_capture_errors():
-    cap = LiveCapture(0, opener=lambda s: (_ for _ in ()).throw(RuntimeError("busy")))
-    assert wait_for(lambda: cap.error) == "could not open source"
-    fake = FakeCap([])
-    cap = LiveCapture(0, opener=lambda s: fake, max_failures=3)
-    assert wait_for(lambda: cap.error) == "lost the camera"
-    wait_for(lambda: fake.released)
+def test_capture_reopens_a_webcam_that_fails_to_open(monkeypatch):
+    """A webcam that can't be opened (unplugged, held by another app) is tried again with backoff; the worker
+    never gets an error that would end it."""
+    attempts = []
+
+    def opener(source):
+        attempts.append(time.monotonic())
+        if len(attempts) < 3:
+            raise RuntimeError("busy")
+        return FakeCap([frame(40)] * 50)
+
+    log = []
+    cap = LiveCapture(0, opener=opener, backoff=(0.05, 0.1), log=log.append)
+    seq, img = wait_for(lambda: cap.latest())
+    assert int(img.mean()) == 40 and len(attempts) == 3 and cap.error is None
+    assert cap.delays == [0.05, 0.1] and cap.reconnects == 2
+    assert "could not open source; opening it again in 0.05 s (attempt 1)" in log[0]
+    h = cap.health()
+    assert h["state"] == "live" and h["reconnects"] == 2 and h["reconnects_today"] == 2
+    assert h["last_error"] == "could not open source"
+    cap.stop()
+
+
+def test_capture_reopens_a_lost_webcam():
+    """Read failures in a row (USB reset) release the camera and open it again; frames continue."""
+    caps = [FakeCap([frame(10)]), FakeCap([frame(20)] * 200)]
+    opened = []
+
+    def opener(source):
+        opened.append(caps[len(opened)])
+        return opened[-1]
+
+    cap = LiveCapture(0, opener=opener, max_failures=3, backoff=(0.05,))
+    wait_for(lambda: (got := cap.latest()) and int(got[1].mean()) == 20)
+    assert caps[0].released and cap.error is None and cap.last_error == "lost the camera"
+    assert cap.delays == [0.05]  # it had delivered a frame: the backoff starts again from the shortest pause
+    assert cap.state == "live"
+    cap.stop()
+    wait_for(lambda: caps[1].released)
+    assert cap.state == "stopped"
 
 
 def test_is_live():

@@ -162,6 +162,22 @@ function CamerasTab() {
     },
     onError: (e) => toast.error(e instanceof ApiError ? e.message : String(e)),
   });
+  const setAuto = useMutation({
+    mutationFn: ({ camera, enabled }: { camera: Camera; enabled: boolean }) =>
+      api.put("/api/cameras/{camera_id}/enabled", {
+        path: { camera_id: camera.id },
+        body: { enabled, reason: "changed in Settings > Cameras" },
+      }),
+    onSuccess: (cam) => {
+      toast.success(
+        cam.enabled
+          ? `${cam.name} now starts with GateSense and is restarted whenever it stops`
+          : `${cam.name} is no longer started automatically`,
+      );
+      refresh();
+    },
+    onError: (e) => toast.error(e instanceof ApiError ? e.message : String(e)),
+  });
   return (
     <Card>
       <CardHeader>
@@ -184,6 +200,7 @@ function CamerasTab() {
                 <Th>Type</Th>
                 <Th>Source</Th>
                 <Th>Site</Th>
+                <Th title="Start with GateSense and restart whenever it stops">Auto</Th>
                 <Th>Status</Th>
                 <Th />
               </tr>
@@ -234,6 +251,21 @@ function CamerasTab() {
                     )}
                   </Td>
                   <Td>{c.site ?? ""}</Td>
+                  <Td>
+                    <span className="flex items-center gap-1">
+                      <Switch
+                        checked={c.enabled}
+                        disabled={setAuto.isPending}
+                        onCheckedChange={(enabled) => setAuto.mutate({ camera: c, enabled })}
+                        aria-label={`Start ${c.name} automatically`}
+                      />
+                      {c.auto_paused && (
+                        <Badge tone="warn" title="Stopped by hand: it stays stopped until it is started again">
+                          paused
+                        </Badge>
+                      )}
+                    </span>
+                  </Td>
                   <Td>
                     <span className="flex items-center gap-1">
                       <CameraStateDot state={c.worker.state} /> {c.worker.state}
@@ -1012,7 +1044,8 @@ function SystemTab() {
   const backup = useMutation({
     mutationFn: () => api.post("/api/system/backup", { body: { reason: "backup from the dashboard" } }),
     onSuccess: (b) => {
-      toast.success(`Backup saved: ${b.file}`);
+      if (b.copy_error) toast.error(`Backup saved in data/backups, but not copied: ${b.copy_error}`);
+      else toast.success(`Backup saved: ${b.file}${b.copied_to ? ` (and copied to ${b.copied_to})` : ""}`);
       void queryClient.invalidateQueries({ queryKey: ["system"] });
     },
     onError: (e) => toast.error(errorText(e)),
@@ -1043,6 +1076,7 @@ function SystemTab() {
         `not run yet (daily after ${String(s.maintenance.backup_hour).padStart(2, "0")}:00)`
       ),
     ],
+    ["Second backup folder", s.maintenance.backup_copy_dir ?? "none (set GATESENSE_BACKUP_COPY_DIR)"],
   ];
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -1070,8 +1104,9 @@ function SystemTab() {
         </CardHeader>
         {s.backups.length === 0 ? (
           <p className="p-4 text-sm text-muted-foreground">
-            No backups yet. They go to data/backups/; nightly ones are kept {s.maintenance.backup_retention_days} days,
-            "Back up now" copies until you delete them.
+            No backups yet. They go to data/backups/: the database, face data, enrollment photos and camera and
+            threshold settings (never .env). The newest {s.maintenance.backup_keep} nightly sets are kept; "Back up now"
+            sets until you delete them. Restore with scripts\restore.py.
           </p>
         ) : (
           <ul className="max-h-72 divide-y overflow-auto text-sm">

@@ -24,6 +24,7 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CAMERAS_FILE", tmp_path / "cameras.json")
     monkeypatch.setattr(config, "CAMERAS", [dict(c) for c in config.DEFAULT_CAMERAS])
     monkeypatch.setattr(config, "_cameras_signature", None)  # matches the (missing) temporary cameras.json
+    monkeypatch.setattr(config, "CAMERAS_ERROR", None)  # even if the real cameras.json can't be read
     # Likewise a real settings.json: tests start from the values written in app/config.py.
     monkeypatch.setattr(config, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(config, "_settings_signature", None)
@@ -37,3 +38,4 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(auth, "login_limit", auth.RateLimit())
     monkeypatch.setattr(config, "WEB_DIST", tmp_path / "no-web-dist")
     monkeypatch.setattr(config, "MAINTENANCE_CHECK_SECONDS", 3600)
+    monkeypatch.setattr(config, "BACKUP_COPY_DIR", None)  # never a real second backup folder

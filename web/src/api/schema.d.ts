@@ -832,8 +832,33 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Stop Camera */
+        /**
+         * Stop Camera
+         * @description Stop the camera's worker cleanly. A camera with Auto on stays stopped until it is started again.
+         */
         post: operations["stop_camera"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cameras/{camera_id}/enabled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Camera Enabled
+         * @description Turn Auto on or off. On: GateSense starts the camera now (if stopped) and whenever GateSense starts, and
+         *     restarts it whenever it stops (5 s, then longer waits up to 5 minutes). Off: a running camera keeps running, but
+         *     is no longer restarted. Allowed while the camera runs. Audited (enable_camera / disable_camera).
+         */
+        put: operations["set_camera_enabled"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1031,8 +1056,10 @@ export interface paths {
         put?: never;
         /**
          * Backup Now
-         * @description Copy the database (consistent, while cameras keep writing: SQLite's online backup) and the face gallery to
-         *     data/backups/. Audited. Manual copies are never deleted automatically (nightly ones after BACKUP_RETENTION_DAYS).
+         * @description Make a backup set in data/backups/: the database (consistent while cameras keep writing: SQLite's online
+         *     backup, then an integrity check), the face gallery, the enrollment photos, cameras.json and settings.json; and
+         *     copy it to the second backup folder if one is set. Audited. Manual sets are never deleted automatically
+         *     (only the newest BACKUP_KEEP nightly sets are kept).
          */
         post: operations["backup_now"];
         delete?: never;
@@ -1173,6 +1200,22 @@ export interface components {
              * Format: date-time
              */
             created: string;
+            /**
+             * Files
+             * @description every file of the set: database, gallery, known/ photos (zip), cameras.json, settings.json
+             * @default []
+             */
+            files?: string[];
+            /**
+             * Copied To
+             * @description the second backup folder the set was copied to
+             */
+            copied_to?: string | null;
+            /**
+             * Copy Error
+             * @description why the copy to the second folder failed (the set in data/backups/ is fine)
+             */
+            copy_error?: string | null;
         };
         /** BackupIn */
         BackupIn: {
@@ -1209,6 +1252,16 @@ export interface components {
             type: "webcam" | "hikvision" | "rtsp" | "file";
             /** Mirror */
             mirror: boolean;
+            /**
+             * Enabled
+             * @description Auto: GateSense starts this camera when it starts and restarts it whenever it stops (api/supervisor.py)
+             */
+            enabled: boolean;
+            /**
+             * Auto Paused
+             * @description Auto is on, but the camera was stopped by hand: it stays stopped until it is started again
+             */
+            auto_paused: boolean;
             /**
              * Source
              * @description webcam index, file path or RTSP URL with ${VAR} placeholders; never a password
@@ -1687,6 +1740,19 @@ export interface components {
             /** Detail */
             detail?: string | null;
         };
+        /** EnabledIn */
+        EnabledIn: {
+            /**
+             * Enabled
+             * @description true: start this camera with GateSense and restart it whenever it stops
+             */
+            enabled: boolean;
+            /**
+             * Reason
+             * @default changed through the API
+             */
+            reason?: string;
+        };
         /** EnrollResult */
         EnrollResult: {
             /** Employee Code */
@@ -1909,10 +1975,15 @@ export interface components {
              */
             backup_hour: number;
             /**
-             * Backup Retention Days
-             * @description nightly backups are kept this long
+             * Backup Keep
+             * @description nightly backup sets kept in each backup folder
              */
-            backup_retention_days: number;
+            backup_keep: number;
+            /**
+             * Backup Copy Dir
+             * @description second backup folder (GATESENSE_BACKUP_COPY_DIR), if set
+             */
+            backup_copy_dir: string | null;
             /**
              * Snapshot Retention Days
              * @description event snapshots are kept this long (setting)
@@ -5063,6 +5134,55 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StopResult"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_camera_enabled: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                camera_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnabledIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Camera"];
                 };
             };
             /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */

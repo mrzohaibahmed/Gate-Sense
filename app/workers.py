@@ -24,7 +24,7 @@ from pathlib import Path
 
 from app import config, live, sources
 from app.camera import is_live, is_webcam, mask_source, parse_source
-from app.fileutil import atomic_write_bytes
+from app.fileutil import ErrorLog, atomic_write_bytes
 
 STILL_ACTIVE = 259  # Windows GetExitCodeProcess value for a running process
 
@@ -79,8 +79,8 @@ def python_command(python: str, env: dict) -> str:
     return python
 
 
-def _write_json(path: Path, data: dict) -> None:
-    atomic_write_bytes(path, json.dumps(data).encode("utf-8"))
+def _write_json(path: Path, data: dict, durable: bool = True) -> None:
+    atomic_write_bytes(path, json.dumps(data).encode("utf-8"), durable)
 
 
 def _read_json(path: Path) -> dict | None:
@@ -217,7 +217,11 @@ class WorkerRuntime:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.status_file = status_path(camera, self.run_dir)
         self.stop_file = stop_path(camera, self.run_dir)
-        self.stop_file.unlink(missing_ok=True)  # a stale request from an earlier run
+        if parent_pid is None:
+            # Started from the command line: a stop file now is left over from an earlier run. A worker started by
+            # the app keeps it: the manager removed any old one before launching, so this is a Stop that arrived
+            # while the worker was still loading, and must not be lost.
+            self.stop_file.unlink(missing_ok=True)
         self.started = datetime.now()
         self.frames = 0
         self.fps = 0.0
@@ -226,22 +230,31 @@ class WorkerRuntime:
         self._stop_reason = None
         self.warning: str | None = None  # camera problem shown on the Cameras page
         self.health_provider = None  # callable returning the frame source's health dict
+        self.frame_errors = 0  # frames whose processing raised (logged and skipped; the worker keeps going)
+        self.last_frame_error: str | None = None
+        self.write_errors = ErrorLog(f"{camera}: writing the status file")
         self.write("loading")
 
     def write(self, state: str, reason: str | None = None) -> None:
-        health = None
-        if self.health_provider is not None:
-            health = dict(self.health_provider(), processed_fps=round(self.fps, 1))
-            if state == "stopped":
-                health["state"] = "stopped"
-        _write_json(self.status_file, {
-            "camera": self.camera, "pid": os.getpid(), "parent_pid": self.parent_pid,
-            "source": self.source if self.source is None or isinstance(self.source, int) else mask_source(self.source),
-            "started": self.started.isoformat(timespec="seconds"), "updated": time.time(),
-            "state": state, "fps": round(self.fps, 1), "frames": self.frames, "reason": reason,
-            "warning": self.warning if state != "stopped" else None,
-            "health": health,
-        })
+        """Write the status file. A failed write is logged now and then, never raised: the status is for the
+        dashboard, and recording must go on without it (the dashboard then shows "not responding")."""
+        try:
+            health = None
+            if self.health_provider is not None:
+                health = dict(self.health_provider(), processed_fps=round(self.fps, 1))
+                if state == "stopped":
+                    health["state"] = "stopped"
+            source = self.source if self.source is None or isinstance(self.source, int) else mask_source(self.source)
+            _write_json(self.status_file, {
+                "camera": self.camera, "pid": os.getpid(), "parent_pid": self.parent_pid, "source": source,
+                "started": self.started.isoformat(timespec="seconds"), "updated": time.time(),
+                "state": state, "fps": round(self.fps, 1), "frames": self.frames, "reason": reason,
+                "warning": self.warning if state != "stopped" else None,
+                "frame_errors": self.frame_errors, "last_frame_error": self.last_frame_error,
+                "health": health,
+            }, durable=state == "stopped")  # rewritten every few seconds; only the final one matters later
+        except Exception as e:  # noqa: BLE001
+            self.write_errors(e)
 
     def tick(self, processed: bool = False) -> None:
         """Call once per loop iteration; counts processed frames and refreshes the status file."""
@@ -268,7 +281,10 @@ class WorkerRuntime:
 
     def close(self, reason: str) -> None:
         self.write("stopped", reason)
-        self.stop_file.unlink(missing_ok=True)
+        try:
+            self.stop_file.unlink(missing_ok=True)
+        except OSError as e:
+            self.write_errors(e)
 
 
 # --- The manager (in the app) ------------------------------------------------------

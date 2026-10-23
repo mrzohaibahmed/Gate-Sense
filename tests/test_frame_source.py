@@ -234,7 +234,7 @@ def test_kind(source, kind):
 def test_webcam_still_uses_live_capture(monkeypatch):
     monkeypatch.setattr("app.camera.open_capture", lambda s: FakeCap([img(1)], then="hang"))
     cap = frame_source.open_live(0)
-    assert type(cap) is LiveCapture  # unchanged webcam reader, no reconnect logic
+    assert type(cap) is LiveCapture  # the webcam reader (reopens with its own backoff)
     wait_for(lambda: cap.latest())
     assert cap.health()["kind"] == "webcam" and cap.health()["state"] == "live"
     cap.stop()

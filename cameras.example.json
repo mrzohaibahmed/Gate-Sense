@@ -1,10 +1,11 @@
 {
-  "_comment": "Template for cameras.json (git-ignored, site-specific). The dashboard's Settings > Cameras creates and edits cameras.json; you only need this file to set it up by hand: copy cameras.example.json cameras.json. No passwords here: a Hikvision camera's password is GATESENSE_CAM_<NAME>_PASS in .env.",
+  "_comment": "Template for cameras.json (git-ignored, site-specific). The dashboard's Settings > Cameras creates and edits cameras.json; you only need this file to set it up by hand: copy cameras.example.json cameras.json. No passwords here: a Hikvision camera's password is GATESENSE_CAM_<NAME>_PASS in .env. \"enabled\": GateSense starts the camera by itself and restarts it whenever it stops (Settings > Cameras, Auto).",
   "cameras": [
     {
       "name": "entrance",
       "direction": "IN",
       "mirror": true,
+      "enabled": false,
       "type": "webcam",
       "index": 0,
       "source": 0
@@ -13,6 +14,7 @@
       "name": "gate1",
       "direction": "IN",
       "mirror": false,
+      "enabled": true,
       "type": "hikvision",
       "ip": "192.168.1.101",
       "port": 554,
@@ -25,6 +27,7 @@
       "name": "gate1-exit",
       "direction": "OUT",
       "mirror": false,
+      "enabled": true,
       "type": "rtsp",
       "url": "rtsp://gatesense:${GATESENSE_CAM_GATE1_EXIT_PASS}@192.168.1.102:554/Streaming/Channels/101",
       "source": "rtsp://gatesense:${GATESENSE_CAM_GATE1_EXIT_PASS}@192.168.1.102:554/Streaming/Channels/101"

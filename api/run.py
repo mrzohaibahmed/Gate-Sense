@@ -78,6 +78,12 @@ def preflight(open_browser: bool = True, build: bool = True) -> int:
         if open_browser:
             webbrowser.open(url())
         return ALREADY_RUNNING
+    from api.main import startup_problems
+
+    if problems := startup_problems():
+        for problem in problems:
+            print(f"ERROR: {problem}")
+        return 1
     error, warning = https_problem()
     if error:
         print(f"ERROR: {error}")

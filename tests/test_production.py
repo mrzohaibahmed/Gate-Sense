@@ -51,7 +51,43 @@ def test_the_dashboard_is_served_with_spa_fallback(app):
     assert api404.status_code == 404 and api404.json() == {"detail": "Not Found"}
     assert c.get("/api/health").json()["status"] == "ok"
     assert c.get("/docs").status_code == 200 and "swagger" in c.get("/docs").text.lower()
-    assert "<div id=root>" in c.get("/..%2F..%2Fapp%2Fconfig.py").text  # never a file outside the build
+    assert c.get("/..%2F..%2Fapp%2Fconfig.py").status_code == 404  # never a file outside the build
+
+
+@pytest.mark.parametrize("path", [
+    "//attacker/share/x", r"\\attacker\share\x", "/attacker/share/x", "C:/Windows/win.ini", r"C:\Windows\win.ini",
+    "c:", "../../app/config.py", "assets/../../app/config.py", r"a\b", "x\0y",
+])
+def test_unsafe_web_paths_are_refused_on_the_text(path):
+    assert not web.safe_web_path(path)
+
+
+@pytest.mark.parametrize("path", ["favicon.svg", "people/3", "attendance", "settings", "assets/index-abc123.js"])
+def test_ordinary_web_paths_are_fine(path):
+    assert web.safe_web_path(path)
+
+
+@pytest.mark.parametrize("url", [
+    "/%2F%2Fattacker%2Fshare%2Fx",  # //attacker/share/x: a UNC path once joined to the build folder on Windows
+    "/%5C%5Cattacker%5Cshare%5Cx",  # the same with backslashes
+    "/C:%5CWindows%5Cwin.ini", "/C:/Windows/win.ini", "/..%2F..%2Fapp%2Fconfig.py",
+])
+def test_unsafe_web_paths_never_reach_the_file_system(app, monkeypatch, url):
+    """No login is needed for the dashboard's files, so the check must come before resolve(): on Windows, resolving
+    a UNC path already connects to that host and offers this account's credentials."""
+    import pathlib
+
+    resolved = []
+    real = pathlib.Path.resolve
+
+    def spy(self, *args, **kwargs):
+        resolved.append(str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "resolve", spy)
+    r = TestClient(app).get(url)
+    assert r.status_code == 404 and r.json() == {"detail": "Not Found"}
+    assert not [p for p in resolved if "attacker" in p or "win.ini" in p or "config.py" in p]
 
 
 def test_without_a_build_the_root_says_how_to_make_one(tmp_path, monkeypatch):
@@ -175,20 +211,27 @@ def test_stop_file_stops_the_server(tmp_path):
 # --- Nightly maintenance ---------------------------------------------------------------------------------
 
 
-def test_backup_now_is_never_pruned_and_nightly_ones_are(app):
+def test_backup_now_is_never_pruned_and_only_the_newest_nightly_sets_are_kept(app, monkeypatch):
+    monkeypatch.setattr(config, "BACKUP_KEEP", 2)
     a = as_role(app, "admin")
-    manual = a.post("/api/system/backup", json={}).json()["file"]
+    made = a.post("/api/system/backup", json={}).json()
     folder = maintenance.backup_dir()
     now = datetime(2026, 10, 22, 2, 30)
-    for days in (1, 13, 15, 40):
-        (folder / f"attendance-nightly-{(now - timedelta(days=days)):%Y%m%d-%H%M%S}.db").write_text("old")
-        (folder / f"gallery-nightly-{(now - timedelta(days=days)):%Y%m%d-%H%M%S}.npz").write_text("old")
+    stamps = [f"{(now - timedelta(days=d)):%Y%m%d-%H%M%S}" for d in (1, 2, 3, 40)]
+    for stamp in stamps:
+        for name in ("attendance", "gallery", "known", "cameras"):
+            ext = {"attendance": "db", "gallery": "npz", "known": "zip", "cameras": "json"}[name]
+            (folder / f"{name}-nightly-{stamp}.{ext}").write_text("old")
     (folder / "attendance-v0-20260101-000000.db").write_text("before an upgrade")
-    gone = maintenance.prune_backups(now)
-    assert sorted(gone) == sorted(f"{k}-nightly-{(now - timedelta(days=d)):%Y%m%d-%H%M%S}.{ext}"
-                                  for d in (15, 40) for k, ext in (("attendance", "db"), ("gallery", "npz")))
+    (folder / "attendance-nightly-20261021-020000.db.partial").write_text("an interrupted backup")
+    gone = maintenance.prune_backups()
+    assert "attendance-nightly-20261021-020000.db.partial" in gone
+    pruned = {g.split("-nightly-")[1].split(".")[0] for g in gone if not g.endswith(".partial")}
+    assert pruned == set(stamps[2:]) and len(gone) == 1 + 2 * 4  # the two oldest sets, every file of them
     left = {p.name for p in folder.iterdir()}
-    assert manual in left and "attendance-v0-20260101-000000.db" in left and len(left) == 6
+    assert made["file"] in left and "attendance-v0-20260101-000000.db" in left
+    assert all(f in left for f in made["files"])  # the manual set is whole
+    assert {s.stamp for s in maintenance.backup_sets() if s.kind == "nightly"} == set(stamps[:2])
 
 
 def test_snapshot_cleanup_keeps_the_events(app):
@@ -228,7 +271,8 @@ def test_nightly_run_and_when_it_is_due(app):
     assert maintenance.due(at(0, 25), state)  # the app was off for days: catch up at once
     assert maintenance.due(at(3), {})  # never ran
     info = as_role(app, "admin").get("/api/system").json()["maintenance"]
-    assert info["last_ok"] is True and info["backup_retention_days"] == 14 and info["snapshot_retention_days"] == 30
+    assert info["last_ok"] is True and info["backup_keep"] == 14 and info["snapshot_retention_days"] == 30
+    assert info["backup_copy_dir"] is None
 
 
 def test_snapshot_retention_is_a_setting(app):

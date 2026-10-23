@@ -5,7 +5,7 @@
   and reconnects forever with backoff (1, 2, 4, 8, 16, 30 s) when opening fails,
   read() fails, or no new frame arrives for RTSP_STALE_SECONDS. It never gives up, so a
   dropped camera never stops the worker.
-- Webcam index (and other URLs): app.camera.LiveCapture, unchanged.
+- Webcam index (and other URLs): app.camera.LiveCapture, which reopens the camera with backoff.
 - Video file: read in order by the worker (app.camera.open_capture), unchanged.
 
 Every message and error text is passed through mask_source, so camera passwords
@@ -40,7 +40,7 @@ def open_live(source, log=print):
     if k == "rtsp":
         return FrameSource(source, log=log)
     if k in ("webcam", "stream"):
-        return LiveCapture(source)
+        return LiveCapture(source, log=log)
     return None
 
 

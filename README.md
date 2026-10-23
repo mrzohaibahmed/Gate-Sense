@@ -24,7 +24,7 @@ copy .env.example .env
 
 GateSense is one app: double-click **start.bat**. It checks everything first (and builds the web dashboard when it
 changed, if Node.js is installed), starts GateSense in a minimized window and opens `http://localhost:8000` in the
-browser. **stop.bat** stops the cameras cleanly, then the app. On the first start the account `admin` gets the
+browser. **stop.bat** stops the cameras cleanly, then the app (cameras with Auto on start again with the next start). On the first start the account `admin` gets the
 `GATESENSE_ADMIN_PASSWORD` from `.env` and must change it at the first login.
 
 Other computers: set `GATESENSE_HOST=0.0.0.0` (and `GATESENSE_PORT` if 8000 is taken). Then GateSense requires
@@ -32,9 +32,46 @@ HTTPS: `GATESENSE_SSL_CERTFILE` and `GATESENSE_SSL_KEYFILE` (PEM files); `GATESE
 with a warning (passwords would cross the network unencrypted). To start at boot without anyone logged in, run
 `scripts\install_service.ps1` from an administrator PowerShell (needs NSSM from https://nssm.cc).
 
-Every night (after 02:00, while GateSense runs) the database and the face data are backed up to `data/backups/`
-(kept 14 days; "Back up now" copies are kept until you delete them), and event snapshots older than 30 days are
-deleted (the attendance itself is kept). Both are on Settings > System; the snapshot period is a setting.
+**Cameras that start by themselves.** Turn on **Auto** for a camera in Settings > Cameras: GateSense then starts it
+whenever GateSense starts (after a reboot or a power cut, too, if GateSense itself starts at boot) and starts it
+again whenever it stops: after 5 s, then waiting longer each time up to 5 minutes, back to 5 s once it has run for
+5 minutes. A camera you stop with **Stop** on the Live cameras page (or stop.bat) stays stopped until you start it
+again. Every automatic start is in the audit log (user `system`). A camera that can't be read for a moment is no
+reason to stop: webcams and IP cameras are opened again by themselves, a frame that can't be processed is skipped
+(counted in the worker's status file), and an event the database can't take right away is written as soon as it can.
+
+GateSense refuses to start (start.bat says why) when `cameras.json` can't be read, rather than guessing which
+cameras to use, or when the database is damaged (`PRAGMA quick_check`). Restore a backup then (below).
+
+### Backups and restore
+
+Every night (after 02:00, while GateSense runs), and with "Back up now" on Settings > System, GateSense makes a
+backup set in `data/backups/`: the database (checked with `PRAGMA integrity_check`), the face data, the enrollment
+photos (`known-….zip`), `cameras.json` and `settings.json`. **Never `.env`**: keep your own copy of it (it holds the
+camera passwords), somewhere safe. The newest 14 nightly sets are kept (`BACKUP_KEEP`); "Back up now" sets are kept
+until you delete them. Event snapshots older than 30 days are deleted (the attendance itself is kept; the period is a
+setting).
+
+Keep a second copy off this disk: set `GATESENSE_BACKUP_COPY_DIR` in `.env` to a folder on another disk or a USB
+drive (e.g. `GATESENSE_BACKUP_COPY_DIR=E:\GateSense-backups`) and restart GateSense. Every set is then copied there
+too and checked; the newest 14 nightly sets are kept there as well. If the copy fails (the drive is unplugged),
+Settings > System shows the nightly backup as failed with the reason; the set in `data/backups/` is still fine.
+
+To restore (GateSense is stopped for you, and started again by you afterwards):
+
+```
+.venv\Scripts\python scripts\restore.py --list                         # the backup sets, newest first
+.venv\Scripts\python scripts\restore.py latest                         # restore the newest set
+.venv\Scripts\python scripts\restore.py 20261023-020005                # or one set, by its time from --list
+.venv\Scripts\python scripts\restore.py latest --from E:\GateSense-backups   # from the second folder
+.venv\Scripts\python scripts\restore.py latest --only database,gallery       # only some parts
+```
+
+It checks the backup first, asks, stops GateSense and every camera (like stop.bat), moves the current files to
+`data\backups\before-restore-<time>\` (nothing is deleted; the database's `-wal` and `-shm` files go there too, as
+they must never stay next to a restored database), copies the backup in, checks the result and writes the restore to
+the audit log. Then start GateSense with start.bat. If the backup is from before a GateSense update, its database is
+upgraded at the first start as usual. Try a restore once on a spare PC before you need it.
 
 After updating GateSense's code, restart it (`stop.bat`, then `start.bat`); start.bat rebuilds the web dashboard when it changed.
 

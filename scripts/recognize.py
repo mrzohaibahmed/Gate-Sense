@@ -19,7 +19,15 @@ same camera, or for a webcam another worker already uses, refuses to start.
 
 Live sources (webcam, RTSP) are read on a background thread (app.camera.LiveCapture),
 so a camera that hangs or that another app holds can't freeze the worker; it
-warns when the camera sends no frames or only black ones. The annotated frame
+warns when the camera sends no frames or only black ones, and opens the camera
+again (with backoff) when it fails, never giving up.
+
+Recording comes first: an error while processing one frame is logged, counted
+(frame_errors in the status file) and that frame skipped; a live-view, status or
+snapshot file that can't be written is skipped with a warning; an event the
+database can't take right now is kept in memory and written when it can. A
+gallery.npz that can't be read at the start is tried again every
+GALLERY_RETRY_SECONDS. The annotated frame
 and the last decisions go to data/live/<camera>.jpg/.json for the dashboard's
 live view (app/live.py), and are deleted when the worker stops.
 
@@ -31,8 +39,10 @@ Press Q or Esc in the window to quit.
 """
 
 import argparse
+import sqlite3
 import sys
 import time
+import traceback
 from collections import Counter, deque
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -47,7 +57,8 @@ from app.camera import is_live, mask_source, open_capture, parse_source  # noqa:
 from app.detector import (  # noqa: E402
     Detector, check_quality, detection_scale, quality_score, resize_to_width, scale_detection,
 )
-from app.gallery import Gallery, Match  # noqa: E402
+from app.fileutil import ErrorLog  # noqa: E402
+from app.gallery import LOAD_ERRORS, Gallery, Match  # noqa: E402
 from app.images import crop_face, write_image  # noqa: E402
 from app.live import CameraHealth, LiveWriter  # noqa: E402
 from app.models import providers_in_use  # noqa: E402
@@ -99,7 +110,12 @@ def find_camera(name: str | None) -> dict:
 
 
 class Recorder:
-    """Applies the cool-down, saves the snapshot and writes the event."""
+    """Applies the cool-down, saves the snapshot and writes the event.
+
+    A snapshot that can't be saved never costs the event (it is recorded without one). An event the database
+    can't take right now (locked for too long, disk full) waits in `pending`, in order, and is written by the
+    next flush() (each event and every housekeeping round); at most EVENT_QUEUE_MAX wait, the oldest go first.
+    """
 
     def __init__(self, cam: dict, source, use_db: bool):
         self.cam_name, self.direction = cam["name"], cam["direction"]
@@ -109,6 +125,40 @@ class Recorder:
             self.camera_id = db.upsert_camera(self.conn, self.cam_name, source, self.direction)
             last = db.last_event_times(self.conn, self.cam_name)
         self.cooldown = Cooldown(config.COOLDOWN_SECONDS, last)
+        self.pending: deque[dict] = deque()
+        self.db_errors = ErrorLog(f"{self.cam_name}: writing an event to the database (kept, will retry)")
+        self.snapshot_errors = ErrorLog(f"{self.cam_name}: saving a face snapshot (event recorded without it)")
+
+    def save_snapshot(self, now: datetime, name: str, image) -> str | None:
+        """The snapshot's path relative to data/, or None if it couldn't be saved."""
+        snap = config.SNAPSHOT_DIR / f"{now:%Y-%m-%d}" / f"{now:%H%M%S}_{name}_{self.cam_name}.jpg"
+        try:
+            write_image(snap, image)
+        except Exception as e:  # noqa: BLE001  disk full, folder locked, encoder error: keep the event anyway
+            self.snapshot_errors(e)
+            return None
+        return snap.relative_to(config.DATA_DIR).as_posix()
+
+    def flush(self) -> None:
+        """Write the waiting events, oldest first; stops at the first database error (tried again later)."""
+        while self.pending:
+            ev = self.pending[0]
+            try:
+                person_id = db.active_person_id(self.conn, ev["code"])  # each time: dashboard changes apply live
+                if person_id is not None:
+                    db.add_event(self.conn, person_id, self.camera_id, ev["time"], ev["score"], ev["snapshot"])
+            except sqlite3.Error as e:
+                self.db_errors(e)
+                return
+            self.pending.popleft()
+            if person_id is None:
+                ev["outcome"] = "inactive"
+                print(f"{ev['head']}  NOT SAVED: inactive in the dashboard, or not enrolled (run scripts\\enroll.py)")
+                continue
+            ev["outcome"] = "saved"
+            late = f" (waited since {ev['queued']:%H:%M:%S})" if ev.get("late") else ""
+            print(f"{ev['head']}  EVENT saved{late}  score={ev['score']:.3f}  {ev['votes']}  "
+                  f"snapshot={ev['snapshot'] or 'none'}")
 
     def record(self, stamp: str, now: datetime, track: TrackState, name: str, votes: int) -> tuple[str, str]:
         """Returns (decision kind, detail) for the live view: event, cool-down or not saved."""
@@ -120,16 +170,20 @@ class Recorder:
         if self.conn is None:
             print(f"{head}  EVENT (not saved, --no-db)  score={best.match.score:.3f}  votes {votes}/{len(track.samples)}")
             return "not saved", "--no-db"
-        person_id = db.active_person_id(self.conn, name)  # looked up each time, so dashboard changes apply live
-        if person_id is None:
-            print(f"{head}  NOT SAVED: inactive in the dashboard, or not enrolled (run scripts\\enroll.py)")
+        ev = {"code": name, "time": now, "score": best.match.score, "head": head, "queued": datetime.now(),
+              "votes": f"votes {votes}/{len(track.samples)}", "snapshot": self.save_snapshot(now, name, best.snapshot)}
+        self.pending.append(ev)
+        if len(self.pending) > config.EVENT_QUEUE_MAX:
+            lost = self.pending.popleft()
+            print(f"{lost['head']}  EVENT LOST: {config.EVENT_QUEUE_MAX} events were waiting for the database")
+        self.flush()
+        if ev.get("outcome") == "inactive":
             return "not saved", "person inactive or not enrolled"
-        snap = config.SNAPSHOT_DIR / f"{now:%Y-%m-%d}" / f"{now:%H%M%S}_{name}_{self.cam_name}.jpg"
-        write_image(snap, best.snapshot)
-        rel = snap.relative_to(config.DATA_DIR).as_posix()
-        db.add_event(self.conn, person_id, self.camera_id, now, best.match.score, rel)
-        print(f"{head}  EVENT saved  score={best.match.score:.3f}  votes {votes}/{len(track.samples)}  snapshot={rel}")
-        return "event", f"{self.direction} saved (votes {votes}/{len(track.samples)})"
+        if ev.get("outcome") is None:
+            ev["late"] = True
+            print(f"{head}  EVENT waiting for the database ({len(self.pending)} waiting); written as soon as it can be")
+            return "event", f"{self.direction} waiting for the database ({ev['votes']})"
+        return "event", f"{self.direction} saved ({ev['votes']})"
 
 
 class Pipeline:
@@ -262,6 +316,11 @@ def main() -> int:
     parser.add_argument("--no-db", action="store_true", help="don't write events or snapshots (for tuning)")
     parser.add_argument("--parent-pid", type=int, help="exit when this process ends (set by the dashboard)")
     args = parser.parse_args()
+    try:
+        config.check_cameras()
+    except config.CamerasFileError as e:
+        print(f"ERROR: {e}")
+        return 1
     cam = find_camera(args.camera)
     source = parse_source(args.source) if args.source is not None else cam["source"]
 
@@ -304,8 +363,9 @@ def run(args, cam: dict, source, runtime: "workers.WorkerRuntime", live: LiveWri
     if not config.GALLERY_PATH.exists():
         print(f"No gallery at {config.GALLERY_PATH}. Enroll people first (dashboard or scripts\\enroll.py).")
         return "no gallery"
-    gallery = Gallery.load()
-    gallery_mtime = config.GALLERY_PATH.stat().st_mtime
+    gallery, gallery_mtime = load_gallery(runtime)
+    if gallery is None:
+        return runtime.should_stop() or "stop requested"
     print(f"Camera {cam['name']} ({cam['direction']}), gallery: {gallery.counts()}")
     print(
         f"Threshold {config.MATCH_THRESHOLD}, margin {config.MATCH_MARGIN}, {config.PROCESS_FPS} fps, "
@@ -326,6 +386,8 @@ def run(args, cam: dict, source, runtime: "workers.WorkerRuntime", live: LiveWri
         runtime.tick()
         if stop := runtime.should_stop():
             return stop
+        if pipeline.recorder.conn is not None and pipeline.recorder.pending:
+            pipeline.recorder.flush()  # events the database couldn't take before
         mono = time.monotonic()
         if mono - last_gallery_check >= config.GALLERY_RELOAD_SECONDS:
             last_gallery_check = mono
@@ -372,6 +434,7 @@ def run_live(source, runtime, live: LiveWriter, pipeline: Pipeline, housekeeping
     live.start()
     health = CameraHealth(hint="check the camera's power, network and address" if rtsp else None)
     interval = 1.0 / config.PROCESS_FPS
+    frame_failed = FrameErrors(runtime)
     last_seq, next_due, start, opened = 0, 0.0, time.monotonic(), False
     try:
         while True:
@@ -385,7 +448,7 @@ def run_live(source, runtime, live: LiveWriter, pipeline: Pipeline, housekeeping
                 print(f"Camera opened after {time.monotonic() - start:.1f} s\n")
             got = capture.latest(last_seq) if time.monotonic() >= next_due else None
             warning = health.update(got[1] if got else None)
-            if rtsp and capture.state == "reconnecting":  # the reconnect reason says more than "no frames"
+            if capture.state == "reconnecting":  # the reconnect reason says more than "no frames"
                 warning = "camera reconnecting" + (f": {capture.last_error}" if capture.last_error else "")
             if warning != runtime.warning:
                 print(f"{datetime.now():%H:%M:%S}  WARNING: {warning}" if warning
@@ -399,10 +462,13 @@ def run_live(source, runtime, live: LiveWriter, pipeline: Pipeline, housekeeping
             next_due = time.monotonic() + interval
             now = datetime.now()
             stamp = now.strftime("%H:%M:%S.%f")[:-3]
-            img = pipeline.process(frame, time.monotonic() - start, now, stamp)
-            runtime.tick(processed=True)
-            if show(img, stamp):
-                return "window closed"
+            try:
+                img = pipeline.process(frame, time.monotonic() - start, now, stamp)
+                runtime.tick(processed=True)
+                if show(img, stamp):
+                    return "window closed"
+            except Exception as e:  # noqa: BLE001  one bad frame must never stop the camera
+                frame_failed(e)
     finally:
         capture.stop()
 
@@ -424,6 +490,7 @@ def run_file(source, runtime, pipeline: Pipeline, housekeeping, show) -> str:
     step = max(1, round(src_fps / config.PROCESS_FPS))
     print(f"Source {mask_source(source)!r} at {src_fps:.0f} fps\n")
     pipeline.live.start()
+    frame_failed = FrameErrors(runtime)
     start_dt, frame_idx = datetime.now(), 0
     file_health = {"kind": "file", "state": "live", "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or None,
                    "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or None, "input_fps": round(src_fps, 1),
@@ -445,12 +512,55 @@ def run_file(source, runtime, pipeline: Pipeline, housekeeping, show) -> str:
             file_health["last_frame_at"] = time.time()
             now = start_dt + timedelta(seconds=t)  # video time, so the cool-down behaves as in real life
             stamp = f"t={t:8.2f}s"
-            img = pipeline.process(frame, t, now, stamp)
-            runtime.tick(processed=True)
-            if show(img, stamp):
-                return "window closed"
+            try:
+                img = pipeline.process(frame, t, now, stamp)
+                runtime.tick(processed=True)
+                if show(img, stamp):
+                    return "window closed"
+            except Exception as e:  # noqa: BLE001  one bad frame must never stop the camera
+                frame_failed(e)
     finally:
         cap.release()
+
+
+class FrameErrors:
+    """An error while processing one frame: counted in the status file (frame_errors, last_frame_error), logged
+    (the first with its traceback, then at most once a minute) and the frame skipped."""
+
+    def __init__(self, runtime: "workers.WorkerRuntime"):
+        self.runtime = runtime
+        self.log = ErrorLog(f"{runtime.camera}: processing a frame (frame skipped)")
+
+    def __call__(self, error: Exception) -> None:
+        self.runtime.frame_errors += 1
+        self.runtime.last_frame_error = f"{datetime.now():%H:%M:%S} {type(error).__name__}: {error}"
+        try:
+            if self.runtime.frame_errors == 1:
+                print(traceback.format_exc(), end="")
+            self.log(error)
+        except OSError:  # the log itself can't be written (disk full): keep recording anyway
+            pass
+
+
+def load_gallery(runtime: "workers.WorkerRuntime") -> tuple[Gallery | None, float]:
+    """The gallery and its mtime. A gallery.npz that can't be read (half-copied, damaged) is tried again every
+    GALLERY_RETRY_SECONDS, with a warning on the Cameras page; (None, 0) if the worker is asked to stop meanwhile."""
+    errors = ErrorLog("reading the face gallery (trying again)")
+    while True:
+        try:
+            mtime = config.GALLERY_PATH.stat().st_mtime
+            gallery = Gallery.load()
+            runtime.warning = None
+            return gallery, mtime
+        except LOAD_ERRORS as e:
+            errors(e)
+            runtime.warning = f"the face gallery can't be read ({type(e).__name__}); trying again"
+        deadline = time.monotonic() + config.GALLERY_RETRY_SECONDS
+        while time.monotonic() < deadline:
+            runtime.tick()
+            if runtime.should_stop():
+                return None, 0.0
+            time.sleep(0.1)
 
 
 def reload_gallery(gallery: Gallery, mtime: float) -> tuple[Gallery, float]:
@@ -462,9 +572,12 @@ def reload_gallery(gallery: Gallery, mtime: float) -> tuple[Gallery, float]:
         gallery = Gallery.load()
         print(f"Gallery reloaded: {gallery.counts()}")
         return gallery, new_mtime
-    except (OSError, ValueError) as e:  # missing or mid-replace: keep the current one
-        print(f"Gallery reload skipped: {e}")
+    except LOAD_ERRORS as e:  # missing, mid-replace or damaged: keep the current one, try again next time
+        _reload_errors(e)
         return gallery, mtime
+
+
+_reload_errors = ErrorLog("reloading the face gallery (the one already loaded stays in use)")
 
 
 if __name__ == "__main__":

@@ -193,10 +193,49 @@ def test_hand_edits_and_deletion_are_picked_up(conn):
     assert [e["name"] for e in cs.entries()] == ["entrance", "exit"]
 
 
-def test_broken_cameras_file_falls_back_to_defaults(capsys):
-    config.CAMERAS_FILE.write_text("{not json")
-    assert [c["name"] for c in config.load_cameras()] == ["entrance", "exit"]
-    assert "could not read" in capsys.readouterr().out
+@pytest.mark.parametrize("text", ["{not json", "", '{"cameras": [{"name": "gate1"}]}', '{"cameras": []}', "[]"])
+def test_broken_cameras_file_is_refused_not_replaced_by_the_defaults(text, conn, capsys):
+    """After a power cut cameras.json can be empty or damaged: the defaults (webcam 0) would start the wrong cameras,
+    and the Cameras page would save them over the file. So: an error, everywhere, and the file left as it is."""
+    config.CAMERAS_FILE.write_text(text)
+    with pytest.raises(config.CamerasFileError, match="cameras.json"):
+        config.load_cameras()
+    with pytest.raises(config.CamerasFileError):
+        cs.entries()
+    with pytest.raises(config.CamerasFileError):
+        cs.upsert({**HIK, "name": "gate9"}, "admin", conn)
+    assert config.CAMERAS_FILE.read_text() == text  # never overwritten
+
+
+def test_cameras_file_broken_while_running_keeps_the_loaded_cameras(capsys):
+    cs.save([cs.build(HIK, [])])
+    assert [c["name"] for c in config.CAMERAS] == ["gate1"]
+    config.check_cameras()  # fine
+    time.sleep(0.01)
+    config.CAMERAS_FILE.write_text("{half written")
+    assert not config.refresh_cameras()
+    assert [c["name"] for c in config.CAMERAS] == ["gate1"]  # the cameras loaded before stay
+    with pytest.raises(config.CamerasFileError):
+        config.check_cameras()  # but nothing new starts
+    assert "Keeping the cameras loaded before" in capsys.readouterr().out
+    cs.save([cs.build(HIK, [])])  # fixed (e.g. restored)
+    config.check_cameras()
+    assert config.CAMERAS_ERROR is None
+
+
+def test_enabled_flag_round_trip_and_audit(conn):
+    cs.save([cs.build(HIK, [])])
+    assert config.CAMERAS[0]["enabled"] is False
+    assert cs.set_enabled("gate1", True, "admin", conn, "")
+    assert config.CAMERAS[0]["enabled"] is True and cs.entries()[0]["enabled"] is True
+    assert not cs.set_enabled("gate1", True, "admin", conn, "")  # unchanged: no audit row
+    cs.upsert({**cs.entries()[0], "channel": 2}, "admin", conn)  # an edit keeps Auto on
+    assert cs.entries()[0]["enabled"] is True
+    assert cs.set_enabled("gate1", False, "admin", conn, "night shift off")
+    rows = [(r["action"], r["reason"]) for r in audit(conn) if r["action"].endswith("_camera")]
+    assert ("enable_camera", cs.DEFAULT_REASON) in rows and ("disable_camera", "night shift off") in rows
+    with pytest.raises(ValueError, match="no camera"):
+        cs.set_enabled("nope", True, "admin", conn)
 
 
 # --- .env handling ------------------------------------------------------------------------------------

@@ -9,13 +9,18 @@ Saved to ``data/gallery.npz`` (``app.config.GALLERY_PATH``). That file is
 biometric data and is git-ignored. Later it moves to SQLite, then PostgreSQL.
 """
 
+import os
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
 from app import config
-from app.fileutil import replace_retry
+from app.fileutil import replace_retry, sync_dir
+
+# What Gallery.load raises for a missing, half-written or damaged file (np.load on a truncated .npz: BadZipFile).
+LOAD_ERRORS = (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile)
 
 
 @dataclass
@@ -78,7 +83,10 @@ class Gallery:
         tmp = path.with_name(path.name + ".tmp")
         with open(tmp, "wb") as f:
             np.savez(f, names=np.array(self.names, dtype=str), embeddings=self.embeddings, labels=self.labels)
+            f.flush()
+            os.fsync(f.fileno())  # on disk before it replaces the old one: a power cut never leaves half a gallery
         replace_retry(tmp, path)  # a running worker may have the file open for a moment
+        sync_dir(path.parent)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Gallery":

@@ -2,8 +2,10 @@
 
 The lifespan creates or upgrades the database (users, sessions, sites), creates
 the first admin if there are no users (api/auth.py), opens the worker manager
-(data/run/_api.json) and, on shutdown, stops every camera worker this API
-started. Browsers may call the API only from config.API_CORS_ORIGINS (the
+(data/run/_api.json), starts the supervisor that keeps enabled cameras
+recording (api/supervisor.py) and, on shutdown, stops every camera worker this
+API started. It refuses to start on an unreadable cameras.json or a damaged
+database (startup_problems). Browsers may call the API only from config.API_CORS_ORIGINS (the
 Vite dev server), with the session cookie. Every endpoint except login and
 the health check needs a login and a permission (api/permissions.py).
 
@@ -22,6 +24,7 @@ from typing import Literal
 
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -29,12 +32,14 @@ from api import __version__, auth, maintenance, security, web
 from api.db import Database
 from api.enroll_camera import EnrollCameras
 from api.live import EventHub, FrameHub
+from api.supervisor import Supervisor
 from api.routes import (
     attendance, audit, cameras, enrollment, live, people, reports, settings, sites, system, users,
 )
 from api.routes import auth as auth_routes
 from api.workers import WorkerManager
 from app import config
+from app import db as app_db
 
 PUBLIC_PATHS = {"/api/health", "/api/auth/login"}  # the only endpoints without require_permission
 
@@ -51,6 +56,24 @@ class Health(BaseModel):
     started: datetime
     uptime_seconds: float
     database: DatabaseStatus
+
+
+def startup_problems(database: Database | None = None) -> list[str]:
+    """Why GateSense must not start: an unreadable cameras.json (it would start the wrong cameras) or a damaged
+    database (PRAGMA quick_check). Checked by start.bat's preflight and again when the app starts."""
+    problems = []
+    try:
+        config.check_cameras()
+    except config.CamerasFileError as e:
+        problems.append(str(e))
+    try:
+        path = (database or Database()).path
+    except Exception:  # noqa: BLE001  not SQLite: Database.connect reports that itself
+        path = None
+    if path is not None and (damage := app_db.quick_check(path)):
+        problems.append(f"the database {path} is damaged ({damage}). Restore a backup: "
+                        ".venv\\Scripts\\python scripts\\restore.py --list")
+    return problems
 
 
 @cache
@@ -73,15 +96,20 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.started = time.time()
+        if problems := startup_problems(database):
+            raise RuntimeError("GateSense can't start: " + " ".join(problems))
         database.connect().close()  # create or upgrade the tables before anything uses them
         if message := auth.bootstrap_admin(database):
             print(message, flush=True)
         manager.open(f"http://{config.API_HOST}:{config.API_PORT}")
         live_updates = asyncio.create_task(app.state.events.run())
         nightly = asyncio.create_task(maintenance.run_loop(database))
+        supervision = asyncio.create_task(app.state.supervisor.run())  # starts the enabled cameras
         try:
             yield
         finally:
+            supervision.cancel()  # first: nothing may restart the cameras being stopped below
+            await run_in_threadpool(app.state.supervisor.close)
             live_updates.cancel()
             nightly.cancel()
             await run_in_threadpool(enroll_cameras.close_all)
@@ -96,6 +124,7 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
     app.state.enroll_cameras = enroll_cameras
     app.state.frames = FrameHub(lambda: manager.live_dir)
     app.state.events = EventHub(database, manager)
+    app.state.supervisor = Supervisor(manager, database)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.API_CORS_ORIGINS,
@@ -116,6 +145,11 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
             status="ok" if db.status == "ok" else "degraded", version=__version__,
             started=datetime.fromtimestamp(started), uptime_seconds=round(time.time() - started, 1), database=db,
         )
+
+    @app.exception_handler(config.CamerasFileError)
+    async def cameras_file_error(request, exc: config.CamerasFileError) -> JSONResponse:
+        """cameras.json became unreadable while running: say so instead of guessing (never the defaults)."""
+        return JSONResponse({"detail": str(exc)}, status_code=503)
 
     for module in (auth_routes, users, attendance, people, enrollment, live, cameras, sites, audit, settings, system,
                    reports):

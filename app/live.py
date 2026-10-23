@@ -14,6 +14,10 @@ While the enrollment wizard uses a running camera it keeps <camera>.enroll fresh
 (mark_enrolling); the worker then shares its raw full-resolution frame as
 <camera>.full.jpg up to ENROLL_FEED_FPS times a second (LiveWriter.full_frame),
 so the wizard never opens a second connection to the camera.
+
+These files are only a view: a write that fails (disk full, a file held open by
+an antivirus scan) is logged now and then and skipped, never raised, so the
+live view can't stop a camera from recording.
 """
 
 import json
@@ -28,7 +32,7 @@ import cv2
 import numpy as np
 
 from app import config
-from app.fileutil import atomic_write_bytes
+from app.fileutil import ErrorLog, atomic_write_bytes
 
 NOT_SENDING = "camera not sending frames"
 WAITING = "waiting for the first frame"
@@ -116,6 +120,7 @@ class LiveWriter:
         self._full_pending: np.ndarray | None = None
         self._full_ready = threading.Event()
         self._full_thread: threading.Thread | None = None
+        self.write_errors = ErrorLog(f"live view of {camera}: writing a file")
 
     def start(self) -> None:
         """Mark the start of the camera loop (after model loading); the frame wait is measured from here."""
@@ -148,7 +153,10 @@ class LiveWriter:
             self._enroll_checked = now
             was, self._enrolling = self._enrolling, is_enrolling(self.camera, self.live_dir)
             if was and not self._enrolling:
-                full_path(self.camera, self.live_dir).unlink(missing_ok=True)
+                try:
+                    full_path(self.camera, self.live_dir).unlink(missing_ok=True)
+                except OSError as e:  # held open by a reader this instant; the API ignores a stale one anyway
+                    self.write_errors(e)
         return self._enrolling
 
     def full_frame(self, img: np.ndarray) -> bool:
@@ -179,9 +187,12 @@ class LiveWriter:
                 self._write_full(img)
 
     def _write_full(self, img: np.ndarray) -> None:
-        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, config.ENROLL_CAPTURE_QUALITY])
-        if ok:
-            atomic_write_bytes(full_path(self.camera, self.live_dir), buf.tobytes())
+        try:
+            ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, config.ENROLL_CAPTURE_QUALITY])
+            if ok:
+                atomic_write_bytes(full_path(self.camera, self.live_dir), buf.tobytes(), durable=False)
+        except Exception as e:  # noqa: BLE001  the view only: never stop the writer thread or the camera
+            self.write_errors(e)
 
     def frame(self, img: np.ndarray, fps: float | None = None, warning: str | None = None) -> bool:
         """Write the frame and info if LIVE_FRAME_SECONDS have passed (1 / STREAM_FPS while watched); True if
@@ -190,26 +201,36 @@ class LiveWriter:
         interval = min(self.interval, 1.0 / config.STREAM_FPS) if self.watched() else self.interval
         if self._last is not None and now - self._last < interval:
             return False
-        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, config.LIVE_JPEG_QUALITY])
-        if not ok:
-            return False
         self._last = now
-        atomic_write_bytes(frame_path(self.camera, self.live_dir), buf.tobytes())
+        try:
+            ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, config.LIVE_JPEG_QUALITY])
+            if not ok:
+                return False
+            atomic_write_bytes(frame_path(self.camera, self.live_dir), buf.tobytes(), durable=False)
+        except Exception as e:  # noqa: BLE001  the view only (see the module docstring)
+            self.write_errors(e)
+            return False
         self.write_info(fps, warning, frame_time=time.time())
         return True
 
     def write_info(self, fps: float | None, warning: str | None, frame_time: float | None = None) -> None:
         """Also called without a frame (camera silent) so decisions and warnings stay current."""
-        info = _read_json(info_path(self.camera, self.live_dir)) or {}
-        atomic_write_bytes(info_path(self.camera, self.live_dir), json.dumps({
-            "camera": self.camera, "updated": time.time(), "started": self.started,
-            "frame_time": frame_time if frame_time is not None else info.get("frame_time"),
-            "fps": None if fps is None else round(fps, 1), "warning": warning,
-            "decisions": list(self.decisions),
-        }).encode("utf-8"))
+        try:
+            info = _read_json(info_path(self.camera, self.live_dir)) or {}
+            atomic_write_bytes(info_path(self.camera, self.live_dir), json.dumps({
+                "camera": self.camera, "updated": time.time(), "started": self.started,
+                "frame_time": frame_time if frame_time is not None else info.get("frame_time"),
+                "fps": None if fps is None else round(fps, 1), "warning": warning,
+                "decisions": list(self.decisions),
+            }).encode("utf-8"), durable=False)
+        except Exception as e:  # noqa: BLE001  the view only (see the module docstring)
+            self.write_errors(e)
 
     def clear(self) -> None:
-        clear(self.camera, self.live_dir)
+        try:
+            clear(self.camera, self.live_dir)
+        except OSError as e:
+            self.write_errors(e)
 
 
 def _read_json(path: Path) -> dict | None:

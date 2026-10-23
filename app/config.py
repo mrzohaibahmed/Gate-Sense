@@ -82,6 +82,14 @@ WORKER_STOP_TIMEOUT = 10.0  # seconds to wait for a clean stop before killing
 WORKER_LOG_MAX_BYTES = 5_000_000  # rotate data/logs/<camera>.log to .log.1 at start when bigger
 WORKER_LOG_LINES = 50  # log lines shown per camera
 GALLERY_RELOAD_SECONDS = 5.0  # workers reload gallery.npz this often if it changed
+GALLERY_RETRY_SECONDS = 5.0  # a gallery.npz that can't be read at a worker's start is tried again this often
+# Cameras with "enabled": the app starts them when it starts and restarts any that stops (api/supervisor.py),
+# waiting SUPERVISOR_BACKOFF seconds between attempts (the last value repeats). A worker that ran for
+# SUPERVISOR_STABLE_SECONDS counts as healthy again: its next restart waits the first delay.
+SUPERVISOR_CHECK_SECONDS = 2.0
+SUPERVISOR_BACKOFF = (5, 10, 20, 40, 80, 160, 300)
+SUPERVISOR_STABLE_SECONDS = 300
+EVENT_QUEUE_MAX = 1000  # events a worker keeps in memory while the database can't be written (retried)
 CAMERA_WARN_SECONDS = 5.0  # warn when a live camera sends no frames, or only black ones, for this long
 BLACK_FRAME_LEVEL = 3.0  # mean brightness (0-255) below this counts as a black frame
 
@@ -96,6 +104,10 @@ RTSP_READ_TIMEOUT_MS = 5000  # CAP_PROP_READ_TIMEOUT_MSEC
 RTSP_STALE_SECONDS = 5.0  # no new frame for this long = disconnected, reconnect
 RTSP_CONNECT_GRACE_SECONDS = 12.0  # time allowed for open + first frame before giving up on an attempt
 RTSP_RECONNECT_BACKOFF = (1, 2, 4, 8, 16, 30)  # seconds between attempts; stays at the last value
+# Webcams (app.camera.LiveCapture): reopened after WEBCAM_READ_FAILURES failed reads in a row, or a failed open,
+# waiting these seconds between attempts (resets after frames arrive again). The worker never gives up.
+WEBCAM_READ_FAILURES = 50
+WEBCAM_RECONNECT_BACKOFF = (1, 2, 4, 8, 15, 30)
 
 # --- Live view ------------------------------------------------------------------
 LIVE_FRAME_SECONDS = 0.5  # workers write their latest annotated frame at most this often
@@ -185,7 +197,13 @@ DEFAULT_SITE_TIMEZONE = "local"  # IANA name, or "local" = this PC's time zone (
 
 # --- Nightly maintenance (api/maintenance.py, while the app runs) -----------------------------------
 BACKUP_HOUR = 2  # the nightly backup runs once a day at or after this hour (local time)
-BACKUP_RETENTION_DAYS = 14  # nightly backups older than this are deleted (manual and upgrade copies are kept)
+# A backup set: the database (checked with PRAGMA integrity_check), the face gallery, the enrollment photos
+# (known/, as a zip), cameras.json and settings.json. Never .env (passwords): keep a copy of it somewhere safe.
+BACKUP_KEEP = 14  # nightly sets kept in each backup folder (manual and upgrade copies are never deleted)
+# A second folder for a copy of every nightly and manual set: another disk or a USB drive, so one failed disk
+# doesn't take the backups with it. GATESENSE_BACKUP_COPY_DIR in the environment or .env; None = no copy.
+BACKUP_COPY_DIR = Path(_server_setting("GATESENSE_BACKUP_COPY_DIR")) if _server_setting(
+    "GATESENSE_BACKUP_COPY_DIR") else None
 MAINTENANCE_CHECK_SECONDS = 600  # how often the app checks whether the nightly job is due
 
 # --- Cameras ---------------------------------------------------------------
@@ -200,11 +218,13 @@ MAINTENANCE_CHECK_SECONDS = 600  # how often the app checks whether the nightly 
 # direction: "IN" for entrance, "OUT" for exit.
 # mirror (optional): show the live view flipped left-right, like a mirror. Display only; recognition
 #   uses the original frame. Handy for a webcam facing you; usually off for gate cameras.
+# enabled (optional): the app starts this camera when it starts and restarts it whenever it stops
+#   (Settings > Cameras "Auto"). A Stop on the Live cameras page pauses that until the camera is started again.
 DEFAULT_CAMERAS = [
-    {"name": "entrance", "source": 0, "direction": "IN", "mirror": True},
+    {"name": "entrance", "source": 0, "direction": "IN", "mirror": True, "enabled": False},
     # Testing with one webcam: entrance and exit share webcam 0, so run one at a time (two at once is refused).
     # With a second USB webcam, set this to 1 to run both together.
-    {"name": "exit", "source": 0, "direction": "OUT", "mirror": True},
+    {"name": "exit", "source": 0, "direction": "OUT", "mirror": True, "enabled": False},
     # {"name": "gate-entrance", "direction": "IN",
     #  "source": "rtsp://gatesense:${GATESENSE_CAM_PASS}@192.168.1.101:554/Streaming/Channels/101"},
     # {"name": "gate-exit", "direction": "OUT",
@@ -287,6 +307,12 @@ def refresh_settings() -> bool:
 
 
 _cameras_signature = None  # (mtime, size) of the cameras file when CAMERAS was last loaded; None = no file
+CAMERAS_ERROR: str | None = None  # why CAMERAS_FILE can't be read; set = GateSense and the workers refuse to start
+
+
+class CamerasFileError(ValueError):
+    """CAMERAS_FILE exists but can't be read. Never replaced by the defaults: they would start the wrong cameras
+    (webcam 0 instead of the gate's IP cameras), and Settings > Cameras would then save them over the file."""
 
 
 def _signature(path: Path):
@@ -299,34 +325,70 @@ def _signature(path: Path):
 
 def refresh_cameras() -> bool:
     """Reload CAMERAS if CAMERAS_FILE was changed, created or deleted since the last load (the dashboard
-    calls this on every page run, so hand edits apply without a restart). True if reloaded."""
-    global CAMERAS
+    calls this on every page run, so hand edits apply without a restart). True if reloaded.
+
+    A file that became unreadable while running keeps the cameras loaded before, and sets CAMERAS_ERROR."""
+    global CAMERAS, CAMERAS_ERROR
     if _signature(CAMERAS_FILE) == _cameras_signature:
         return False
-    CAMERAS = load_cameras()
+    try:
+        CAMERAS = load_cameras()
+    except CamerasFileError as e:
+        if CAMERAS_ERROR != str(e):
+            print(f"WARNING: {e} Keeping the cameras loaded before.")
+        CAMERAS_ERROR = str(e)
+        return False
+    CAMERAS_ERROR = None
     return True
+
+
+def check_cameras() -> None:
+    """Raise CamerasFileError if CAMERAS_FILE can't be read (the app's start and each worker's start call this)."""
+    refresh_cameras()
+    if CAMERAS_ERROR:
+        raise CamerasFileError(CAMERAS_ERROR)
 
 
 def load_cameras(path: Path | None = None) -> list[dict]:
     """Cameras from CAMERAS_FILE if it exists (written by Settings > Cameras), else DEFAULT_CAMERAS.
 
-    A file that can't be read falls back to the defaults (with a message) rather than stopping the app.
+    A file that exists but can't be read raises CamerasFileError; it is never replaced by the defaults.
+    `enabled`: the app starts the camera by itself and restarts it if it stops (api/supervisor.py).
     """
-    import json
-
     global _cameras_signature
     path = path or CAMERAS_FILE
     _cameras_signature = _signature(path)
     if not path.is_file():
         return [dict(c) for c in DEFAULT_CAMERAS]
+    return parse_cameras(path)
+
+
+def parse_cameras(path: Path) -> list[dict]:
+    """The cameras in a cameras.json file; CamerasFileError if it can't be read or lists none."""
+    import json
+
     try:
         entries = json.loads(path.read_text(encoding="utf-8"))["cameras"]
-        return [{"name": e["name"], "source": e["source"], "direction": e["direction"],
-                 "mirror": bool(e.get("mirror"))} for e in entries]
+        cameras = [{"name": e["name"], "source": e["source"], "direction": e["direction"],
+                    "mirror": bool(e.get("mirror")), "enabled": bool(e.get("enabled"))} for e in entries]
     except (OSError, ValueError, KeyError, TypeError) as e:
-        print(f"WARNING: could not read {path} ({e}); using DEFAULT_CAMERAS from app/config.py")
-        return [dict(c) for c in DEFAULT_CAMERAS]
+        raise CamerasFileError(
+            f"{path} can't be read ({type(e).__name__}: {e}). Fix the file, or restore it from a backup "
+            "(scripts\\restore.py); GateSense won't start cameras it isn't sure about.") from None
+    if not cameras:
+        raise CamerasFileError(f"{path} has no cameras. Add one, or delete the file to use the defaults.")
+    return cameras
 
 
-CAMERAS = load_cameras()
+def _first_cameras() -> list[dict]:
+    global CAMERAS_ERROR
+    try:
+        return load_cameras()
+    except CamerasFileError as e:
+        CAMERAS_ERROR = str(e)
+        print(f"ERROR: {e}")
+        return []
+
+
+CAMERAS = _first_cameras()
 load_settings()
