@@ -35,7 +35,7 @@ from api.enroll_camera import window
 from api.routes import cameras as camera_routes
 from api.routes.live import BOUNDARY, part
 from api.routes.people import _enroll_lock, get_or_404
-from api.schemas import Reason
+from api.schemas import OptionalReason
 from api.workers import CameraBusy
 from app import config, enroll_guide, enrollment
 from app.workers import WorkerError
@@ -75,7 +75,7 @@ class PhotosIn(BaseModel):
     photos: list[PhotoIn] = Field(min_length=1, max_length=10)
 
 
-class PhotosSave(PhotosIn, Reason):
+class PhotosSave(PhotosIn, OptionalReason):
     source: str | None = Field(None, max_length=64, description='where the photos came from: "webcam" or the '
                                                                   'camera name (for the audit log)')
 
@@ -458,7 +458,7 @@ def enroll_person(person_id: int, body: PhotosSave, request: Request, user: Curr
     saved = sorted({p.name for p in enrollment.photo_paths(enrollment.person_dir(person["employee_code"]))} - before)
     db.log_change(user.username, "enroll_person", f"person:{person['employee_code']}",
                   {"steps": [r.step for r in review.photos], "saved": saved, "source": body.source or "webcam",
-                   "warnings": sum(len(r.warnings) for r in review.photos)}, body.reason)
+                   "warnings": sum(len(r.warnings) for r in review.photos)}, body.reason_or("guided enrollment"))
     return {"employee_code": person["employee_code"], "saved": saved, "accepted": len(result.accepted),
             "embeddings": len(result.embeddings)}
 

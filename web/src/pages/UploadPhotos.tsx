@@ -9,7 +9,7 @@ import type { PhotoResult } from "@/api/types";
 import { PageHeader } from "@/app/AppShell";
 import { Button } from "@/components/ui/button";
 import { Badge, Card, CardContent } from "@/components/ui/card";
-import { Field, NativeSelect, Textarea } from "@/components/ui/input";
+import { Field, NativeSelect } from "@/components/ui/input";
 import { type ImagePreparer, shrinkImage } from "@/lib/images";
 import { cn } from "@/lib/utils";
 
@@ -30,7 +30,6 @@ export function UploadPhotos({
   const queryClient = useQueryClient();
   const [personId, setPersonId] = useState(preselected ? String(preselected) : "");
   const [picked, setPicked] = useState<Picked[]>([]);
-  const [reason, setReason] = useState("enrollment photos from files");
   const [results, setResults] = useState<{ rows: PhotoResult[]; embeddings: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -67,16 +66,12 @@ export function UploadPhotos({
   const preparing = picked.some((p) => !p.image && !p.error);
   const upload = async () => {
     if (!person) return;
-    if (!reason.trim()) {
-      setError("A reason is required (it goes to the audit log).");
-      return;
-    }
     setBusy(true);
     setError(null);
     try {
       const r = await api.post("/api/people/{person_id}/photos", {
         path: { person_id: person.id },
-        body: { reason: reason.trim(), photos: ready.map((p) => ({ name: p.name, image: p.image! })) },
+        body: { photos: ready.map((p) => ({ name: p.name, image: p.image! })) },
       });
       setResults({ rows: r.results, embeddings: r.embeddings });
       setPicked([]);
@@ -188,9 +183,6 @@ export function UploadPhotos({
                 ))}
               </ul>
             )}
-            <Field label="Reason" htmlFor="upload-reason" className="max-w-2xl">
-              <Textarea id="upload-reason" value={reason} onChange={(e) => setReason(e.target.value)} />
-            </Field>
             {error && (
               <p role="alert" className="text-sm text-destructive">
                 {error}

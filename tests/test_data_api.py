@@ -281,7 +281,9 @@ def test_people_changes_need_a_reason_and_are_audited(app):
     pid = r.json()["id"]
     assert hr.post("/api/people", json={"employee_code": "2001", "name": "X", "reason": "x"}).status_code == 409
     assert hr.post("/api/people", json={"employee_code": "bad code!", "name": "X", "reason": "x"}).status_code == 422
-    assert hr.post("/api/people", json={"employee_code": "2002", "name": "X"}).status_code == 422  # no reason
+    added = hr.post("/api/people", json={"employee_code": "2002", "name": "X"})  # enrollment: the reason is optional
+    assert added.status_code == 201, added.text
+    assert items(as_role(app, "admin").get("/api/audit", params={"action": "add_person"}))[0]["reason"] ==         "added for enrollment"
 
     site = as_role(app, "admin").post("/api/sites", json={"name": "Warehouse", "reason": "second gate"}).json()
     r = hr.patch(f"/api/people/{pid}", json={"shift": "night", "site_id": site["id"], "reason": "moved"})

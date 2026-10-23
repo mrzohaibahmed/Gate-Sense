@@ -133,7 +133,7 @@ describe("enrollment wizard", () => {
     expect(await screen.findByText("Details")).toBeInTheDocument();
     expect(currentStep()).toHaveTextContent("Details");
 
-    // Details: a new person (the reason is filled in by default).
+    // Details: a new person (no reason asked).
     await user.click(screen.getByRole("button", { name: "Add and continue" }));
     expect(await screen.findByText("Enter the name")).toBeInTheDocument();
     await user.type(screen.getByLabelText("Employee code"), "2001");
@@ -182,7 +182,11 @@ describe("enrollment wizard", () => {
     expect((reviewed.body as { photos: { image: string }[] }).photos[0]!.image).toMatch(/^data:image\/jpeg;base64,/);
     await user.click(screen.getByRole("button", { name: "Save enrollment" }));
     expect(await screen.findByText(/Erum is enrolled/)).toBeInTheDocument();
-    expect(api.find("POST", "/api/people/7/enroll")[0]?.body).toMatchObject({ reason: "enrolled on the dashboard" });
+    const saved = api.find("POST", "/api/people/7/enroll")[0]!.body;
+    expect(saved).toMatchObject({ source: "webcam" });
+    expect(saved).not.toHaveProperty("reason");
+    expect(api.find("POST", "/api/people")[0]!.body).not.toHaveProperty("reason");
+    expect(screen.queryByLabelText(/Reason/)).not.toBeInTheDocument();
   });
 
   it("a retake goes back to that step", async () => {

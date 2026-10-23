@@ -152,7 +152,7 @@ role (admin, HR, viewer, guard) sees only its own menu items.
 - **Settings**: cameras (add, edit, test the connection, reorder, delete, view and download the log), sites, users and
   roles, recognition thresholds, and system information with "Back up now".
 
-To work on the web dashboard itself, run the API (`start-api.bat`) and, in a second window:
+To work on the web dashboard itself, run the app with **start-debug.bat** and, in a second window:
 
 ```
 cd web
@@ -169,10 +169,10 @@ types while the API runs).
 The dashboard runs on a JSON API under `/api`, served by the same app (a Vite dev server on `http://localhost:5173` is the only other browser origin allowed). To run it in a window of its own:
 
 ```
-start-api.bat                         (or: .venv\Scripts\python -m api.run)
+start-debug.bat                       (or: .venv\Scripts\python -m api.run)
 ```
 
-It listens on `http://127.0.0.1:8000` (this PC only; `API_HOST` / `API_PORT` in `app/config.py`). `GET /api/health` returns the version, uptime and database status; interactive docs are at `/docs`. Press Ctrl+C in its window to stop it: camera workers it started are stopped first. A camera can only run in one process at a time: the API refuses a camera that the command line or the API already runs (or the webcam while the enrollment wizard holds it), and the worker itself locks the camera so two starts at the same moment can't both open it.
+It listens on `http://127.0.0.1:8000` (this PC only; change it with `GATESENSE_HOST` / `GATESENSE_PORT` in the environment or `.env`). `GET /api/health` returns the version, uptime and database status; interactive docs are at `/docs`. Press Ctrl+C in its window to stop it: camera workers it started are stopped first. A camera can only run in one process at a time: the API refuses a camera that the command line or the API already runs (or the webcam while the enrollment wizard holds it), and the worker itself locks the camera so two starts at the same moment can't both open it.
 
 **Users and login.** The API has its own user accounts with four roles: **admin** (everything, including user accounts), **hr**, **viewer** and **guard** (the permissions of each are in `api/permissions.py`). On its first start the API creates the user `admin` with the `GATESENSE_ADMIN_PASSWORD`; that password must be changed at the first login. To try it, open `http://127.0.0.1:8000/docs`, run `POST /api/auth/login` with `{"username": "admin", "password": "..."}` (the page keeps the session cookie), then `POST /api/auth/password`, then the other endpoints. Admins manage accounts under `/api/users` (create with a temporary password, change role, deactivate, reset password; each change needs a reason). Sessions end after 8 hours without activity; 5 wrong passwords in a row lock an account for 15 minutes. Logins, failed logins, logouts and refused requests go to the audit log. On the first start after this update the database gets new tables (users, sessions, sites); a copy of the old database is saved in `data/backups/` first.
 

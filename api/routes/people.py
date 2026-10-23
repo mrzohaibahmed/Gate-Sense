@@ -1,7 +1,7 @@
 """People: list, profile (photos, recent attendance), add, edit, deactivate / activate, re-enroll.
 
 Uses the same functions as the dashboard's People and Enrollment pages (app.db, app.enrollment).
-Every change needs a reason and is audited.
+Every change is audited and needs a reason, except adding a person and their photos (enrollment), which get a default.
 """
 
 import threading
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from api import auth
 from api.auth import CurrentUser, require_permission
 from api.paging import ListParams, Page, list_params, paginate
-from api.schemas import AttendanceRow, Event, Reason, attendance_rows, event_out
+from api.schemas import AttendanceRow, Event, OptionalReason, Reason, attendance_rows, event_out
 from app import enrollment
 
 router = APIRouter(prefix="/api/people", tags=["people"], responses=auth.PROTECTED_RESPONSES)
@@ -55,7 +55,7 @@ class PersonDetail(Person):
     recent_events: list[Event] = Field(description=f"events of the last {RECENT_DAYS} days, newest first")
 
 
-class PersonIn(Reason):
+class PersonIn(OptionalReason):
     employee_code: str = Field(description="also the photo folder name: letters, digits, '_', '-' or '.'")
     name: str = Field(min_length=1)
     department: str | None = None
@@ -161,7 +161,7 @@ def create_person(body: PersonIn, request: Request, user: CurrentUser = Depends(
     check_site(request, body.site_id)
     try:
         person_id = auth.db_of(request).add_person(code, body.name, body.department, body.shift, body.site_id,
-                                                   user.username, body.reason)
+                                                   user.username, body.reason_or("added for enrollment"))
     except ValueError as e:
         raise HTTPException(409 if "already exists" in str(e) else 422, str(e).capitalize()) from None
     return get_or_404(request, person_id)
@@ -223,7 +223,7 @@ class UploadPhoto(BaseModel):
     image: str = Field(description="JPEG or PNG, base64 (a data: URL prefix is allowed)")
 
 
-class PhotosUpload(Reason):
+class PhotosUpload(OptionalReason):
     photos: list[UploadPhoto] = Field(min_length=1, max_length=MAX_UPLOAD_PHOTOS)
 
 
@@ -286,7 +286,8 @@ def upload_photos(person_id: int, body: PhotosUpload, request: Request, user: Cu
                         "pitch": q.pitch if q else None, "saved_as": path.name if path else None})
     saved = [r["saved_as"] for r in results if r["saved_as"]]
     db.log_change(user.username, "add_photos", f"person:{code}",
-                  {"saved": saved, "refused": [r["name"] for r in results if not r["ok"]]}, body.reason)
+                  {"saved": saved, "refused": [r["name"] for r in results if not r["ok"]]},
+                  body.reason_or("enrollment photos from files"))
     embeddings = len(rebuilt.embeddings) if rebuilt else enrollment.load_gallery().counts().get(code, 0)
     return {"results": results, "saved": len(saved), "embeddings": embeddings}
 

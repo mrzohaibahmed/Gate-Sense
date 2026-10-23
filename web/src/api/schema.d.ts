@@ -2196,9 +2196,9 @@ export interface components {
         PersonIn: {
             /**
              * Reason
-             * @description why (goes to the audit log)
+             * @description why (goes to the audit log); a default is used when left out
              */
-            reason: string;
+            reason?: string | null;
             /**
              * Employee Code
              * @description also the photo folder name: letters, digits, '_', '-' or '.'
@@ -2360,9 +2360,9 @@ export interface components {
         PhotosSave: {
             /**
              * Reason
-             * @description why (goes to the audit log)
+             * @description why (goes to the audit log); a default is used when left out
              */
-            reason: string;
+            reason?: string | null;
             /** Photos */
             photos: components["schemas"]["PhotoIn"][];
             /**
@@ -2375,9 +2375,9 @@ export interface components {
         PhotosUpload: {
             /**
              * Reason
-             * @description why (goes to the audit log)
+             * @description why (goes to the audit log); a default is used when left out
              */
-            reason: string;
+            reason?: string | null;
             /** Photos */
             photos: components["schemas"]["UploadPhoto"][];
         };

@@ -158,7 +158,7 @@ def test_upload_photos_saves_the_passing_ones(app):
 def test_delete_one_photo_rebuilds(app):
     hr = as_role(app, "hr")
     pid = app.state.seed["people"]["1001"]
-    hr.post(f"/api/people/{pid}/photos", json={"reason": "x", "photos": [
+    hr.post(f"/api/people/{pid}/photos", json={"photos": [  # no reason: the default goes to the audit log
         {"name": f"{i}.jpg", "image": b64(photo("good", seed=i))} for i in range(3)]})
     assert enrollment.load_gallery().counts()["1001"] == 3
     assert hr.delete(f"/api/people/{pid}/photos/2.jpg").status_code == 422  # no reason

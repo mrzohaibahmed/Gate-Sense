@@ -88,7 +88,7 @@ def test_stale_app_info_is_cleaned(cameras, capsys):
 # --- The batch files themselves ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", ["start.bat", "stop.bat"])
+@pytest.mark.parametrize("name", ["start.bat", "stop.bat", "start-debug.bat"])
 def test_batch_files_use_crlf_and_the_venv(name):
     data = (ROOT / name).read_bytes()
     assert b"\r\n" in data and b"\n" not in data.replace(b"\r\n", b"")

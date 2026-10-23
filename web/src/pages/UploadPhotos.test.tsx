@@ -85,10 +85,9 @@ describe("enrollment from photo files", () => {
     expect(screen.getByText(/1 of 2 saved/)).toBeInTheDocument();
 
     const sent = api.find("POST", "/api/people/1/photos")[0]!.body as {
-      reason: string;
       photos: { name: string; image: string }[];
     };
-    expect(sent.reason).toBe("enrollment photos from files");
+    expect(sent).not.toHaveProperty("reason"); // no reason asked: the API audits a default one
     expect(sent.photos.map((p) => p.name)).toEqual(["front.jpg", "group.jpg"]);
     expect(sent.photos[0]!.image).toMatch(/^data:image\/jpeg;base64,/);
   });
@@ -110,7 +109,7 @@ describe("enrollment from photo files", () => {
     expect(screen.getByRole("button", { name: /Check and save/ })).toBeDisabled();
   });
 
-  it(`keeps at most ${MAX_PHOTOS} photos and needs a person and a reason`, async () => {
+  it(`keeps at most ${MAX_PHOTOS} photos and needs a person`, async () => {
     const user = userEvent.setup();
     renderUpload(null);
     await screen.findByRole("option", { name: /Ayesha/ });
@@ -123,10 +122,8 @@ describe("enrollment from photo files", () => {
     const save = screen.getByRole("button", { name: `Check and save ${MAX_PHOTOS} photos` });
     expect(save).toBeDisabled(); // no person yet
 
+    expect(screen.queryByLabelText("Reason")).not.toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("Person"), "1");
-    await user.clear(screen.getByLabelText("Reason"));
-    await user.click(save);
-    expect(await screen.findByText(/A reason is required/)).toBeInTheDocument();
-    expect(api.find("POST", "/api/people/1/photos")).toHaveLength(0);
+    expect(save).toBeEnabled();
   });
 });

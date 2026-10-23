@@ -17,6 +17,14 @@ Direction = Literal["IN", "OUT"]
 assert set(Status.__args__) == {PRESENT, MISSING_EXIT, MISSING_ENTRY, ABSENT}
 
 
+class OptionalReason(BaseModel):
+    """Enrollment (add a person, save photos): the reason may be left out; the audit log then gets a default one."""
+    reason: str | None = Field(None, description="why (goes to the audit log); a default is used when left out")
+
+    def reason_or(self, default: str) -> str:
+        return (self.reason or "").strip() or default
+
+
 class Reason(BaseModel):
     reason: str = Field(min_length=1, description="why (goes to the audit log)")
 

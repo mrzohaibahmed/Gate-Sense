@@ -20,7 +20,7 @@ import type { EnrollmentSource, FrameCheck, Person, Review, StepInfo } from "@/a
 import { PageHeader } from "@/app/AppShell";
 import { Badge, Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Field, Input, NativeSelect, Textarea } from "@/components/ui/input";
+import { Field, Input, NativeSelect } from "@/components/ui/input";
 import { ErrorState } from "@/components/ui/misc";
 import { cn } from "@/lib/utils";
 
@@ -295,7 +295,6 @@ const newPersonSchema = z.object({
   name: z.string().trim().min(1, "Enter the name"),
   department: z.string().trim(),
   shift: z.string().trim(),
-  reason: z.string().trim().min(1, "A reason is required (it goes to the audit log)"),
 });
 type NewPerson = z.infer<typeof newPersonSchema>;
 
@@ -310,7 +309,7 @@ function DetailsStep({ preselected, onNext }: { preselected: number | null; onNe
   });
   const form = useForm<NewPerson>({
     resolver: zodResolver(newPersonSchema),
-    defaultValues: { employee_code: "", name: "", department: "", shift: "", reason: "new starter" },
+    defaultValues: { employee_code: "", name: "", department: "", shift: "" },
   });
   const errors = form.formState.errors;
   const create = form.handleSubmit(async (v) => {
@@ -322,7 +321,6 @@ function DetailsStep({ preselected, onNext }: { preselected: number | null; onNe
           name: v.name,
           department: v.department || null,
           shift: v.shift || null,
-          reason: v.reason,
         },
       });
       void queryClient.invalidateQueries({ queryKey: ["people"] });
@@ -388,9 +386,6 @@ function DetailsStep({ preselected, onNext }: { preselected: number | null; onNe
             </Field>
             <Field label="Shift" htmlFor="shift">
               <Input id="shift" {...form.register("shift")} />
-            </Field>
-            <Field label="Reason" htmlFor="new-reason" error={errors.reason?.message} className="sm:col-span-2">
-              <Textarea id="new-reason" aria-invalid={!!errors.reason} {...form.register("reason")} />
             </Field>
             {error && (
               <p role="alert" className="text-sm text-destructive sm:col-span-2">
@@ -903,20 +898,15 @@ function ReviewStep({
     gcTime: 0,
     staleTime: Infinity,
   });
-  const [reason, setReason] = useState("enrolled on the dashboard");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const save = async () => {
-    if (!reason.trim()) {
-      setError("A reason is required (it goes to the audit log).");
-      return;
-    }
     setSaving(true);
     setError(null);
     try {
       await api.post("/api/people/{person_id}/enroll", {
         path: { person_id: person.id },
-        body: { photos, reason, source: source?.kind === "camera" ? source.name : "webcam" },
+        body: { photos, source: source?.kind === "camera" ? source.name : "webcam" },
       });
       for (const key of [["people"], ["person"]]) void queryClient.invalidateQueries({ queryKey: key });
       onSaved();
@@ -970,9 +960,11 @@ function ReviewStep({
             );
           })}
         </ul>
-        <Field label="Reason (required)" htmlFor="enroll-reason" error={error ?? undefined} className="max-w-md">
-          <Input id="enroll-reason" value={reason} onChange={(e) => setReason(e.target.value)} />
-        </Field>
+        {error && (
+          <p role="alert" className="text-sm text-destructive">
+            {error}
+          </p>
+        )}
         <Button
           className="self-start"
           onClick={() => void save()}
