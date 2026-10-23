@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from api import auth
 from api.main import create_app
 from api.workers import WorkerManager
-from app import camera_settings, config, db, enrollment, reports
+from app import camera_settings, config, db, enrollment
 from app.workers import WorkerManager as AppWorkerManager
 from tests.fakes import FakeDetector, FakeRecognizer, photo
 from tests.test_api import FAKE, wait_for
@@ -95,26 +95,20 @@ def items(r) -> list[dict]:
     return r.json()["items"]
 
 
-# --- Attendance: the same as the dashboard's Today page ---------------------------------------
+# --- Attendance: the same day as the daily register report ---------------------------------------------
 
 
-def test_today_matches_the_streamlit_today_page(app):
+def test_attendance_matches_the_daily_register(app):
     viewer = as_role(app, "viewer")
     rows = items(viewer.get("/api/attendance", params={"from": TODAY.isoformat(), "to": TODAY.isoformat(),
                                                        "sort": "name"}))
-    conn = db.connect()
-    page = reports.daily_report(conn, TODAY)  # what views/today.py shows
-    conn.close()
+    register = viewer.get("/api/reports/daily", params={"from": TODAY.isoformat(), "to": TODAY.isoformat()})
 
-    def hms(v):
-        return datetime.fromisoformat(v).strftime("%H:%M:%S") if v else ""
+    def shape(r):
+        return (r["employee_code"], r["name"], r["department"], r["first_in"], r["last_out"], r["worked_hours"],
+                r["status"])
 
-    api = [(r["employee_code"], r["name"], r["department"] or "", hms(r["first_in"]), hms(r["last_out"]),
-            r["worked_hours"], r["status"]) for r in rows]
-    streamlit = [(r["Employee code"], r["Name"], r["Department"], r["First IN"], r["Last OUT"],
-                  None if r["Worked hours"] != r["Worked hours"] else r["Worked hours"], r["Status"])
-                 for r in page.to_dict("records")]
-    assert api == streamlit
+    assert sorted(map(shape, rows)) == sorted(map(shape, register.json()["rows"]))
     assert [r["status"] for r in rows] == ["present", "missing exit", "missing entry", "absent"]
     assert rows[0]["worked_minutes"] == 545 and rows[0]["worked_hours"] == 9.08
 
@@ -531,7 +525,7 @@ def test_camera_passwords_never_appear_in_responses(app, monkeypatch, tmp_path):
 def test_openapi_lists_every_endpoint_with_a_response_model(app):
     spec = TestClient(app).get("/openapi.json").json()
     ops = [(m, p, o) for p, ms in spec["paths"].items() for m, o in ms.items()]
-    assert len(ops) == 57 and len({o["operationId"] for _, _, o in ops}) == 57  # + live, enrollment, system, Streamlit gaps
+    assert len(ops) == 59 and len({o["operationId"] for _, _, o in ops}) == 59  # + live, enrollment, system, Streamlit gaps
     expected = {("get", "/api/overview"), ("get", "/api/attendance"), ("get", "/api/events"),
                 ("get", "/api/snapshots/{event_id}"), ("post", "/api/attendance/corrections"), ("get", "/api/people"),
                 ("post", "/api/people"), ("get", "/api/people/{person_id}"), ("patch", "/api/people/{person_id}"),

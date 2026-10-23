@@ -213,7 +213,7 @@ def reenroll_person(person_id: int, body: Reason, request: Request, user: Curren
             "rejected": [{"file": f, "reason": r} for f, r in result.rejected], "embeddings": len(result.embeddings)}
 
 
-# --- Photos and face data (the Streamlit Enrollment page's upload, delete photo, delete face data) --------------
+# --- Photos and face data (upload photo files, delete one photo, delete all face data) --------------------------
 
 MAX_UPLOAD_PHOTOS = 10
 

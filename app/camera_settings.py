@@ -1,4 +1,4 @@
-"""Camera configuration as edited on the dashboard's Camera settings page.
+"""Camera configuration as edited in the dashboard's Settings > Cameras (through /api/cameras).
 
 Cameras are saved to config.CAMERAS_FILE (cameras.json in the project folder):
 
@@ -34,7 +34,7 @@ TYPES = {
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}")
 WINDOWS_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(10)), *(f"lpt{i}" for i in range(10))}
 HOST_RE = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
-DEFAULT_REASON = "changed on the Camera settings page"
+DEFAULT_REASON = "changed in Settings > Cameras"
 
 
 def password_var(name: str) -> str:
@@ -169,7 +169,7 @@ def check_roi(roi) -> dict:
 def save(cams: list[dict], path: Path | None = None) -> None:
     """Write cameras.json atomically and reload config.CAMERAS in this process."""
     path = path or config.CAMERAS_FILE
-    data = {"_comment": "GateSense cameras, edited on the dashboard's Camera settings page. "
+    data = {"_comment": "GateSense cameras, edited in the dashboard's Settings > Cameras. "
                         "No passwords here: they are in .env (see app/sources.py).",
             "cameras": cams}
     atomic_write_bytes(path, (json.dumps(data, indent=2) + "\n").encode("utf-8"))

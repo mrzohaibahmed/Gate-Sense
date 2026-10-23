@@ -6,7 +6,7 @@ import { useForm } from "react-hook-form";
 import { Link, useSearchParams } from "react-router";
 import { z } from "zod";
 
-import { ApiError, api, postImage } from "@/api/client";
+import { ApiError, api, postImage, resourceUrl } from "@/api/client";
 import type { FrameCheck, Person, Review, StepInfo } from "@/api/types";
 import { PageHeader } from "@/app/AppShell";
 import { Badge, Card, CardContent } from "@/components/ui/card";
@@ -67,6 +67,15 @@ export function browserCamera(): CameraAdapter {
       return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
     },
   };
+}
+
+/** Give the webcam back to the camera workers. keepalive: it still goes out while the tab is closing. */
+function releaseWebcam(claimId: string): void {
+  void fetch(resourceUrl("/api/enrollment/webcam/{claim_id}", { claim_id: claimId }), {
+    method: "DELETE",
+    credentials: "include",
+    keepalive: true,
+  }).catch(() => {}); // a claim that isn't released lapses by itself
 }
 
 function toDataUrl(blob: Blob): Promise<string> {
@@ -389,18 +398,52 @@ function CaptureStep({
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
 
+  // The webcam is claimed through the API before it is opened, so no webcam camera worker can start while the
+  // wizard has it (and the wizard can't take it from a running worker). The claim is renewed while the capture
+  // steps are open and released when they close (review, back, another page, the tab closing).
   useEffect(() => {
     const cam = adapter.current;
     let cancelled = false;
-    if (video.current) {
-      cam
-        .start(video.current)
-        .then(() => !cancelled && setStarted(true))
-        .catch((e: Error) => !cancelled && setCameraError(e.message));
-    }
+    let claimId: string | null = null;
+    let renew: ReturnType<typeof setInterval> | undefined;
+    const release = () => {
+      clearInterval(renew);
+      if (claimId) releaseWebcam(claimId);
+      claimId = null;
+    };
+    const fail = (e: unknown) => {
+      if (cancelled) return;
+      cam.stop();
+      release();
+      setStarted(false);
+      setCameraError(e instanceof Error ? e.message : String(e));
+    };
+    void (async () => {
+      try {
+        const claim = await api.post("/api/enrollment/webcam", { body: {} });
+        if (cancelled) return releaseWebcam(claim.claim_id);
+        claimId = claim.claim_id;
+        renew = setInterval(() => {
+          api
+            .post("/api/enrollment/webcam", { body: { claim_id: claimId } })
+            .then((r) => {
+              claimId = r.claim_id;
+            })
+            .catch(fail); // the claim lapsed and a webcam worker started meanwhile: give the webcam back
+        }, claim.renew_seconds * 1000);
+        if (!video.current) return;
+        await cam.start(video.current);
+        if (!cancelled) setStarted(true);
+      } catch (e) {
+        fail(e);
+      }
+    })();
+    window.addEventListener("pagehide", release);
     return () => {
       cancelled = true;
+      window.removeEventListener("pagehide", release);
       cam.stop();
+      release();
     };
   }, []);
 

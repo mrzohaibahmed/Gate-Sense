@@ -9,7 +9,7 @@ encoding. The thread stops, and the .watch file goes, with the last viewer.
 
 EventHub: the WebSocket clients of /api/ws. While any are connected, one task
 looks for new events and corrections (in the database, so those from the camera
-workers and the Streamlit dashboard are seen too) every WS_POLL_SECONDS, sends each
+workers and scripts are seen too) every WS_POLL_SECONDS, sends each
 camera's latest recognition decisions (from data/live/<camera>.json) when they
 change, only to clients with live:decisions (admins), and sends
 every camera's status every WS_CAMERA_SECONDS, when it also closes clients whose

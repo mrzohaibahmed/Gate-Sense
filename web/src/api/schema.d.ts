@@ -458,6 +458,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/enrollment/webcam": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Claim Webcam
+         * @description Hold the webcam for the enrollment wizard (or renew the hold): webcam camera workers can't start meanwhile.
+         *     409 while a webcam worker runs (a renewal of a live claim is never refused).
+         */
+        post: operations["claim_webcam"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/enrollment/webcam/{claim_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Release Webcam
+         * @description Release the webcam (the wizard closed). Releasing a claim that already lapsed is fine too.
+         */
+        delete: operations["release_webcam"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/enrollment/steps": {
         parameters: {
             query?: never;
@@ -647,8 +688,8 @@ export interface paths {
         put?: never;
         /**
          * Start Camera
-         * @description Start the camera's worker. 409 if any process (this API, the dashboard, the command line) already runs it
-         *     or its webcam.
+         * @description Start the camera's worker. 409 if any process (this API, the command line) already runs it or its webcam, or
+         *     the enrollment wizard holds the webcam.
          */
         post: operations["start_camera"];
         delete?: never;
@@ -686,7 +727,7 @@ export interface paths {
         /**
          * Test Camera
          * @description Open a source once and report its resolution, fps and codec. A saved camera must be stopped (a camera is
-         *     never opened twice); a webcam in use by a worker or the Enrollment camera is refused. A Hikvision `password`
+         *     never opened twice); a webcam in use by a worker or the enrollment wizard is refused. A Hikvision `password`
          *     is used for this test only.
          */
         post: operations["test_camera"];
@@ -2447,6 +2488,29 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /** WebcamClaim */
+        WebcamClaim: {
+            /** Claim Id */
+            claim_id: string;
+            /**
+             * Expires Seconds
+             * @description the claim lapses unless renewed within this many seconds
+             */
+            expires_seconds: number;
+            /**
+             * Renew Seconds
+             * @description renew it (POST again with claim_id) this often
+             */
+            renew_seconds: number;
+        };
+        /** WebcamClaimIn */
+        WebcamClaimIn: {
+            /**
+             * Claim Id
+             * @description renew this claim; omit (or a lapsed one) for a new claim
+             */
+            claim_id?: string | null;
+        };
         /** WorkerInfo */
         WorkerInfo: {
             /** Camera */
@@ -3746,6 +3810,103 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["FaceDataDeleted"];
                 };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    claim_webcam: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["WebcamClaimIn"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WebcamClaim"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description a webcam camera worker is running */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    release_webcam: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                claim_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
             401: {

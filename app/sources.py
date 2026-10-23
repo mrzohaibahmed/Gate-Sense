@@ -74,7 +74,7 @@ def _userinfo_end(text: str) -> int:
 def expand(source, extra: dict | None = None):
     """Source with ${VAR} replaced; webcam indexes and sources without placeholders are returned unchanged.
 
-    `extra` values win over everything (the Camera settings page tests a typed, not yet saved password).
+    `extra` values win over everything (Settings > Cameras tests a typed, not yet saved password).
     Raises MissingVariables (a ValueError) listing every variable that isn't set.
     """
     if isinstance(source, int) or not placeholders(source):

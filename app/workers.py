@@ -1,4 +1,4 @@
-"""Camera worker processes: the runtime inside each worker and the manager in the dashboard.
+"""Camera worker processes: the runtime inside each worker and the manager that starts them (in the API).
 
 Protocol (files under config.RUN_DIR, so CLI-started workers are visible too):
 - <camera>.json  status written by the worker every WORKER_STATUS_SECONDS:
@@ -6,12 +6,10 @@ Protocol (files under config.RUN_DIR, so CLI-started workers are visible too):
 - <camera>.stop  created by the manager to ask the worker to exit cleanly.
 - camera-<camera>.lock, webcam-<index>.lock  OS locks the worker holds while it runs
                  (acquire_camera), so two processes can never open the same camera, even
-                 when the dashboard and the API start it at the same moment.
-- _enrollment_camera.json  the dashboard's Enrollment camera switch, so other processes
-                 (the API) know the webcam is taken.
-A worker started by the dashboard (or the API) also gets --parent-pid, which it
-writes to its status file, and exits by itself if that process is gone, so
-stopping the dashboard leaves no orphans. Worker output goes to config.LOG_DIR/<camera>.log.
+                 when two starts (say the app and the command line) happen at the same moment.
+A worker started by the app also gets --parent-pid, which it writes to its status
+file, and exits by itself if that process is gone, so stopping GateSense leaves no
+orphans. Worker output goes to config.LOG_DIR/<camera>.log.
 """
 
 import json
@@ -98,45 +96,6 @@ def status_path(camera: str, run_dir: Path | None = None) -> Path:
 
 def stop_path(camera: str, run_dir: Path | None = None) -> Path:
     return Path(run_dir or config.RUN_DIR) / f"{camera}.stop"
-
-
-DASHBOARD = "_dashboard"  # status/stop file name for the dashboard launcher (scripts/dashboard.py)
-
-
-def dashboard_pid(run_dir: Path | None = None) -> int | None:
-    """PID of the running dashboard launcher, if any (stale info files are ignored)."""
-    data = _read_json(status_path(DASHBOARD, run_dir))
-    return data["pid"] if data and pid_alive(data.get("pid")) else None
-
-
-def dashboard_pids(run_dir: Path | None = None) -> set[int]:
-    """The running dashboard's launcher and Streamlit PIDs (a worker it started has the Streamlit one as parent)."""
-    data = _read_json(status_path(DASHBOARD, run_dir))
-    if not data or not pid_alive(data.get("pid")):
-        return set()
-    return {pid for pid in (data.get("pid"), data.get("streamlit_pid")) if pid}
-
-
-ENROLL_CAMERA = "_enrollment_camera"  # file name for the dashboard's Enrollment camera switch
-
-
-def write_enrollment_claims(sessions: dict[str, float], run_dir: Path | None = None) -> None:
-    """Mirror the dashboard's Enrollment camera claims ({session id: last seen}) to a file other processes read."""
-    path = status_path(ENROLL_CAMERA, run_dir)
-    if sessions:
-        _write_json(path, {"pid": os.getpid(), "sessions": sessions})
-    else:
-        path.unlink(missing_ok=True)
-
-
-def enrollment_camera_claimed(run_dir: Path | None = None) -> int | None:
-    """PID of the dashboard whose Enrollment page has the camera switched on (claims expire), else None."""
-    data = _read_json(status_path(ENROLL_CAMERA, run_dir))
-    if not data or not pid_alive(data.get("pid")):
-        return None
-    now = time.time()
-    fresh = any(now - seen <= config.ENROLL_CAMERA_CLAIM_SECONDS for seen in data.get("sessions", {}).values())
-    return data["pid"] if fresh else None
 
 
 class ProcessLock:
@@ -297,14 +256,14 @@ class WorkerRuntime:
             self.write("running")
 
     def should_stop(self) -> str | None:
-        """Reason to stop ("stop requested" or "dashboard exited"), checked at most twice a second."""
+        """Reason to stop ("stop requested" or "GateSense exited"), checked at most twice a second."""
         now = time.monotonic()
         if self._stop_reason is None and now - self._last_check >= 0.5:
             self._last_check = now
             if self.stop_file.exists():
                 self._stop_reason = "stop requested"
             elif self.parent_pid and not pid_alive(self.parent_pid):
-                self._stop_reason = "dashboard exited"
+                self._stop_reason = "GateSense exited"
         return self._stop_reason
 
     def close(self, reason: str) -> None:
@@ -312,7 +271,7 @@ class WorkerRuntime:
         self.stop_file.unlink(missing_ok=True)
 
 
-# --- In the dashboard -------------------------------------------------------------
+# --- The manager (in the app) ------------------------------------------------------
 
 
 class WorkerError(Exception):
@@ -327,7 +286,7 @@ class WorkerStatus:
     started: datetime | None = None
     fps: float | None = None
     source: str | int | None = None
-    managed: bool = False  # started by this dashboard process
+    managed: bool = False  # started by this process
     detail: str = ""  # stop reason or exit code of the last run
     warning: str | None = None  # camera problem reported by the worker
     health: dict | None = None  # frame source health (state, size, fps, last frame, reconnects, last error)
@@ -444,7 +403,7 @@ class WorkerManager:
                    "--parent-pid", str(os.getpid())]
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             with open(log, "a", encoding="utf-8") as f:
-                f.write(f"===== {datetime.now():%Y-%m-%d %H:%M:%S} started from the dashboard =====\n")
+                f.write(f"===== {datetime.now():%Y-%m-%d %H:%M:%S} started by GateSense =====\n")
                 f.flush()
                 proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                         cwd=config.ROOT_DIR, env=env, creationflags=flags)
@@ -463,7 +422,7 @@ class WorkerManager:
         return None
 
     def stop(self, name: str, timeout: float | None = None) -> str:
-        """Ask the worker to exit cleanly; kill it after `timeout` only if this dashboard started it."""
+        """Ask the worker to exit cleanly; kill it after `timeout` only if this process started it."""
         timeout = config.WORKER_STOP_TIMEOUT if timeout is None else timeout
         with self._lock:
             st = self.status(name)
@@ -494,7 +453,7 @@ class WorkerManager:
         return [(st.camera, self.stop(st.camera)) for st in self.statuses() if st.state != "stopped"]
 
     def stop_all(self) -> None:
-        """Stop every worker this dashboard started (called when the dashboard exits)."""
+        """Stop every worker this process started (called when it exits)."""
         for name in self.managed():
             try:
                 self.stop(name)

@@ -1,8 +1,8 @@
 """Stop GateSense (stop.bat runs this): every camera worker cleanly, then the app.
 
-Camera workers get their stop file (data/run/<camera>.stop), whoever started them. The app (python -m api.run)
-gets data/run/_api.stop; a Streamlit dashboard that is still running gets data/run/_dashboard.stop. Nothing is
-killed here: if something doesn't stop within the timeout, its process ID is printed.
+Camera workers get their stop file (data/run/<camera>.stop), whoever started them; then the app
+(python -m api.run) gets data/run/_api.stop. Nothing is killed here: if something doesn't stop within the
+timeout, its process ID is printed.
 
     .venv\\Scripts\\python scripts\\stop.py
 """
@@ -46,7 +46,6 @@ def main() -> int:
     if not results:
         print("No camera workers running.")
     ok &= stop_process("GateSense", api_pid(), "_api")
-    ok &= stop_process("Dashboard", workers.dashboard_pid(), workers.DASHBOARD)  # the Streamlit dashboard
     return 0 if ok else 1
 
 

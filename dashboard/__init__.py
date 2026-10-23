@@ -1,1 +1,0 @@
-"""GateSense dashboard (Streamlit)."""

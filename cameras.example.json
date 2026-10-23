@@ -1,5 +1,5 @@
 {
-  "_comment": "Template for cameras.json (git-ignored, site-specific). The dashboard's Camera settings page creates and edits cameras.json; you only need this file to set it up by hand: copy cameras.example.json cameras.json. No passwords here: a Hikvision camera's password is GATESENSE_CAM_<NAME>_PASS in .env.",
+  "_comment": "Template for cameras.json (git-ignored, site-specific). The dashboard's Settings > Cameras creates and edits cameras.json; you only need this file to set it up by hand: copy cameras.example.json cameras.json. No passwords here: a Hikvision camera's password is GATESENSE_CAM_<NAME>_PASS in .env.",
   "cameras": [
     {
       "name": "entrance",

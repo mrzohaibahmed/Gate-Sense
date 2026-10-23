@@ -4,7 +4,7 @@ import { createMemoryRouter, RouterProvider } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClientProvider } from "@tanstack/react-query";
 
-import { fakeApi, page } from "@/test/fakeApi";
+import { apiError, fakeApi, page } from "@/test/fakeApi";
 import { makeMe, PERMISSIONS, testQueryClient } from "@/test/render";
 
 import { type CameraAdapter, EnrollmentWizard } from "./Enrollment";
@@ -51,6 +51,8 @@ const PERSON = {
 
 let api: ReturnType<typeof fakeApi>;
 let good: boolean;
+let claims: number;
+let renewSeconds: number;
 
 const fakeCamera = (): CameraAdapter => ({
   start: vi.fn(async () => {}),
@@ -60,8 +62,16 @@ const fakeCamera = (): CameraAdapter => ({
 
 beforeEach(() => {
   good = false;
+  claims = 0;
+  renewSeconds = 20;
   api = fakeApi({
     "GET /api/enrollment/steps": () => STEPS,
+    "POST /api/enrollment/webcam": (_url, body) => ({
+      claim_id: (body as { claim_id?: string } | undefined)?.claim_id ?? `claim-${++claims}`,
+      expires_seconds: 90,
+      renew_seconds: renewSeconds,
+    }),
+    "DELETE /api/enrollment/webcam/claim-1": () => new Response(null, { status: 204 }),
     "GET /api/people": () => page([]),
     "POST /api/people": () => PERSON,
     "POST /api/enrollment/check": () => ({
@@ -202,5 +212,65 @@ describe("enrollment wizard", () => {
     await user.click(screen.getByRole("button", { name: "Add and continue" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("The camera is busy");
     expect(screen.getByRole("button", { name: "Capture" })).toBeDisabled();
+  });
+});
+
+describe("the wizard's hold on the webcam", () => {
+  async function toCapture(camera = fakeCamera()) {
+    const r = renderWizard(camera);
+    await r.user.type(await screen.findByLabelText("Employee code"), "2001");
+    await r.user.type(screen.getByLabelText("Name"), "Erum");
+    await r.user.click(screen.getByRole("button", { name: "Add and continue" }));
+    return r;
+  }
+  const released = () => api.find("DELETE", "/api/enrollment/webcam/claim-1");
+
+  it("claims the webcam before opening it and releases it when the capture steps close", async () => {
+    const { camera, user } = await toCapture();
+    await waitFor(() => expect(camera.start).toHaveBeenCalled());
+    expect(api.find("POST", "/api/enrollment/webcam")).toHaveLength(1);
+    expect(released()).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await waitFor(() => expect(released()).toHaveLength(1));
+    expect(camera.stop).toHaveBeenCalled();
+    expect(released()[0]!.url.pathname).toBe("/api/enrollment/webcam/claim-1");
+  });
+
+  it("renews the claim while open, and releases it when the tab closes", async () => {
+    renewSeconds = 0.05;
+    const { camera } = await toCapture();
+    await waitFor(() => expect(camera.start).toHaveBeenCalled());
+    await waitFor(() => expect(api.find("POST", "/api/enrollment/webcam").length).toBeGreaterThanOrEqual(3));
+    expect(api.find("POST", "/api/enrollment/webcam").at(-1)!.body).toEqual({ claim_id: "claim-1" });
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    await waitFor(() => expect(released()).toHaveLength(1));
+  });
+
+  it("doesn't open the webcam while a camera worker uses it", async () => {
+    api = fakeApi({
+      "GET /api/enrollment/steps": () => STEPS,
+      "GET /api/people": () => page([]),
+      "POST /api/people": () => PERSON,
+      "POST /api/enrollment/webcam": () =>
+        apiError(409, "The webcam is in use by the entrance camera worker; stop it on the Live cameras page first."),
+    });
+    vi.stubGlobal("fetch", api.fetchMock);
+    const camera = fakeCamera();
+    await toCapture(camera);
+    expect(await screen.findByRole("alert")).toHaveTextContent("in use by the entrance camera worker");
+    expect(camera.start).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Capture" })).toBeDisabled();
+  });
+
+  it("gives the claim back when the camera can't start", async () => {
+    const camera = fakeCamera();
+    camera.start = vi.fn(async () => {
+      throw new Error("No camera found.");
+    });
+    await toCapture(camera);
+    expect(await screen.findByRole("alert")).toHaveTextContent("No camera found.");
+    await waitFor(() => expect(released()).toHaveLength(1));
   });
 });

@@ -23,34 +23,30 @@ def conn(tmp_path):
     c.close()
 
 
-def test_daily_report(conn):
-    df = reports.daily_report(conn, date(2026, 10, 2))
-    assert list(df["Employee code"]) == ["ali", "waqas"]
-    ali = df.iloc[0]
-    assert ali["First IN"] == "09:30:00" and ali["Last OUT"] == "" and ali["Missing exit"] == "YES"
-    assert df.iloc[1]["Worked hours"] == 8.0
+def test_daily_register(conn):
+    rows = reports.range_rows(conn, date(2026, 10, 2), date(2026, 10, 2))
+    assert [r["employee_code"] for r in rows] == ["ali", "waqas"]
+    ali, waqas = rows
+    assert ali["first_in"] == datetime(2026, 10, 2, 9, 30) and ali["last_out"] is None and ali["missing_out"]
+    assert waqas["worked_hours"] == 8.0 and not waqas["missing_out"]
 
 
-def test_monthly_report(conn):
-    summary, detail = reports.monthly_report(conn, 2026, 10, until=date(2026, 10, 5))
-    waqas = summary.set_index("Employee code").loc["waqas"]
-    assert waqas["Days present"] == 2 and waqas["Total hours"] == 16.0 and waqas["Avg hours/day"] == 8.0
-    ali = summary.set_index("Employee code").loc["ali"]
-    assert ali["Days present"] == 0 and ali["Days missing exit"] == 1
-    assert len(detail) == 3  # absent days are left out of the detail
-    assert set(detail["Date"]) == {"2026-10-01", "2026-10-02"}
-
-
-def test_month_days_stop_at_until():
-    assert reports.month_days(2026, 10, until=date(2026, 10, 3)) == [date(2026, 10, d) for d in (1, 2, 3)]
-    assert len(reports.month_days(2026, 2, until=date(2027, 1, 1))) == 28
+def test_person_totals(conn):
+    rows = reports.range_rows(conn, date(2026, 10, 1), date(2026, 10, 5))
+    ali, waqas = reports.person_totals(rows)
+    assert (waqas["days"], waqas["days_present"], waqas["days_absent"]) == (5, 2, 3)
+    assert waqas["total_hours"] == 16.0 and waqas["avg_hours"] == 8.0
+    assert ali["days_present"] == 1 and ali["days_missing_exit"] == 1 and ali["avg_hours"] is None
 
 
 def test_excel_and_csv_export(conn):
-    summary, detail = reports.monthly_report(conn, 2026, 10, until=date(2026, 10, 5))
-    wb = openpyxl.load_workbook(io.BytesIO(reports.to_excel({"Summary": summary, "Daily": detail})))
-    assert wb.sheetnames == ["Summary", "Daily"]
-    assert wb["Summary"]["A1"].value == "Employee code"
-    assert wb["Daily"].max_row == len(detail) + 1
-    csv = reports.to_csv(detail).decode("utf-8-sig")
+    rows = reports.range_rows(conn, date(2026, 10, 1), date(2026, 10, 5))
+    totals = reports.person_totals(rows)
+    wb = openpyxl.load_workbook(io.BytesIO(reports.rows_xlsx(
+        [("Summary", reports.TOTAL_COLUMNS, totals), ("Daily detail", reports.DAILY_COLUMNS_RANGE, rows)], "t")))
+    assert wb.sheetnames == ["Summary", "Daily detail"]
+    assert wb["Summary"]["A1"].value == "Employee code" and wb["Summary"].freeze_panes == "A2"
+    assert wb["Daily detail"].max_row == len(rows) + 1
+    csv = reports.rows_csv(reports.DAILY_COLUMNS_RANGE, rows).decode("utf-8-sig")
     assert csv.splitlines()[0].startswith("Date,Employee code,Name")
+    assert "2026-10-02,ali,ali,,09:30:00,,,YES,missing exit" in csv.splitlines()

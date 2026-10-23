@@ -1,11 +1,15 @@
-"""Guided enrollment from the web dashboard: check a camera frame, review the captured photos, save them.
+"""Guided enrollment from the web dashboard: hold the webcam, check a camera frame, review the captured photos,
+save them.
 
-The same rules as the Streamlit Enrollment page (app/enroll_guide.py, app/enroll_quality.py): the browser sends
+The rules are app/enroll_guide.py and app/enroll_quality.py (the same as scripts/enroll.py): the browser sends
 a frame every few hundred milliseconds to /api/enrollment/check for the current step (front, slightly left,
 slightly right) and enables Capture only when it comes back ok; /api/enrollment/review checks the captured
 photos together (do they match each other, do they look like someone else); /api/people/{id}/enroll saves them
 to known/<code>/ with their step and rebuilds the person's embeddings. Frames are raw camera images (not
 mirrored): only the preview the person sees is mirrored.
+
+While the wizard has the webcam open it holds a claim (/api/enrollment/webcam), so webcam camera workers can't
+start, and it can't take the webcam while one runs; it renews the claim while open and releases it when it closes.
 """
 
 import base64
@@ -19,7 +23,8 @@ from api import auth
 from api.auth import CurrentUser, require_permission
 from api.routes.people import _enroll_lock, get_or_404
 from api.schemas import Reason
-from app import enroll_guide, enrollment
+from api.workers import CameraBusy
+from app import config, enroll_guide, enrollment
 
 router = APIRouter(tags=["enrollment"], responses=auth.PROTECTED_RESPONSES)
 manage = require_permission("people:manage")
@@ -108,9 +113,39 @@ def decode_b64(text: str):
         raise HTTPException(422, "The photo isn't valid base64.") from None
 
 
+class WebcamClaimIn(BaseModel):
+    claim_id: str | None = Field(None, description="renew this claim; omit (or a lapsed one) for a new claim")
+
+
+class WebcamClaim(BaseModel):
+    claim_id: str
+    expires_seconds: int = Field(description="the claim lapses unless renewed within this many seconds")
+    renew_seconds: int = Field(description="renew it (POST again with claim_id) this often")
+
+
 def fractions(box, w: int, h: int) -> list[float]:
     x1, y1, x2, y2 = (float(v) for v in box)
     return [round(x1 / w, 4), round(y1 / h, 4), round(x2 / w, 4), round(y2 / h, 4)]
+
+
+@router.post("/api/enrollment/webcam", response_model=WebcamClaim,
+             responses={409: {"description": "a webcam camera worker is running"}})
+def claim_webcam(request: Request, body: WebcamClaimIn | None = None,
+                 user: CurrentUser = Depends(manage)) -> WebcamClaim:
+    """Hold the webcam for the enrollment wizard (or renew the hold): webcam camera workers can't start meanwhile.
+    409 while a webcam worker runs (a renewal of a live claim is never refused)."""
+    try:
+        claim_id = request.app.state.workers.claim_webcam(user.username, body.claim_id if body else None)
+    except CameraBusy as e:
+        raise HTTPException(409, f"{str(e)[:1].upper()}{str(e)[1:]}.") from None
+    return WebcamClaim(claim_id=claim_id, expires_seconds=config.ENROLL_CAMERA_CLAIM_SECONDS,
+                       renew_seconds=config.ENROLL_CAMERA_RENEW_SECONDS)
+
+
+@router.delete("/api/enrollment/webcam/{claim_id}", status_code=204)
+def release_webcam(claim_id: str, request: Request, _: CurrentUser = Depends(manage)) -> None:
+    """Release the webcam (the wizard closed). Releasing a claim that already lapsed is fine too."""
+    request.app.state.workers.release_webcam(claim_id)
 
 
 @router.get("/api/enrollment/steps", response_model=list[StepInfo])

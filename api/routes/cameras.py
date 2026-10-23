@@ -1,6 +1,6 @@
 """Cameras: the list (with each worker's status), add, change, start / stop, and a connection test.
 
-The camera list is cameras.json (app/camera_settings.py, the same as the dashboard's Camera settings page); a
+The camera list is cameras.json (app/camera_settings.py); a
 camera's id, site and events are in the cameras table. Passwords never appear in a response: sources keep their
 ${VAR} placeholders (a typed-in password would be masked), and a Hikvision password sent with a change goes
 straight to .env (password_set tells whether one is there).
@@ -228,8 +228,8 @@ def update_camera(camera_id: int, body: CameraPatch, request: Request, user: Cur
 
 @router.post("/{camera_id}/start", response_model=WorkerInfo)
 def start_camera(camera_id: int, request: Request, user: CurrentUser = Depends(control)) -> WorkerInfo:
-    """Start the camera's worker. 409 if any process (this API, the dashboard, the command line) already runs it
-    or its webcam."""
+    """Start the camera's worker. 409 if any process (this API, the command line) already runs it or its webcam, or
+    the enrollment wizard holds the webcam."""
     name = get_or_404(request, camera_id)["name"]
     try:
         info = request.app.state.workers.start(name)
@@ -254,7 +254,7 @@ def stop_camera(camera_id: int, request: Request, user: CurrentUser = Depends(co
 @router.post("/test", response_model=TestResult)
 def test_camera(body: CameraTest, request: Request, _: CurrentUser = Depends(manage)) -> TestResult:
     """Open a source once and report its resolution, fps and codec. A saved camera must be stopped (a camera is
-    never opened twice); a webcam in use by a worker or the Enrollment camera is refused. A Hikvision `password`
+    never opened twice); a webcam in use by a worker or the enrollment wizard is refused. A Hikvision `password`
     is used for this test only."""
     manager = request.app.state.workers
     if body.camera_id is not None:
@@ -271,8 +271,8 @@ def test_camera(body: CameraTest, request: Request, _: CurrentUser = Depends(man
     if is_webcam(parse_source(str(source))):
         if other := app_workers.webcam_conflict(name, source, manager.cameras, manager.run_dir):
             raise HTTPException(409, f"Webcam {source} is in use by the {other} worker; stop it first.")
-        if app_workers.enrollment_camera_claimed(manager.run_dir):
-            raise HTTPException(409, f"Webcam {source} is in use by the dashboard's Enrollment camera.")
+        if users := manager.webcam_claimed_by():
+            raise HTTPException(409, f"Webcam {source} is in use by the enrollment wizard ({', '.join(users)}).")
     extra = None
     if body.password and entry["type"] == "hikvision":
         extra = {camera_settings.password_var(name): body.password}
@@ -281,7 +281,7 @@ def test_camera(body: CameraTest, request: Request, _: CurrentUser = Depends(man
                       codec=result["codec"], error=mask_source(result["error"]) if result["error"] else None)
 
 
-# --- Delete, order, log (the Streamlit Camera settings and Cameras pages) ---------------------------------------
+# --- Delete, order, log --------------------------------------------------------------------------------------
 
 
 class Move(BaseModel):

@@ -169,7 +169,7 @@ def test_worker_exits_when_dashboard_dies(dirs):
         wait_for(lambda: workers.live_status("a", run))
         parent.kill()  # the "dashboard" dies without cleaning up
         assert worker.wait(timeout=15) == 0
-        assert json.loads((run / "a.json").read_text())["reason"] == "dashboard exited"
+        assert json.loads((run / "a.json").read_text())["reason"] == "GateSense exited"
     finally:
         parent.kill()
         worker.kill()

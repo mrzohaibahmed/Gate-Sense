@@ -230,20 +230,16 @@ def test_crashed_worker_shows_exit_code_as_last_error(make_manager):
     assert info.last_error == "exit code 3"
 
 
-def test_camera_held_by_the_dashboard_is_refused(make_manager, dirs, procs):
-    run = dirs[0]
-    streamlit = sleeper(procs)  # stands in for the dashboard's Streamlit process
-    run.mkdir(parents=True)
-    workers.status_path(workers.DASHBOARD, run).write_text(json.dumps({"pid": streamlit.pid,
-                                                                       "streamlit_pid": streamlit.pid}))
-    launch(procs, run, "a", "--parent-pid", str(streamlit.pid), "--source", "0")
+def test_camera_held_by_another_process_is_refused(make_manager, dirs, procs):
+    parent = sleeper(procs)  # some other GateSense process that started the worker
+    launch(procs, dirs[0], "a", "--parent-pid", str(parent.pid), "--source", "0")
     m = make_manager()
     wait_for(lambda: m.status("a").state == "running")
-    assert m.status("a").held_by == "dashboard"
-    with pytest.raises(CameraBusy, match=r"a is already running \(started from the Streamlit dashboard's Cameras "
-                                         r"page, process \d+\); it can't be opened twice"):
+    assert m.status("a").held_by == "other"
+    with pytest.raises(CameraBusy, match=rf"a is already running \(started by another GateSense process "
+                                         rf"\({parent.pid}\), process \d+\); it can't be opened twice"):
         m.start("a")
-    with pytest.raises(CameraBusy, match="webcam 0 is already in use by the a worker \\(started from the Streamlit"):
+    with pytest.raises(CameraBusy, match="webcam 0 is already in use by the a worker \\(started by another"):
         m.start("b")
     m.start("c")  # a video file doesn't conflict
     assert m.status("c").held_by == "api"
@@ -258,18 +254,40 @@ def test_command_line_worker_is_refused_too(make_manager, dirs, procs):
         m.start("a")
 
 
-def test_enrollment_camera_blocks_webcam_workers(make_manager, dirs):
-    run = dirs[0]
+def test_enrollment_wizard_claim_blocks_webcam_workers(make_manager, monkeypatch):
     m = make_manager()
-    workers.write_enrollment_claims({"session-1": time.time()}, run)
-    with pytest.raises(CameraBusy, match="Enrollment camera; switch off \"Use the camera\" there first"):
+    claim = m.claim_webcam("hr")
+    assert m.webcam_claimed_by() == ["hr"]
+    with pytest.raises(CameraBusy, match=r"webcam 0 is in use by the enrollment wizard \(hr\); finish or close"):
         m.start("a")
     m.start("c")  # not a webcam
-    workers.write_enrollment_claims({"session-1": time.time() - config.ENROLL_CAMERA_CLAIM_SECONDS - 1}, run)
-    assert workers.enrollment_camera_claimed(run) is None  # expired
-    workers.write_enrollment_claims({}, run)
-    assert not workers.status_path(workers.ENROLL_CAMERA, run).exists()
+    assert m.claim_webcam("hr", claim) == claim  # a renewal keeps the id
+    assert m.release_webcam(claim) and not m.release_webcam(claim)
+    assert m.webcam_claimed_by() == []
     assert m.start("a").state == "starting"
+
+
+def test_wizard_claim_refused_while_a_webcam_worker_runs(make_manager):
+    m = make_manager()
+    m.start("a")
+    with pytest.raises(CameraBusy, match="the webcam is in use by the a camera worker; stop it"):
+        m.claim_webcam("hr")  # refused while it is still starting, too
+    wait_for(lambda: m.status("a").state == "running")
+    m.stop("a")
+    assert m.claim_webcam("hr")
+
+
+def test_a_claim_that_is_not_renewed_lapses(make_manager, monkeypatch):
+    m = make_manager()
+    clock = [1000.0]
+    monkeypatch.setattr("api.workers.time.monotonic", lambda: clock[0])
+    old = m.claim_webcam("hr")
+    clock[0] += config.ENROLL_CAMERA_CLAIM_SECONDS - 1
+    assert m.webcam_claimed_by() == ["hr"]
+    clock[0] += 2
+    assert m.webcam_claimed_by() == []  # the tab was closed without releasing
+    new = m.claim_webcam("hr", old)  # renewing a lapsed claim makes a new one
+    assert new != old and m.webcam_claimed_by() == ["hr"]
 
 
 def test_unknown_camera(make_manager):

@@ -1,16 +1,14 @@
-"""Guided enrollment (app/enroll_guide.py): steps and angles, the yaw sign, the live guide's evaluation and
-overlay, the debounce, captures, review, finish; and the page's Finish button. No camera needed."""
+"""Guided enrollment (app/enroll_guide.py): steps and angles, the yaw sign, the per-frame evaluation, the guide
+box, captures, review and finish. No camera needed."""
 
 import json
-import threading
-import time
 
 import numpy as np
 import pytest
 
 from app import config, db, enroll_guide, enroll_quality, enrollment
 from app.detector import Detection
-from app.enroll_guide import Debouncer, GuidedSession, LiveGuide, draw_overlay, evaluate, guide_box
+from app.enroll_guide import GuidedSession, evaluate, guide_box
 from tests.fakes import FRONTAL_112, FakeRecognizer
 
 STEPS = {s.key: s for s in enroll_guide.steps()}
@@ -132,64 +130,7 @@ def test_final_check_applies_the_step_range():
     assert problem.startswith("Face turned too far to the side (50°)")  # the general rule still applies
 
 
-# --- Debounce ------------------------------------------------------------------------------------------------
-
-
-class Clock:
-    def __init__(self):
-        self.t = 100.0
-
-    def __call__(self):
-        return self.t
-
-
-def test_debounce_needs_continuous_green():
-    clock = Clock()
-    d = Debouncer(0.7, clock)
-    assert d.update(True) == 0 and not d.stable
-    clock.t += 0.5
-    assert d.update(True) == pytest.approx(0.5) and not d.stable
-    clock.t += 0.1
-    d.update(False)  # one red frame resets it
-    clock.t += 0.4
-    d.update(True)
-    clock.t += 0.6
-    assert not d.stable
-    clock.t += 0.15
-    assert d.stable and d.held() == pytest.approx(0.75)
-
-
-def test_debounce_default_from_config():
-    assert Debouncer().seconds == config.ENROLL_STABLE_SECONDS == 0.7
-
-
-# --- Overlay (pure) ---------------------------------------------------------------------------------------------
-
-
-def colour_pixels(img, bgr, tol=40):
-    return int(np.all(np.abs(img.astype(int) - np.array(bgr)) <= tol, axis=2).sum())
-
-
-def test_overlay_is_pure_and_mirrored():
-    src = frame()
-    before = src.copy()
-    r = evaluate(src, STEPS["front"], FaceAt(yaw=2))
-    out = draw_overlay(src, r, STEPS["front"])
-    assert np.array_equal(src, before) and out is not src and out.shape == src.shape
-    assert np.array_equal(out[5:40, 5:60], src[5:40, ::-1][:, 5:60])  # untouched corner = mirrored input
-    plain = draw_overlay(src, r, STEPS["front"], mirror=False)
-    assert np.array_equal(plain[5:40, 5:60], src[5:40, 5:60])
-
-
-@pytest.mark.parametrize("detector, colour", [(NoFace(), enroll_guide.GREY), (FaceAt(cx=110), enroll_guide.RED),
-                                             (FaceAt(), enroll_guide.GREEN)])
-def test_overlay_colour_follows_state(detector, colour):
-    blank = np.full((480, 640, 3), 90, np.uint8)  # plain grey background, so drawn colours stand out
-    r = evaluate(frame(), STEPS["front"], detector)
-    out = draw_overlay(blank, r, STEPS["front"])
-    others = [c for c in (enroll_guide.GREY, enroll_guide.RED, enroll_guide.GREEN) if c != colour]
-    assert colour_pixels(out, colour, 10) > 500
-    assert all(colour_pixels(out[: 480 - 40], c, 10) < 50 for c in others)  # not counting the hint bar
+# --- Guide box -----------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("w, h", [(640, 480), (1280, 720), (640, 360)])
@@ -197,63 +138,6 @@ def test_guide_box_is_face_shaped_and_centred(w, h):
     x1, y1, x2, y2 = guide_box((h, w, 3))
     assert (x2 - x1) / (y2 - y1) == pytest.approx(config.ENROLL_GUIDE_ASPECT, abs=0.02)  # taller than wide
     assert abs((x1 + x2) / 2 - w / 2) <= 1 and abs((y1 + y2) / 2 - h / 2) <= 1
-
-
-def test_overlay_draws_guide_box_and_hint_bar():
-    blank = np.full((480, 640, 3), 90, np.uint8)
-    out = draw_overlay(blank, None)
-    x1, y1, x2, y2 = guide_box(blank.shape)
-    assert (out[y1, x1:x1 + 20] != 90).any()  # corner guide line
-    assert (out[460:, :] != 90).any()  # hint bar
-    assert (out[240, 320] != 90).any()  # centre cross
-
-
-def test_overlay_face_box_is_mirrored():
-    blank = np.full((480, 640, 3), 90, np.uint8)
-    r = evaluate(frame(), STEPS["front"], FaceAt(cx=250, size=100))
-    out = draw_overlay(blank, r)
-    assert (out[240, 640 - 200] != 90).any()  # box left edge 200 -> mirrored at 440
-    assert (out[240, 200] == 90).all()
-
-
-# --- Live guide (thread-safe state) ---------------------------------------------------------------------------------
-
-
-def test_live_guide_snapshot_and_step_change():
-    clock = Clock()
-    g = LiveGuide(FaceAt(yaw=1), STEPS["front"], clock=clock)
-    out = g.process(frame())
-    assert out.shape == (480, 640, 3)
-    g.analyse_now(frame())
-    clock.t += 0.8
-    g.analyse_now(frame())
-    snap = g.snapshot()
-    assert snap["state"] == "good" and snap["stable"] and snap["frames"] == 1
-    assert np.array_equal(g.take_frame(), frame())
-    g.set_step(STEPS["left"])  # a new step starts from scratch
-    snap = g.snapshot()
-    assert snap["state"] == "none" and not snap["stable"]
-
-
-def test_live_guide_background_analysis_and_threads():
-    g = LiveGuide(FaceAt(yaw=0), STEPS["front"], analysis_fps=20)
-    stop = threading.Event()
-
-    def video():
-        while not stop.is_set():
-            g.process(frame())
-            time.sleep(0.01)
-
-    t = threading.Thread(target=video)
-    t.start()
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and g.snapshot()["state"] != "good":
-        time.sleep(0.02)
-    time.sleep(0.5)  # let a few frames arrive so the rate can be measured
-    snaps = [g.snapshot() for _ in range(50)]  # read while the video thread writes
-    stop.set()
-    t.join()
-    assert snaps[-1]["state"] == "good" and snaps[-1]["video_fps"] > 10
 
 
 # --- Session, captures, review, finish ------------------------------------------------------------------------------
@@ -333,50 +217,3 @@ def test_finish_saves_photos_with_steps(conn):
     enrollment.enroll_one("e1", FaceAt(), FakeRecognizer(), conn)  # a later rebuild keeps the steps
     assert enrollment.read_sidecar(config.KNOWN_DIR / "e1")["2.jpg"]["step"] == "left"
     assert json.loads((config.KNOWN_DIR / "e1" / "photos.json").read_text())["photos"]["1.jpg"]["ok"]
-
-
-# --- On the page: Finish is disabled until all 3 are taken --------------------------------------------------------
-
-
-@pytest.fixture
-def page_db(monkeypatch):
-    c = db.connect()
-    db.sync_persons(c, ["waqas"])
-    yield c
-    c.close()
-
-
-def page(monkeypatch, sess):
-    from tests.test_dashboard import logged_in
-
-    at = logged_in(monkeypatch)
-    at.session_state["enroll_person"] = "waqas"
-    at.session_state["guided:waqas"] = sess
-    at.switch_page("views/enrollment.py").run()
-    assert not at.exception
-    return at
-
-
-def test_page_finish_disabled_until_three(monkeypatch, page_db):
-    sess = GuidedSession("waqas")
-    for step, yaw in [("front", 0), ("left", 25)]:
-        sess.accept(capture(step, yaw))
-    at = page(monkeypatch, sess)
-    assert any(p.text == "Step 3 of 3: Slightly right" for p in at.get("progress") if hasattr(p, "text"))
-    assert at.button(key="finish_waqas").disabled
-    assert any("available when all 3 photos are taken (2 so far)" in c.value for c in at.caption)
-
-    sess.accept(capture("right", -25))
-    at = page(monkeypatch, sess)
-    assert not at.button(key="finish_waqas").disabled
-    assert any("All photos taken" in s.value for s in at.success)
-
-
-def test_page_retake_reopens_the_step(monkeypatch, page_db):
-    sess = GuidedSession("waqas")
-    for step, yaw in [("front", 0), ("left", 25), ("right", -25)]:
-        sess.accept(capture(step, yaw))
-    at = page(monkeypatch, sess)
-    at.button(key="retake_waqas_left").click().run()
-    assert not at.exception and at.button(key="finish_waqas").disabled
-    assert any(m.value.startswith("## ⬅️ Turn your head slightly to your left.") for m in at.markdown)

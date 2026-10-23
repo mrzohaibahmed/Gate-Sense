@@ -197,7 +197,7 @@ def test_websocket_messages(app):
         changed = next_of(ws, "attendance_changed")
         assert (changed["action"], changed["target"], changed["user"]) == ("edit_event", f"event:{eid}", "hr")
 
-        db.set_event_voided(conn, eid, True, "test from the dashboard", "admin")  # Streamlit's Corrections page
+        db.set_event_voided(conn, eid, True, "test from a script", "admin")  # straight to the database, not the API
         assert next_of(ws, "attendance_changed")["action"] == "void_event"
     conn.close()
 

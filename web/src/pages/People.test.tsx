@@ -94,7 +94,7 @@ describe("person profile", () => {
       reason: "name spelling",
     });
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-  });
+  }, 15_000); // types a lot: slow when the machine is busy
 
   it("an API refusal stays in the dialog", async () => {
     const user = userEvent.setup();

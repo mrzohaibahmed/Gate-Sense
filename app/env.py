@@ -5,7 +5,7 @@ what is missing. Never print or log the values read here.
 
 Only the admin password is copied into os.environ. Camera passwords (${VAR} in
 camera sources) are read from .env fresh each time a camera starts
-(app/sources.py); loading them into the dashboard's environment would make the
+(app/sources.py); loading them into the app's environment would make the
 workers it starts inherit stale copies, which would then win over later .env edits.
 """
 

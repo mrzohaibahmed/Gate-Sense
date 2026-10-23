@@ -1,4 +1,4 @@
-"""The API for the features the Streamlit dashboard had and the React app lacked: live decisions over the WebSocket
+"""The API for the features the old Streamlit dashboard had and the React app lacked: live decisions over the WebSocket
 (admins), person edit, void/restore, photo upload, delete photo / face data, camera delete/move/log, reports."""
 
 import base64
@@ -296,3 +296,32 @@ def test_exports_and_their_audit(app):
     assert '"format": "xlsx"' in exported[0]["details"] and '"department": "Stores"' in exported[0]["details"]
     assert as_role(app, "guard").get("/api/reports/daily").status_code == 403
     assert hr.get("/api/reports/daily", params={"from": TODAY.isoformat(), "to": YESTERDAY.isoformat()}).status_code == 422
+
+
+def test_enrollment_wizard_holds_the_webcam(worker_app):  # noqa: F811
+    a, hr, viewer = as_role(worker_app, "admin"), as_role(worker_app, "hr"), as_role(worker_app, "viewer")
+    ids = {c["name"]: c["id"] for c in items(a.get("/api/cameras"))}
+    assert viewer.post("/api/enrollment/webcam").status_code == 403
+
+    claim = hr.post("/api/enrollment/webcam")
+    assert claim.status_code == 200
+    body = claim.json()
+    assert body["expires_seconds"] == config.ENROLL_CAMERA_CLAIM_SECONDS
+    assert body["renew_seconds"] == config.ENROLL_CAMERA_RENEW_SECONDS < body["expires_seconds"]
+
+    busy = a.post(f"/api/cameras/{ids['a']}/start")
+    assert busy.status_code == 409 and "in use by the enrollment wizard (hr)" in busy.json()["detail"]
+    tested = a.post("/api/cameras/test", json={"type": "webcam", "index": 0, "direction": "IN"})
+    assert tested.status_code == 409 and "enrollment wizard" in tested.json()["detail"]
+    assert a.post(f"/api/cameras/{ids['c']}/start").status_code == 200  # a video file is fine
+
+    renewed = hr.post("/api/enrollment/webcam", json={"claim_id": body["claim_id"]})
+    assert renewed.json()["claim_id"] == body["claim_id"]
+    assert hr.delete(f"/api/enrollment/webcam/{body['claim_id']}").status_code == 204
+    assert hr.delete(f"/api/enrollment/webcam/{body['claim_id']}").status_code == 204  # already gone: fine
+
+    assert a.post(f"/api/cameras/{ids['a']}/start").status_code == 200
+    wait_for(lambda: a.get(f"/api/cameras/{ids['a']}").json()["worker"]["state"] == "running")
+    refused = hr.post("/api/enrollment/webcam")
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "The webcam is in use by the a camera worker; stop it on the Live cameras page first."

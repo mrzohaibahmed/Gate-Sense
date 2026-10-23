@@ -71,13 +71,7 @@ ENROLL_STEPS = [
 ENROLL_GUIDE_HEIGHT = 0.62  # guide oval height as a fraction of the frame height (centred)
 ENROLL_GUIDE_ASPECT = 0.78  # guide oval width / height: face-shaped whatever the camera's aspect ratio
 ENROLL_FACE_MAX_FRACTION = 0.95  # a face wider than this share of the guide box = "Move back a little"
-ENROLL_STABLE_SECONDS = 0.7  # the guide must stay green this long before Capture is enabled
-ENROLL_AUTO_CAPTURE = False  # capture by itself after ENROLL_AUTO_CAPTURE_SECONDS of stable green
-ENROLL_AUTO_CAPTURE_SECONDS = 1.0
-ENROLL_ANALYSIS_FPS = 6  # face checks per second on the live guide (the video itself runs at camera speed)
 ENROLL_SELF_MATCH_MIN = 0.45  # the captured photos must match each other at least this well (cosine)
-ENROLL_CAMERA_TIMEOUT_SECONDS = 6  # live guide started but no frames for this long = "Camera is busy"
-ENROLL_VIDEO_SIZE = (1280, 720)  # resolution asked from the browser camera
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 ENROLL_MAX_PHOTO_PX = 1600  # dashboard uploads are shrunk to this longest side before saving
 
@@ -118,7 +112,8 @@ STREAM_WATCH_SECONDS = 3.0  # a .watch file older than this = nobody is watching
 WS_POLL_SECONDS = 1.0  # /api/ws: new events and corrections are looked for this often (while clients are connected)
 WS_CAMERA_SECONDS = 2.0  # /api/ws: camera status messages (and session checks) this often
 WS_QUEUE = 200  # messages waiting for one WebSocket client; a client this far behind is disconnected
-ENROLL_CAMERA_CLAIM_SECONDS = 600  # the Enrollment page camera switch blocks webcam workers for up to this long
+ENROLL_CAMERA_CLAIM_SECONDS = 90  # the enrollment wizard's webcam claim lapses if not renewed within this time
+ENROLL_CAMERA_RENEW_SECONDS = 20  # the wizard renews its claim this often while it has the webcam open
 
 # --- Processing rate -------------------------------------------------------
 PROCESS_FPS = 8  # frames per second actually processed (5 to 10 on CPU)
@@ -128,15 +123,10 @@ SNAPSHOT_RETENTION_DAYS = 30  # the nightly job deletes event snapshots older th
 COOLDOWN_SECONDS = 5 * 60  # ignore the same person on the same camera for this long
 SNAPSHOT_SIZE = 160  # longest side of saved face snapshots, in pixels
 
-# --- Dashboard (Streamlit) ----------------------------------------------------
-DASHBOARD_HOST = "localhost"  # bind address; only change this behind a firewall/VPN
-DASHBOARD_PORT = 8501
+# --- Admin password and .env ---------------------------------------------------
 DASHBOARD_PASSWORD_ENV = "GATESENSE_ADMIN_PASSWORD"  # admin password: environment variable, or .env
 # Optional .env (admin password, camera passwords); real environment variables take priority (see .env.example).
 ENV_PATH = Path(os.environ.get("GATESENSE_ENV_FILE") or ROOT_DIR / ".env")
-DASHBOARD_USER = "admin"  # name written to the audit log
-LIVE_REFRESH_SECONDS = 5  # live events page auto-refresh
-LIVE_EVENT_LIMIT = 50  # events shown on the live page
 
 # --- API (FastAPI, api/) --------------------------------------------------------
 # GateSense runs as one app: the API also serves the built web dashboard (web/dist) at /.
@@ -190,7 +180,7 @@ BACKUP_RETENTION_DAYS = 14  # nightly backups older than this are deleted (manua
 MAINTENANCE_CHECK_SECONDS = 600  # how often the app checks whether the nightly job is due
 
 # --- Cameras ---------------------------------------------------------------
-# Cameras are normally managed on the dashboard's Camera settings page, which saves them to
+# Cameras are normally managed in the dashboard's Settings > Cameras, which saves them to
 # CAMERAS_FILE (cameras.json in the project folder; no passwords in it). When that file exists it
 # replaces DEFAULT_CAMERAS below; delete it to go back to these defaults.
 # Run one recognize.py per camera: --camera <name>. The first entry is the default.
@@ -309,7 +299,7 @@ def refresh_cameras() -> bool:
 
 
 def load_cameras(path: Path | None = None) -> list[dict]:
-    """Cameras from CAMERAS_FILE if it exists (written by the Camera settings page), else DEFAULT_CAMERAS.
+    """Cameras from CAMERAS_FILE if it exists (written by Settings > Cameras), else DEFAULT_CAMERAS.
 
     A file that can't be read falls back to the defaults (with a message) rather than stopping the app.
     """
