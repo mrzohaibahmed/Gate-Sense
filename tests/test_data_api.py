@@ -531,7 +531,7 @@ def test_camera_passwords_never_appear_in_responses(app, monkeypatch, tmp_path):
 def test_openapi_lists_every_endpoint_with_a_response_model(app):
     spec = TestClient(app).get("/openapi.json").json()
     ops = [(m, p, o) for p, ms in spec["paths"].items() for m, o in ms.items()]
-    assert len(ops) == 47 and len({o["operationId"] for _, _, o in ops}) == 47  # + stream, snapshot, enrollment, system
+    assert len(ops) == 57 and len({o["operationId"] for _, _, o in ops}) == 57  # + live, enrollment, system, Streamlit gaps
     expected = {("get", "/api/overview"), ("get", "/api/attendance"), ("get", "/api/events"),
                 ("get", "/api/snapshots/{event_id}"), ("post", "/api/attendance/corrections"), ("get", "/api/people"),
                 ("post", "/api/people"), ("get", "/api/people/{person_id}"), ("patch", "/api/people/{person_id}"),
@@ -547,7 +547,8 @@ def test_openapi_lists_every_endpoint_with_a_response_model(app):
         if ok == "204":
             continue
         content = op["responses"][ok]["content"]
-        if "image/jpeg" in content or any(t.startswith("multipart/") for t in content):
+        if "application/json" not in content:  # files: images, the MJPEG stream, log.txt, report exports
+            assert any(t.startswith(("image/", "multipart/", "text/", "application/vnd.")) for t in content), path
             continue
         schema = content["application/json"]["schema"]
         assert schema and schema != {}, (method, path)  # a declared model, not "any"

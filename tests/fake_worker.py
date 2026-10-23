@@ -31,6 +31,7 @@ parser.add_argument("--source", help="lock this webcam index too, like recognize
 parser.add_argument("--frames", action="store_true", help="read frames from a fake frame source")
 parser.add_argument("--live-dir")
 parser.add_argument("--error", help="last error the fake frame source reports")
+parser.add_argument("--decisions", action="store_true", help="with --frames: log a match and a skip now and then")
 args = parser.parse_args()
 
 
@@ -68,7 +69,10 @@ reason = "stopped"
 try:
     while True:
         if source:
-            _, frame = source.latest()
+            seq, frame = source.latest()
+            if args.decisions and seq % 5 == 0:
+                writer.decision("match", seq, "waqas", 0.71, 0.42, "vote 1/3", face_px=150)
+                writer.decision("skip", seq + 1, detail="too small (60px < 80)", face_px=60)
             writer.frame(frame, runtime.fps)
         runtime.tick(processed=True)
         stop = runtime.should_stop()

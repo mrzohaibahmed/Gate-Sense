@@ -157,3 +157,86 @@ describe("attendance table", () => {
     expect(within(panel).queryByRole("form", { name: "Add correction" })).not.toBeInTheDocument();
   });
 });
+
+describe("void and restore", () => {
+  const ev = (over: Record<string, unknown>) => ({
+    id: 11,
+    timestamp: "2026-10-21T08:05:00",
+    original_timestamp: null,
+    person_id: 1,
+    employee_code: "1001",
+    name: "Ayesha",
+    camera_id: 1,
+    camera: "entrance",
+    direction: "IN",
+    site_id: 1,
+    score: 0.71,
+    manual: false,
+    voided: false,
+    snapshot_url: null,
+    ...over,
+  });
+
+  beforeEach(() => {
+    api = fakeApi({
+      "GET /api/attendance": () => page(ROWS),
+      "GET /api/events": () =>
+        page([
+          ev({}),
+          ev({ id: 12, timestamp: "2026-10-21T17:10:00", direction: "OUT", camera: "exit", voided: true }),
+        ]),
+      "POST /api/attendance/corrections": () => ({ ok: true }),
+    });
+    vi.stubGlobal("fetch", api.fetchMock);
+  });
+
+  it("HR voids an event and restores a voided one, each with a reason", async () => {
+    const user = userEvent.setup();
+    renderRoutes(routes, "/attendance?from=2026-10-21", makeMe("hr", PERMISSIONS.hr!));
+    await user.click(await screen.findByRole("row", { name: "Ayesha, 2026-10-21" }));
+    const panel = await screen.findByRole("dialog");
+    const voided = await within(panel).findByRole("listitem", { name: "OUT at 17:10 (voided)" });
+    expect(within(voided).getByText("Voided")).toBeInTheDocument();
+    expect(voided.className).toContain("opacity-60");
+
+    const live = within(panel).getByRole("listitem", { name: "IN at 08:05" });
+    await user.click(within(live).getByRole("button", { name: "Void" }));
+    let dialog = await screen.findByRole("dialog", { name: "Void this event?" });
+    await user.click(within(dialog).getByRole("button", { name: "Void" }));
+    expect(await within(dialog).findByText(/A reason is required/)).toBeInTheDocument();
+    await user.type(within(dialog).getByLabelText("Reason (required)"), "walked past, didn't come in");
+    await user.click(within(dialog).getByRole("button", { name: "Void" }));
+    await waitFor(() => expect(api.find("POST", "/api/attendance/corrections")).toHaveLength(1));
+    expect(api.find("POST", "/api/attendance/corrections")[0]!.body).toEqual({
+      action: "void",
+      event_id: 11,
+      reason: "walked past, didn't come in",
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Void this event?" })).not.toBeInTheDocument());
+
+    await user.click(within(voided).getByRole("button", { name: "Restore" }));
+    dialog = await screen.findByRole("dialog", { name: "Restore this event?" });
+    await user.type(within(dialog).getByLabelText("Reason (required)"), "voided by mistake");
+    await user.click(within(dialog).getByRole("button", { name: "Restore" }));
+    await waitFor(() => expect(api.find("POST", "/api/attendance/corrections")).toHaveLength(2));
+    expect(api.find("POST", "/api/attendance/corrections")[1]!.body).toEqual({
+      action: "restore",
+      event_id: 12,
+      reason: "voided by mistake",
+    });
+  });
+
+  it("voided events can be hidden; a viewer has no void buttons", async () => {
+    const user = userEvent.setup();
+    renderRoutes(routes, "/attendance?from=2026-10-21", makeMe("viewer", PERMISSIONS.viewer!));
+    await user.click(await screen.findByRole("row", { name: "Ayesha, 2026-10-21" }));
+    const panel = await screen.findByRole("dialog");
+    await within(panel).findByRole("listitem", { name: "OUT at 17:10 (voided)" });
+    expect(within(panel).queryByRole("button", { name: "Void" })).not.toBeInTheDocument();
+    expect(within(panel).queryByRole("button", { name: "Restore" })).not.toBeInTheDocument();
+
+    await user.click(within(panel).getByRole("switch", { name: "Show voided events" }));
+    expect(within(panel).queryByRole("listitem", { name: "OUT at 17:10 (voided)" })).not.toBeInTheDocument();
+    expect(within(panel).getByRole("listitem", { name: "IN at 08:05" })).toBeInTheDocument();
+  });
+});

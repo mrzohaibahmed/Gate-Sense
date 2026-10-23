@@ -15,6 +15,8 @@ import { Field, Input, NativeSelect, Textarea } from "@/components/ui/input";
 import { ErrorState } from "@/components/ui/misc";
 import { cn } from "@/lib/utils";
 
+import { UploadPhotos } from "./UploadPhotos";
+
 // --- The camera, behind a small interface so tests can replace it --------------------------------
 
 export type CameraAdapter = {
@@ -81,7 +83,46 @@ function toDataUrl(blob: Blob): Promise<string> {
 type Captures = Record<string, string>; // step key -> JPEG data URL
 
 export function EnrollmentPage() {
-  return <EnrollmentWizard />;
+  const [params] = useSearchParams();
+  const person = params.get("person");
+  return params.get("tab") === "upload" ? (
+    <UploadPhotos preselected={person ? Number(person) : null} modes={<EnrollmentModes upload />} />
+  ) : (
+    <EnrollmentWizard />
+  );
+}
+
+/** Switch between the guided camera and photo files (keeps the chosen person). */
+function EnrollmentModes({ upload = false }: { upload?: boolean }) {
+  const [params] = useSearchParams();
+  const person = params.get("person");
+  const query = (tab?: string) => {
+    const q = new URLSearchParams();
+    if (person) q.set("person", person);
+    if (tab) q.set("tab", tab);
+    const text = q.toString();
+    return text ? `?${text}` : "";
+  };
+  return (
+    <div role="tablist" aria-label="Enrollment mode" className="flex gap-1 rounded-md bg-muted p-1 text-sm">
+      <Link
+        role="tab"
+        aria-selected={!upload}
+        to={`/enrollment${query()}`}
+        className={cn("rounded px-2 py-1", !upload && "bg-background font-medium shadow-sm")}
+      >
+        Camera
+      </Link>
+      <Link
+        role="tab"
+        aria-selected={upload}
+        to={`/enrollment${query("upload")}`}
+        className={cn("rounded px-2 py-1", upload && "bg-background font-medium shadow-sm")}
+      >
+        Photo files
+      </Link>
+    </div>
+  );
 }
 
 export function EnrollmentWizard({ camera, checkEveryMs = 300 }: { camera?: CameraAdapter; checkEveryMs?: number }) {
@@ -103,7 +144,9 @@ export function EnrollmentWizard({ camera, checkEveryMs = 300 }: { camera?: Came
 
   return (
     <>
-      <PageHeader title="Enrollment" />
+      <PageHeader title="Enrollment">
+        <EnrollmentModes />
+      </PageHeader>
       <div className="flex flex-col gap-4 px-4 pb-4">
         <ol className="flex flex-wrap gap-2 text-sm" aria-label="Steps">
           {labels.map((label, i) => (

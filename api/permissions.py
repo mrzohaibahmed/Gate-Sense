@@ -21,6 +21,7 @@ PERMISSIONS = {
     "sites:manage": "add, change and delete sites",
     "settings:manage": "see and change recognition thresholds and the debounce (cool-down)",
     "live:view": "watch the live camera view",
+    "live:decisions": "see every recognition decision live (scores, margins, skip reasons): for tuning",
     "attendance:read": "see attendance events and daily summaries",
     "attendance:correct": "add manual events, change times, void and restore events",
     "people:read": "see enrolled people",

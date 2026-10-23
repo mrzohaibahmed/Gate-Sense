@@ -8,7 +8,10 @@ straight to .env (password_set tells whether one is there).
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 from api import auth
@@ -276,3 +279,73 @@ def test_camera(body: CameraTest, request: Request, _: CurrentUser = Depends(man
     result = camera_settings.test_connection(source, timeout=body.timeout_seconds, extra=extra)
     return TestResult(ok=result["ok"], width=result["width"], height=result["height"], fps=result["fps"],
                       codec=result["codec"], error=mask_source(result["error"]) if result["error"] else None)
+
+
+# --- Delete, order, log (the Streamlit Camera settings and Cameras pages) ---------------------------------------
+
+
+class Move(BaseModel):
+    step: int = Field(description="-1 = up, 1 = down (the first camera is recognize.py's default)", ge=-1, le=1)
+
+
+class CameraLog(BaseModel):
+    camera: str
+    lines: list[str] = Field(description="the last lines, oldest first (passwords masked)")
+    size_bytes: int
+    updated: datetime | None
+
+
+@router.delete("/{camera_id}", status_code=204, responses={409: {"description": "running, or the last camera"}})
+def delete_camera(camera_id: int, request: Request,
+                  reason: str = Query(..., min_length=1, description="why (goes to the audit log)"),
+                  user: CurrentUser = Depends(manage)) -> None:
+    """Remove a camera from the list. Refused while it runs, and for the last camera. Its attendance history and its
+    .env password stay. Audited."""
+    cam = get_or_404(request, camera_id)
+    if not reason.strip():
+        raise HTTPException(422, "A reason is required.")
+    try:
+        with auth.db_of(request).conn() as conn:
+            camera_settings.delete(cam["name"], user.username, conn, running(request), reason.strip())
+    except ValueError as e:
+        raise HTTPException(409, str(e).capitalize() + ".") from None
+
+
+@router.post("/{camera_id}/move", response_model=list[Camera])
+def move_camera(camera_id: int, body: Move, request: Request, user: CurrentUser = Depends(manage)) -> list[dict]:
+    """Move a camera up or down the list; returns the whole list in its new order. Audited."""
+    cam = get_or_404(request, camera_id)
+    before = [c["name"] for c in camera_settings.entries()]
+    camera_settings.move(cam["name"], body.step)
+    after = [c["name"] for c in camera_settings.entries()]
+    if after != before:
+        auth.db_of(request).log_change(user.username, "move_camera", f"camera:{cam['name']}",
+                                       {"position": [before.index(cam["name"]), after.index(cam["name"])]},
+                                       "camera order changed")
+    return cameras(request)
+
+
+@router.get("/{camera_id}/log", response_model=CameraLog)
+def camera_log(camera_id: int, request: Request, lines: int = Query(500, ge=1, le=5000),
+               _: CurrentUser = Depends(manage)) -> CameraLog:
+    """The last lines of the camera worker's log (data/logs/<camera>.log)."""
+    cam = get_or_404(request, camera_id)
+    manager = request.app.state.workers
+    path = manager.log_path(cam["name"])
+    exists = path.is_file()
+    return CameraLog(camera=cam["name"], lines=manager.log_tail(cam["name"], lines),
+                     size_bytes=path.stat().st_size if exists else 0,
+                     updated=datetime.fromtimestamp(path.stat().st_mtime) if exists else None)
+
+
+@router.get("/{camera_id}/log.txt", response_class=PlainTextResponse,
+            responses={200: {"content": {"text/plain": {}}, "description": "the whole log, passwords masked"}})
+def camera_log_file(camera_id: int, request: Request, _: CurrentUser = Depends(manage)) -> PlainTextResponse:
+    """The whole log as a download (passwords masked)."""
+    cam = get_or_404(request, camera_id)
+    path = request.app.state.workers.log_path(cam["name"])
+    text = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+    lines = [mask_source(line) for line in text.splitlines()]
+    body = "".join(f"{line}\n" for line in lines)
+    return PlainTextResponse(body, headers={
+        "Content-Disposition": f'attachment; filename="gatesense-{cam["name"]}-{datetime.now():%Y%m%d-%H%M}.log"'})

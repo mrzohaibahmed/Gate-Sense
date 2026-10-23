@@ -1,5 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, DatabaseBackup, Pencil, Plug, Plus, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  DatabaseBackup,
+  Download,
+  FileText,
+  Pencil,
+  Plug,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -134,6 +145,23 @@ function CamerasTab() {
     queryFn: () => api.get("/api/cameras", { query: { page_size: 500 } }),
   });
   const [editing, setEditing] = useState<Camera | "new" | null>(null);
+  const [deleting, setDeleting] = useState<Camera | null>(null);
+  const [logOf, setLogOf] = useState<Camera | null>(null);
+  const refresh = () => void queryClient.invalidateQueries({ queryKey: ["cameras"] });
+  const move = useMutation({
+    mutationFn: ({ camera, step }: { camera: Camera; step: -1 | 1 }) =>
+      api.post("/api/cameras/{camera_id}/move", {
+        path: { camera_id: camera.id },
+        body: { step },
+      }),
+    onSuccess: (list) => {
+      queryClient.setQueryData(["cameras", "settings"], (old: typeof cameras.data) =>
+        old ? { ...old, items: list } : old,
+      );
+      refresh();
+    },
+    onError: (e) => toast.error(e instanceof ApiError ? e.message : String(e)),
+  });
   return (
     <Card>
       <CardHeader>
@@ -161,9 +189,33 @@ function CamerasTab() {
               </tr>
             </thead>
             <tbody>
-              {cameras.data.items.map((c) => (
+              {cameras.data.items.map((c, i, all) => (
                 <tr key={c.id}>
-                  <Td className="font-medium">{c.name}</Td>
+                  <Td className="font-medium">
+                    <span className="flex items-center gap-1">
+                      <span className="flex flex-col">
+                        <button
+                          type="button"
+                          className="rounded text-muted-foreground hover:bg-muted disabled:opacity-30"
+                          disabled={i === 0 || move.isPending}
+                          onClick={() => move.mutate({ camera: c, step: -1 })}
+                          aria-label={`Move ${c.name} up`}
+                        >
+                          <ArrowUp className="size-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded text-muted-foreground hover:bg-muted disabled:opacity-30"
+                          disabled={i === all.length - 1 || move.isPending}
+                          onClick={() => move.mutate({ camera: c, step: 1 })}
+                          aria-label={`Move ${c.name} down`}
+                        >
+                          <ArrowDown className="size-3.5" />
+                        </button>
+                      </span>
+                      {c.name}
+                    </span>
+                  </Td>
                   <Td>
                     <DirectionBadge direction={c.direction} />
                   </Td>
@@ -188,9 +240,31 @@ function CamerasTab() {
                     </span>
                   </Td>
                   <Td>
-                    <Button variant="ghost" size="sm" onClick={() => setEditing(c)} aria-label={`Edit ${c.name}`}>
-                      <Pencil /> Edit
-                    </Button>
+                    <span className="flex justify-end gap-1">
+                      <Button variant="ghost" size="sm" onClick={() => setLogOf(c)} aria-label={`Log of ${c.name}`}>
+                        <FileText /> Log
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => setEditing(c)} aria-label={`Edit ${c.name}`}>
+                        <Pencil /> Edit
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-destructive"
+                        disabled={c.worker.state !== "stopped" || all.length === 1}
+                        title={
+                          c.worker.state !== "stopped"
+                            ? "Stop the camera first"
+                            : all.length === 1
+                              ? "The last camera can't be deleted"
+                              : undefined
+                        }
+                        onClick={() => setDeleting(c)}
+                        aria-label={`Delete ${c.name}`}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </span>
                   </Td>
                 </tr>
               ))}
@@ -211,7 +285,71 @@ function CamerasTab() {
           )}
         </DialogContent>
       </Dialog>
+      <ReasonDialog
+        open={deleting !== null}
+        onOpenChange={(o) => !o && setDeleting(null)}
+        title={`Delete the ${deleting?.name ?? ""} camera?`}
+        description="It is removed from the camera list. Its attendance events stay."
+        confirmLabel="Delete camera"
+        destructive
+        onConfirm={async (reason) => {
+          if (!deleting) return;
+          await api.delete("/api/cameras/{camera_id}", { path: { camera_id: deleting.id }, query: { reason } });
+          toast.success(`${deleting.name} deleted`);
+          refresh();
+        }}
+      />
+      <Dialog open={logOf !== null} onOpenChange={(o) => !o && setLogOf(null)}>
+        <DialogContent className="max-w-4xl">{logOf && <CameraLogView camera={logOf} />}</DialogContent>
+      </Dialog>
     </Card>
+  );
+}
+
+/** A camera worker's log: the last 500 lines, refreshed every 2 s, and the whole file as a download. */
+export function CameraLogView({ camera, refreshMs = 2000 }: { camera: Camera; refreshMs?: number }) {
+  const [follow, setFollow] = useState(true);
+  const log = useQuery({
+    queryKey: ["cameras", "log", camera.id],
+    queryFn: () => api.get("/api/cameras/{camera_id}/log", { path: { camera_id: camera.id }, query: { lines: 500 } }),
+    refetchInterval: follow ? refreshMs : false,
+  });
+  const lines = log.data?.lines ?? [];
+  return (
+    <div className="flex flex-col gap-2">
+      <DialogTitle>Log: {camera.name}</DialogTitle>
+      <DialogDescription>
+        The last {lines.length} line(s)
+        {log.data?.updated ? `, written ${new Date(log.data.updated).toLocaleString()}` : ""}. Passwords are masked.
+      </DialogDescription>
+      <div className="flex items-center gap-2 text-sm">
+        <label className="flex items-center gap-2">
+          <Switch checked={follow} onCheckedChange={setFollow} aria-label="Auto-refresh" /> Auto-refresh
+        </label>
+        <Button asChild variant="outline" size="sm" className="ml-auto">
+          <a href={resourceUrl("/api/cameras/{camera_id}/log.txt", { camera_id: camera.id })} download>
+            <Download /> Download the whole log
+          </a>
+        </Button>
+      </div>
+      {log.error ? (
+        <ErrorState error={log.error} retry={() => void log.refetch()} />
+      ) : (
+        <pre
+          aria-label="Log lines"
+          ref={(el) => {
+            if (el && follow) el.scrollTop = el.scrollHeight;
+          }}
+          className="h-[60vh] overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-xs leading-5 whitespace-pre-wrap"
+        >
+          {log.isPending
+            ? "Loading…"
+            : lines.length
+              ? lines.join("\n")
+              : "The log is empty (the camera hasn't run yet)."}
+        </pre>
+      )}
+    </div>
   );
 }
 

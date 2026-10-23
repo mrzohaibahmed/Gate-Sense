@@ -25,7 +25,21 @@ export type ChangedMessage = {
   user: string;
   reason: string;
 };
-export type LiveMessage = { type: "hello"; user: string; role: string } | EventMessage | CameraMessage | ChangedMessage;
+/** One recognition decision of a camera worker (admins only: live:decisions). */
+export type Decision = {
+  time: string;
+  kind: string; // match, unknown, skip, event, cool-down, not saved, closed
+  track: number | null;
+  name: string | null;
+  score: number | null;
+  second: number | null;
+  margin: number | null;
+  face_px: number | null;
+  detail: string;
+};
+export type DecisionsMessage = { type: "decisions"; camera: string; id: number | null; decisions: Decision[] };
+export type LiveMessage =
+  { type: "hello"; user: string; role: string } | EventMessage | CameraMessage | ChangedMessage | DecisionsMessage;
 
 /** Reconnect delays (ms): 1, 2, 4, 8, then every 15 s. Reset after a connection opens. */
 export const BACKOFF = [1000, 2000, 4000, 8000, 15000];
@@ -47,6 +61,8 @@ export type LiveState = {
   events: EventMessage[];
   /** Latest status per camera name. */
   cameras: Record<string, CameraMessage>;
+  /** Latest decisions per camera name, newest last (only sent to admins). */
+  decisions: Record<string, Decision[]>;
 };
 
 type Options = {
@@ -65,6 +81,7 @@ export function useLiveEvents({ enabled = true, url, createSocket }: Options = {
   const [status, setStatus] = useState<LiveStatus>("connecting");
   const [events, setEvents] = useState<EventMessage[]>([]);
   const [cameras, setCameras] = useState<Record<string, CameraMessage>>({});
+  const [decisions, setDecisions] = useState<Record<string, Decision[]>>({});
   const cameraStatus = useRef<Record<string, string>>({});
 
   useEffect(() => {
@@ -89,6 +106,9 @@ export function useLiveEvents({ enabled = true, url, createSocket }: Options = {
           break;
         case "attendance_changed":
           refresh(ATTENDANCE_QUERIES);
+          break;
+        case "decisions":
+          setDecisions((all) => ({ ...all, [message.camera]: message.decisions }));
           break;
         case "camera": {
           setCameras((all) => ({ ...all, [message.name]: message }));
@@ -141,5 +161,5 @@ export function useLiveEvents({ enabled = true, url, createSocket }: Options = {
     };
   }, [enabled, url, createSocket, queryClient]);
 
-  return { status, events, cameras };
+  return { status, events, cameras, decisions };
 }

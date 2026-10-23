@@ -348,7 +348,11 @@ export interface paths {
         get: operations["person_photo"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Person Photo
+         * @description Delete one photo and rebuild the person's embeddings. Audited.
+         */
+        delete: operations["delete_person_photo"];
         options?: never;
         head?: never;
         patch?: never;
@@ -406,6 +410,48 @@ export interface paths {
          *     them up within seconds). Loads the face models on first use, so the first call takes a few seconds.
          */
         post: operations["reenroll_person"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/people/{person_id}/photos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload Photos
+         * @description Add photos from files (no camera): each goes through the same enrollment checks as the guided capture; the
+         *     passing ones are saved to known/<employee code>/ and the person's embeddings rebuilt once. Audited.
+         */
+        post: operations["upload_photos"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/people/{person_id}/delete-face-data": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delete Face Data
+         * @description Delete all the person's photos and face embeddings. The person and their attendance history stay (and they
+         *     are no longer recognised until enrolled again). Audited.
+         */
+        post: operations["delete_face_data"];
         delete?: never;
         options?: never;
         head?: never;
@@ -574,7 +620,12 @@ export interface paths {
         get: operations["get_camera"];
         put?: never;
         post?: never;
-        delete?: never;
+        /**
+         * Delete Camera
+         * @description Remove a camera from the list. Refused while it runs, and for the last camera. Its attendance history and its
+         *     .env password stay. Audited.
+         */
+        delete: operations["delete_camera"];
         options?: never;
         head?: never;
         /**
@@ -639,6 +690,66 @@ export interface paths {
          *     is used for this test only.
          */
         post: operations["test_camera"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cameras/{camera_id}/move": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move Camera
+         * @description Move a camera up or down the list; returns the whole list in its new order. Audited.
+         */
+        post: operations["move_camera"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cameras/{camera_id}/log": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Camera Log
+         * @description The last lines of the camera worker's log (data/logs/<camera>.log).
+         */
+        get: operations["camera_log"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/cameras/{camera_id}/log.txt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Camera Log File
+         * @description The whole log as a download (passwords masked).
+         */
+        get: operations["camera_log_file"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -758,6 +869,67 @@ export interface paths {
          *     data/backups/. Audited. Manual copies are never deleted automatically (nightly ones after BACKUP_RETENTION_DAYS).
          */
         post: operations["backup_now"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/reports/daily": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Daily Report
+         * @description The daily register: each person each day, first IN, last OUT, hours worked, missing OUT.
+         */
+        get: operations["daily_report"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/reports/monthly": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Monthly Report
+         * @description Per person over the range: days present, missing exits, total hours (added up from the daily register).
+         */
+        get: operations["monthly_report"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/reports/{kind}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Report
+         * @description Download a report. CSV: the daily register, or the per-person totals. Excel: one sheet per report (the monthly
+         *     export also has the daily detail), header styled, first row frozen. Audited.
+         */
+        get: operations["export_report"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1002,6 +1174,20 @@ export interface components {
              */
             reason?: string;
         };
+        /** CameraLog */
+        CameraLog: {
+            /** Camera */
+            camera: string;
+            /**
+             * Lines
+             * @description the last lines, oldest first (passwords masked)
+             */
+            lines: string[];
+            /** Size Bytes */
+            size_bytes: number;
+            /** Updated */
+            updated: string | null;
+        };
         /** CameraPatch */
         CameraPatch: {
             /** Direction */
@@ -1220,6 +1406,54 @@ export interface components {
              */
             session_expires: string;
         };
+        /** DailyReport */
+        DailyReport: {
+            /**
+             * First
+             * Format: date
+             */
+            first: string;
+            /**
+             * Last
+             * Format: date
+             */
+            last: string;
+            /** Rows */
+            rows: components["schemas"]["DailyRow"][];
+        };
+        /** DailyRow */
+        DailyRow: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Employee Code */
+            employee_code: string;
+            /** Name */
+            name: string;
+            /** Department */
+            department: string | null;
+            /** First In */
+            first_in: string | null;
+            /** Last Out */
+            last_out: string | null;
+            /**
+             * Worked Hours
+             * @description last OUT minus first IN, in hours
+             */
+            worked_hours: number | null;
+            /**
+             * Missing Out
+             * @description came in but no OUT after the last IN
+             */
+            missing_out: boolean;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "present" | "missing exit" | "missing entry" | "absent";
+        };
         /** DatabaseStatus */
         DatabaseStatus: {
             /**
@@ -1294,6 +1528,29 @@ export interface components {
              * @description GET it with the session cookie; None if there is no snapshot
              */
             snapshot_url: string | null;
+        };
+        /** FaceDataDelete */
+        FaceDataDelete: {
+            /**
+             * Reason
+             * @description why (goes to the audit log)
+             */
+            reason: string;
+            /**
+             * Deactivate
+             * @description also deactivate the person (they stop showing as absent)
+             * @default false
+             */
+            deactivate?: boolean;
+        };
+        /** FaceDataDeleted */
+        FaceDataDeleted: {
+            /** Photos */
+            photos: number;
+            /** Embeddings */
+            embeddings: number;
+            /** Deactivated */
+            deactivated: boolean;
         };
         /** FrameCheck */
         FrameCheck: {
@@ -1405,6 +1662,29 @@ export interface components {
             snapshot_retention_days: number;
             /** Snapshots Bytes */
             snapshots_bytes: number;
+        };
+        /** MonthlyReport */
+        MonthlyReport: {
+            /**
+             * First
+             * Format: date
+             */
+            first: string;
+            /**
+             * Last
+             * Format: date
+             */
+            last: string;
+            /** People */
+            people: components["schemas"]["PersonTotal"][];
+        };
+        /** Move */
+        Move: {
+            /**
+             * Step
+             * @description -1 = up, 1 = down (the first camera is recognize.py's default)
+             */
+            step: number;
         };
         /** NewUser */
         NewUser: {
@@ -1694,6 +1974,38 @@ export interface components {
             /** Site Id */
             site_id?: number | null;
         };
+        /** PersonTotal */
+        PersonTotal: {
+            /** Employee Code */
+            employee_code: string;
+            /** Name */
+            name: string;
+            /** Department */
+            department: string | null;
+            /**
+             * Days
+             * @description days in the range
+             */
+            days: number;
+            /**
+             * Days Present
+             * @description days with an IN
+             */
+            days_present: number;
+            /** Days Missing Exit */
+            days_missing_exit: number;
+            /** Days Missing Entry */
+            days_missing_entry: number;
+            /** Days Absent */
+            days_absent: number;
+            /** Total Hours */
+            total_hours: number;
+            /**
+             * Avg Hours
+             * @description total hours / days with hours worked
+             */
+            avg_hours: number | null;
+        };
         /** Photo */
         Photo: {
             /** File */
@@ -1732,6 +2044,32 @@ export interface components {
              */
             image: string;
         };
+        /** PhotoResult */
+        PhotoResult: {
+            /** Name */
+            name: string;
+            /**
+             * Ok
+             * @description passed the enrollment checks and was saved
+             */
+            ok: boolean;
+            /**
+             * Message
+             * @description why it was refused, in plain words (empty when saved)
+             */
+            message: string;
+            /** Score */
+            score: number | null;
+            /** Yaw */
+            yaw: number | null;
+            /** Pitch */
+            pitch: number | null;
+            /**
+             * Saved As
+             * @description the file in known/<employee code>/
+             */
+            saved_as: string | null;
+        };
         /** PhotoReview */
         PhotoReview: {
             /** Step */
@@ -1769,6 +2107,16 @@ export interface components {
             reason: string;
             /** Photos */
             photos: components["schemas"]["PhotoIn"][];
+        };
+        /** PhotosUpload */
+        PhotosUpload: {
+            /**
+             * Reason
+             * @description why (goes to the audit log)
+             */
+            reason: string;
+            /** Photos */
+            photos: components["schemas"]["UploadPhoto"][];
         };
         /** Reason */
         Reason: {
@@ -2034,6 +2382,31 @@ export interface components {
              * @description why there was no picture (passwords masked)
              */
             error: string | null;
+        };
+        /** UploadPhoto */
+        UploadPhoto: {
+            /**
+             * Name
+             * @description the file name, to report back
+             */
+            name: string;
+            /**
+             * Image
+             * @description JPEG or PNG, base64 (a data: URL prefix is allowed)
+             */
+            image: string;
+        };
+        /** UploadResult */
+        UploadResult: {
+            /** Results */
+            results: components["schemas"]["PhotoResult"][];
+            /** Saved */
+            saved: number;
+            /**
+             * Embeddings
+             * @description the person's embeddings after the rebuild
+             */
+            embeddings: number;
         };
         /** UserOut */
         UserOut: {
@@ -3105,6 +3478,55 @@ export interface operations {
             };
         };
     };
+    delete_person_photo: {
+        parameters: {
+            query: {
+                /** @description why (goes to the audit log) */
+                reason: string;
+            };
+            header?: never;
+            path: {
+                person_id: number;
+                file: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Person"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     deactivate_person: {
         parameters: {
             query?: never;
@@ -3225,6 +3647,104 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReenrollResult"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_photos: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                person_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PhotosUpload"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadResult"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_face_data: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                person_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FaceDataDelete"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FaceDataDeleted"];
                 };
             };
             /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
@@ -3686,6 +4206,59 @@ export interface operations {
             };
         };
     };
+    delete_camera: {
+        parameters: {
+            query: {
+                /** @description why (goes to the audit log) */
+                reason: string;
+            };
+            header?: never;
+            path: {
+                camera_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description running, or the last camera */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     update_camera: {
         parameters: {
             query?: never;
@@ -3845,6 +4418,147 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TestResult"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    move_camera: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                camera_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Move"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Camera"][];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    camera_log: {
+        parameters: {
+            query?: {
+                lines?: number;
+            };
+            header?: never;
+            path: {
+                camera_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CameraLog"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    camera_log_file: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                camera_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description the whole log, passwords masked */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
             /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
@@ -4309,6 +5023,166 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Backup"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    daily_report: {
+        parameters: {
+            query?: {
+                /** @description first day (default: today; this month for monthly) */
+                from?: string | null;
+                /** @description last day, inclusive */
+                to?: string | null;
+                /** @description exact department name */
+                department?: string | null;
+                /** @description people of this site only */
+                site_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DailyReport"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    monthly_report: {
+        parameters: {
+            query?: {
+                /** @description first day (default: today; this month for monthly) */
+                from?: string | null;
+                /** @description last day, inclusive */
+                to?: string | null;
+                /** @description exact department name */
+                department?: string | null;
+                /** @description people of this site only */
+                site_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MonthlyReport"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_report: {
+        parameters: {
+            query?: {
+                format?: "csv" | "xlsx";
+                /** @description first day (default: today; this month for monthly) */
+                from?: string | null;
+                /** @description last day, inclusive */
+                to?: string | null;
+                /** @description exact department name */
+                department?: string | null;
+                /** @description people of this site only */
+                site_id?: number | null;
+            };
+            header?: never;
+            path: {
+                kind: "daily" | "monthly";
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description the report as a file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": unknown;
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
                 };
             };
             /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */

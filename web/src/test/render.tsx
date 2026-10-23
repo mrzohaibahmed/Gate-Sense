@@ -37,6 +37,7 @@ export const PERMISSIONS: Record<string, string[]> = {
     "people:manage",
     "reports:read",
     "audit:read",
+    "live:decisions",
   ],
   hr: [
     "account:self",

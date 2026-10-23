@@ -88,7 +88,10 @@ async def live_updates(websocket: WebSocket) -> None:
     - {"type": "event", ...an Event} for each new IN/OUT (camera or manual);
     - {"type": "camera", "id", "name", "status", "fps", "error", "warning", "held_by", "last_frame_at"} for every
       camera every WS_CAMERA_SECONDS;
-    - {"type": "attendance_changed", "action", "target", "user", "reason"} after a correction (API or dashboard).
+    - {"type": "attendance_changed", "action", "target", "user", "reason"} after a correction (API or dashboard);
+    - admins only (live:decisions): {"type": "decisions", "camera", "id", "decisions": [{"time", "kind" (match,
+      unknown, skip, event, cool-down, not saved, closed), "track", "name", "score", "second", "margin", "face_px"
+      (camera pixels), "detail" (vote or skip reason)}]} with a camera's latest decisions whenever they change.
 
     Refused (policy violation, 1008) without a valid session, without attendance:read, or from another site's page;
     closed with 4401 when the session ends.
@@ -100,7 +103,7 @@ async def live_updates(websocket: WebSocket) -> None:
     user, session_id = result
     await websocket.accept()
     hub = websocket.app.state.events
-    client = Client(websocket, user.username, session_id)
+    client = Client(websocket, user.username, session_id, permissions=frozenset(user.permissions))
     hub.join(client)
     await websocket.send_json({"type": "hello", "user": user.username, "role": user.role})
 

@@ -26,3 +26,7 @@ export type SystemInfo = S["SystemInfo"];
 export type Backup = S["Backup"];
 export type Roi = S["Roi"];
 export type TestResult = S["TestResult"];
+export type DailyRow = S["DailyRow"];
+export type PersonTotal = S["PersonTotal"];
+export type PhotoResult = S["PhotoResult"];
+export type CameraLog = S["CameraLog"];

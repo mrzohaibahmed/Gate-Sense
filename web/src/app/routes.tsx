@@ -9,7 +9,7 @@ import { LiveCamerasPage } from "@/pages/LiveCameras";
 import { ChangePasswordPage, LoginPage } from "@/pages/Login";
 import { OverviewPage } from "@/pages/Overview";
 import { PeoplePage, PersonProfilePage } from "@/pages/People";
-import { PlaceholderPage } from "@/pages/Placeholder";
+import { ReportsPage } from "@/pages/Reports";
 import { SettingsPage } from "@/pages/Settings";
 
 import { AppShell } from "./AppShell";
@@ -21,7 +21,7 @@ const pages: Record<string, React.ReactNode> = {
   "/attendance": <AttendancePage />,
   "/people": <PeoplePage />,
   "/enrollment": <EnrollmentPage />,
-  "/reports": <PlaceholderPage title="Reports" />,
+  "/reports": <ReportsPage />,
   "/audit": <AuditPage />,
   "/settings": <SettingsPage />,
 };

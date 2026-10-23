@@ -44,7 +44,7 @@ export function ReasonDialog({
       setReason("");
       onOpenChange(false);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : String(err));
+      setError(err instanceof ApiError || err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }

@@ -13,8 +13,9 @@ import { PageSkeleton } from "@/components/states";
 import { Badge, Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { EmptyState, ErrorState } from "@/components/ui/misc";
+import { EmptyState, ErrorState, Tabs, TabsContent, TabsList, TabsTrigger, Td, Th } from "@/components/ui/misc";
 import { useLive } from "@/live/LiveProvider";
+import type { Decision } from "@/live/useLiveEvents";
 import { cn, today } from "@/lib/utils";
 
 import { EventRow } from "./Overview";
@@ -228,6 +229,8 @@ function CameraTile({ camera, stream, onFullscreen }: { camera: Camera; stream: 
 
 function FullView({ camera }: { camera: Camera }) {
   const { state, fps, problem } = useCameraState(camera);
+  const { data: me } = useMe();
+  const { decisions } = useLive();
   const events = useQuery({
     queryKey: ["events", "camera", camera.id],
     queryFn: () => api.get("/api/events", { query: { camera: camera.id, from: today(), to: today(), page_size: 30 } }),
@@ -253,21 +256,94 @@ function FullView({ camera }: { camera: Camera }) {
         <div className="overflow-hidden rounded-lg border lg:col-span-2">
           <Picture key={state} camera={camera} stream state={state} />
         </div>
-        <div className="flex min-h-0 flex-col rounded-lg border">
-          <p className="border-b px-4 py-2 text-sm font-semibold">Today on this camera</p>
-          {events.error ? (
-            <ErrorState error={events.error} />
-          ) : (events.data?.items.length ?? 0) === 0 ? (
-            <EmptyState title={events.isPending ? "Loading…" : "No events yet today"} className="py-8" />
-          ) : (
-            <ul className="max-h-[60vh] divide-y overflow-y-auto">
-              {events.data?.items.map((e) => (
-                <EventRow key={e.id} e={e} />
-              ))}
-            </ul>
+        <Tabs defaultValue="events" className="flex min-h-0 flex-col rounded-lg border">
+          <TabsList className="m-2 self-start">
+            <TabsTrigger value="events">Today on this camera</TabsTrigger>
+            {can(me, "live:decisions") && <TabsTrigger value="decisions">Decisions</TabsTrigger>}
+          </TabsList>
+          <TabsContent value="events">
+            {events.error ? (
+              <ErrorState error={events.error} />
+            ) : (events.data?.items.length ?? 0) === 0 ? (
+              <EmptyState title={events.isPending ? "Loading…" : "No events yet today"} className="py-8" />
+            ) : (
+              <ul className="max-h-[60vh] divide-y overflow-y-auto">
+                {events.data?.items.map((e) => (
+                  <EventRow key={e.id} e={e} />
+                ))}
+              </ul>
+            )}
+          </TabsContent>
+          {can(me, "live:decisions") && (
+            <TabsContent value="decisions">
+              <DecisionsTable decisions={decisions[camera.name] ?? []} />
+            </TabsContent>
           )}
-        </div>
+        </Tabs>
       </div>
+    </div>
+  );
+}
+
+const KIND: Record<string, { label: string; tone: "ok" | "error" | "neutral" | "accent" | "warn" }> = {
+  match: { label: "match", tone: "ok" },
+  unknown: { label: "unknown", tone: "error" },
+  skip: { label: "skip", tone: "neutral" },
+  event: { label: "event", tone: "accent" },
+  "cool-down": { label: "cool-down", tone: "warn" },
+  "not saved": { label: "not saved", tone: "warn" },
+  closed: { label: "closed", tone: "neutral" },
+};
+
+/** A camera's latest recognition decisions (newest first): for tuning the threshold and margin. */
+export function DecisionsTable({ decisions }: { decisions: Decision[] }) {
+  if (decisions.length === 0) {
+    return (
+      <EmptyState title="No decisions yet" className="py-8">
+        They appear while faces pass this camera.
+      </EmptyState>
+    );
+  }
+  const num = (v: number | null, digits = 3) => (v == null ? "" : v.toFixed(digits));
+  return (
+    <div className="max-h-[60vh] overflow-auto">
+      <table className="w-full text-xs" aria-label="Decisions">
+        <thead>
+          <tr>
+            <Th>Time</Th>
+            <Th>Track</Th>
+            <Th>Decision</Th>
+            <Th>Name</Th>
+            <Th className="text-right">Score</Th>
+            <Th className="text-right">Second</Th>
+            <Th className="text-right">Margin</Th>
+            <Th className="text-right">Face px</Th>
+            <Th>Detail</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {[...decisions].reverse().map((d, i) => {
+            const kind = KIND[d.kind] ?? { label: d.kind, tone: "neutral" as const };
+            return (
+              <tr key={`${d.time}-${d.track}-${i}`}>
+                <Td className="whitespace-nowrap">{d.time}</Td>
+                <Td>{d.track ?? ""}</Td>
+                <Td>
+                  <Badge tone={kind.tone}>{kind.label}</Badge>
+                </Td>
+                <Td>{d.name ?? ""}</Td>
+                <Td className="text-right">{num(d.score)}</Td>
+                <Td className="text-right">{num(d.second)}</Td>
+                <Td className={cn("text-right", d.margin != null && d.margin < 0.05 && "text-warn")}>
+                  {num(d.margin)}
+                </Td>
+                <Td className="text-right">{d.face_px ?? ""}</Td>
+                <Td className="text-muted-foreground">{d.detail}</Td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

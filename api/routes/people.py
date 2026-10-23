@@ -211,3 +211,115 @@ def reenroll_person(person_id: int, body: Reason, request: Request, user: Curren
     db.log_change(user.username, "reenroll_person", f"person:{code}", details, body.reason)
     return {"employee_code": code, "accepted": result.accepted,
             "rejected": [{"file": f, "reason": r} for f, r in result.rejected], "embeddings": len(result.embeddings)}
+
+
+# --- Photos and face data (the Streamlit Enrollment page's upload, delete photo, delete face data) --------------
+
+MAX_UPLOAD_PHOTOS = 10
+
+
+class UploadPhoto(BaseModel):
+    name: str = Field(description="the file name, to report back")
+    image: str = Field(description="JPEG or PNG, base64 (a data: URL prefix is allowed)")
+
+
+class PhotosUpload(Reason):
+    photos: list[UploadPhoto] = Field(min_length=1, max_length=MAX_UPLOAD_PHOTOS)
+
+
+class PhotoResult(BaseModel):
+    name: str
+    ok: bool = Field(description="passed the enrollment checks and was saved")
+    message: str = Field(description="why it was refused, in plain words (empty when saved)")
+    score: float | None
+    yaw: float | None
+    pitch: float | None
+    saved_as: str | None = Field(description="the file in known/<employee code>/")
+
+
+class UploadResult(BaseModel):
+    results: list[PhotoResult]
+    saved: int
+    embeddings: int = Field(description="the person's embeddings after the rebuild")
+
+
+class FaceDataDelete(Reason):
+    deactivate: bool = Field(False, description="also deactivate the person (they stop showing as absent)")
+
+
+class FaceDataDeleted(BaseModel):
+    photos: int
+    embeddings: int
+    deactivated: bool
+
+
+def decode_upload(text: str):
+    """The image, or None when it can't be read (reported as a failed photo, not an error)."""
+    import base64
+    import binascii
+
+    if text.startswith("data:"):
+        text = text.split(",", 1)[-1]
+    try:
+        data = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return enrollment.decode_image(data) if data else None
+
+
+@router.post("/{person_id}/photos", response_model=UploadResult)
+def upload_photos(person_id: int, body: PhotosUpload, request: Request, user: CurrentUser = Depends(manage)) -> dict:
+    """Add photos from files (no camera): each goes through the same enrollment checks as the guided capture; the
+    passing ones are saved to known/<employee code>/ and the person's embeddings rebuilt once. Audited."""
+    person = get_or_404(request, person_id)
+    code = person["employee_code"]
+    detector, recognizer = request.app.state.face_models()
+    db = auth.db_of(request)
+    images = [(p.name, decode_upload(p.image)) for p in body.photos]
+    with _enroll_lock, db.conn() as conn:
+        checked, rebuilt = enrollment.add_photos(code, images, detector, recognizer, conn)
+    results = []
+    for name, check, path in checked:
+        q = check.quality
+        results.append({"name": name, "ok": path is not None, "message": "" if path else check.message,
+                        "score": q.score if q and path else None, "yaw": q.yaw if q else None,
+                        "pitch": q.pitch if q else None, "saved_as": path.name if path else None})
+    saved = [r["saved_as"] for r in results if r["saved_as"]]
+    db.log_change(user.username, "add_photos", f"person:{code}",
+                  {"saved": saved, "refused": [r["name"] for r in results if not r["ok"]]}, body.reason)
+    embeddings = len(rebuilt.embeddings) if rebuilt else enrollment.load_gallery().counts().get(code, 0)
+    return {"results": results, "saved": len(saved), "embeddings": embeddings}
+
+
+@router.delete("/{person_id}/photos/{file}", response_model=Person)
+def delete_person_photo(person_id: int, file: str, request: Request,
+                        reason: str = Query(..., min_length=1, description="why (goes to the audit log)"),
+                        user: CurrentUser = Depends(manage)) -> dict:
+    """Delete one photo and rebuild the person's embeddings. Audited."""
+    person = get_or_404(request, person_id)
+    if not reason.strip():
+        raise HTTPException(422, "A reason is required.")
+    code = person["employee_code"]
+    detector, recognizer = request.app.state.face_models()
+    db = auth.db_of(request)
+    try:
+        with _enroll_lock, db.conn() as conn:
+            result = enrollment.delete_photo(code, file, detector, recognizer, conn)
+    except ValueError:
+        raise HTTPException(404, "No such photo.") from None
+    db.log_change(user.username, "delete_photo", f"person:{code}",
+                  {"photo": file, "embeddings": len(result.embeddings)}, reason.strip())
+    return get_or_404(request, person_id)
+
+
+@router.post("/{person_id}/delete-face-data", response_model=FaceDataDeleted)
+def delete_face_data(person_id: int, body: FaceDataDelete, request: Request,
+                     user: CurrentUser = Depends(manage)) -> dict:
+    """Delete all the person's photos and face embeddings. The person and their attendance history stay (and they
+    are no longer recognised until enrolled again). Audited."""
+    person = get_or_404(request, person_id)
+    db = auth.db_of(request)
+    with _enroll_lock, db.conn() as conn:
+        details = enrollment.delete_face_data(person["employee_code"], body.reason, user.username, conn,
+                                              body.deactivate)
+    return {"photos": details["photos"], "embeddings": details["embeddings"], "deactivated": body.deactivate}

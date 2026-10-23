@@ -1,21 +1,24 @@
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { ClipboardList, Search } from "lucide-react";
+import { ClipboardList, Ban, RotateCcw, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
+import { toast } from "sonner";
 
 import { api, resourceUrl } from "@/api/client";
-import type { AttendanceRow, Status } from "@/api/types";
+import type { AttendanceEvent, AttendanceRow, Status } from "@/api/types";
 import { PageHeader } from "@/app/AppShell";
 import { useFilters } from "@/app/filters";
 import { can, useMe } from "@/auth/auth";
 import { DirectionBadge, StatusBadge } from "@/components/badges";
 import { type ColumnMeta, DataTable } from "@/components/DataTable";
+import { ReasonDialog } from "@/components/ReasonDialog";
+import { Button } from "@/components/ui/button";
 import { Badge, Separator } from "@/components/ui/card";
 import { Dialog, DialogDescription, DialogTitle, SheetContent } from "@/components/ui/dialog";
 import { Input, NativeSelect } from "@/components/ui/input";
-import { EmptyState, ErrorState } from "@/components/ui/misc";
-import { duration, hhmm, today } from "@/lib/utils";
+import { EmptyState, ErrorState, Switch } from "@/components/ui/misc";
+import { cn, duration, hhmm, today } from "@/lib/utils";
 
 import { CorrectionForm } from "./CorrectionForm";
 
@@ -235,9 +238,13 @@ export function AttendancePage() {
   );
 }
 
-/** One person's day: raw events with snapshots, and the correction form (HR and admin). */
-function DayPanel({ row }: { row: AttendanceRow }) {
+/** One person's day: raw events with snapshots, void/restore, and the correction form (HR and admin). */
+export function DayPanel({ row }: { row: AttendanceRow }) {
   const { data: me } = useMe();
+  const queryClient = useQueryClient();
+  const correct = can(me, "attendance:correct");
+  const [showVoided, setShowVoided] = useState(true);
+  const [target, setTarget] = useState<AttendanceEvent | null>(null);
   const events = useQuery({
     queryKey: ["events", "day", row.person_id, row.date],
     queryFn: () =>
@@ -246,6 +253,19 @@ function DayPanel({ row }: { row: AttendanceRow }) {
       }),
   });
   const items = events.data?.items ?? [];
+  const voidedCount = items.filter((e) => e.voided).length;
+  const shown = showVoided ? items : items.filter((e) => !e.voided);
+  const toggle = async (e: AttendanceEvent, reason: string) => {
+    await api.post("/api/attendance/corrections", {
+      body: { action: e.voided ? "restore" : "void", event_id: e.id, reason },
+    });
+    toast.success(
+      e.voided ? `${e.direction} at ${hhmm(e.timestamp)} restored` : `${e.direction} at ${hhmm(e.timestamp)} voided`,
+    );
+    for (const key of [["attendance"], ["events"], ["overview"], ["person"]]) {
+      void queryClient.invalidateQueries({ queryKey: key });
+    }
+  };
   return (
     <div className="flex flex-col gap-4 p-4">
       <div className="flex flex-col gap-1 pr-6">
@@ -264,17 +284,31 @@ function DayPanel({ row }: { row: AttendanceRow }) {
       </div>
       <Separator />
       <section aria-label="Events" className="flex flex-col gap-2">
-        <h3 className="text-sm font-semibold">Events</h3>
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">Events</h3>
+          {voidedCount > 0 && (
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Switch checked={showVoided} onCheckedChange={setShowVoided} aria-label="Show voided events" />
+              Show voided ({voidedCount})
+            </label>
+          )}
+        </div>
         {events.error ? (
           <ErrorState error={events.error} retry={() => void events.refetch()} />
         ) : events.isPending ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : items.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No events that day.</p>
+        ) : shown.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            {items.length === 0 ? "No events that day." : "Only voided events that day."}
+          </p>
         ) : (
           <ul className="flex flex-col gap-2">
-            {items.map((e) => (
-              <li key={e.id} className="flex items-center gap-2 rounded-md border p-2">
+            {shown.map((e) => (
+              <li
+                key={e.id}
+                className={cn("flex items-center gap-2 rounded-md border p-2", e.voided && "bg-muted/50 opacity-60")}
+                aria-label={`${e.direction} at ${hhmm(e.timestamp)}${e.voided ? " (voided)" : ""}`}
+              >
                 {e.snapshot_url ? (
                   <a href={resourceUrl(e.snapshot_url)} target="_blank" rel="noreferrer">
                     <img
@@ -295,14 +329,20 @@ function DayPanel({ row }: { row: AttendanceRow }) {
                     {e.original_timestamp && (
                       <span className="text-xs text-muted-foreground">was {hhmm(e.original_timestamp)}</span>
                     )}
+                    {e.voided && <Badge tone="error">Voided</Badge>}
                   </span>
                   <span className="text-xs text-muted-foreground">
                     {e.camera}
                     {e.score != null && ` · score ${e.score.toFixed(2)}`}
                     {e.manual && " · manual"}
-                    {e.voided && " · voided"}
                   </span>
                 </div>
+                {correct && (
+                  <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setTarget(e)}>
+                    {e.voided ? <RotateCcw /> : <Ban />}
+                    {e.voided ? "Restore" : "Void"}
+                  </Button>
+                )}
               </li>
             ))}
           </ul>
@@ -317,6 +357,21 @@ function DayPanel({ row }: { row: AttendanceRow }) {
           </section>
         </>
       )}
+      <ReasonDialog
+        open={target !== null}
+        onOpenChange={(o) => !o && setTarget(null)}
+        title={target?.voided ? "Restore this event?" : "Void this event?"}
+        description={
+          target
+            ? target.voided
+              ? `The ${target.direction} at ${hhmm(target.timestamp)} counts again.`
+              : `The ${target.direction} at ${hhmm(target.timestamp)} stops counting. Nothing is deleted; you can restore it.`
+            : undefined
+        }
+        confirmLabel={target?.voided ? "Restore" : "Void"}
+        destructive={!target?.voided}
+        onConfirm={(reason) => (target ? toggle(target, reason) : Promise.resolve())}
+      />
     </div>
   );
 }

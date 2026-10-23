@@ -1,6 +1,17 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import { ChevronLeft, ChevronRight, ImageOff, ScanFace, Search, UserPlus, Users } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  ImageOff,
+  ImagePlus,
+  Pencil,
+  ScanFace,
+  Search,
+  Trash2,
+  UserPlus,
+  Users,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { toast } from "sonner";
@@ -19,6 +30,8 @@ import { Button } from "@/components/ui/button";
 import { Input, NativeSelect } from "@/components/ui/input";
 import { EmptyState, ErrorState, Td, Th } from "@/components/ui/misc";
 import { cn, duration, hhmm, today } from "@/lib/utils";
+
+import { DeleteFaceDataDialog, DeletePhotoDialog, EditPersonDialog } from "./PersonDialogs";
 
 const PAGE_SIZE = 100;
 
@@ -259,7 +272,8 @@ export function PersonProfilePage() {
   const { data: me } = useMe();
   const queryClient = useQueryClient();
   const [month, setMonth] = useState(today().slice(0, 7));
-  const [dialog, setDialog] = useState<null | "active" | "reenroll">(null);
+  const [dialog, setDialog] = useState<null | "active" | "reenroll" | "edit" | "faceData">(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const person = useQuery({
     queryKey: ["person", personId],
     queryFn: () => api.get("/api/people/{person_id}", { path: { person_id: personId } }),
@@ -304,9 +318,17 @@ export function PersonProfilePage() {
       <PageHeader title={p.name}>
         {manage && (
           <>
+            <Button variant="outline" onClick={() => setDialog("edit")}>
+              <Pencil /> Edit
+            </Button>
             <Button asChild variant="outline">
               <Link to={`/enrollment?person=${p.id}`}>
                 <ScanFace /> Take new photos
+              </Link>
+            </Button>
+            <Button asChild variant="outline">
+              <Link to={`/enrollment?person=${p.id}&tab=upload`}>
+                <ImagePlus /> Add photos from files
               </Link>
             </Button>
             <Button variant="outline" disabled={!p.photos} onClick={() => setDialog("reenroll")}>
@@ -343,6 +365,11 @@ export function PersonProfilePage() {
         <Card className="lg:col-span-2">
           <CardHeader>
             <CardTitle>Photos</CardTitle>
+            {manage && (p.photos > 0 || p.embeddings > 0) && (
+              <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setDialog("faceData")}>
+                <Trash2 /> Delete face data
+              </Button>
+            )}
           </CardHeader>
           <CardContent>
             {p.photo_list.length === 0 ? (
@@ -369,6 +396,16 @@ export function PersonProfilePage() {
                         <Badge>not checked</Badge>
                       )}
                       {ph.step && <span className="text-muted-foreground">{ph.step}</span>}
+                      {manage && (
+                        <button
+                          type="button"
+                          className="ml-auto rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-destructive"
+                          onClick={() => setDeleting(ph.file)}
+                          aria-label={`Delete photo ${ph.file}`}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      )}
                     </span>
                   </li>
                 ))}
@@ -480,6 +517,33 @@ export function PersonProfilePage() {
         description="Every photo is checked again and the face data rebuilt. Running cameras pick it up within seconds."
         confirmLabel="Re-enroll"
         onConfirm={(reason) => reenroll.mutateAsync(reason)}
+      />
+      <EditPersonDialog
+        person={p}
+        open={dialog === "edit"}
+        onOpenChange={(o) => setDialog(o ? "edit" : null)}
+        onSaved={() => {
+          toast.success("Saved");
+          refresh();
+        }}
+      />
+      <DeletePhotoDialog
+        person={p}
+        file={deleting}
+        onOpenChange={(o) => !o && setDeleting(null)}
+        onDone={() => {
+          toast.success("Photo deleted; face data rebuilt");
+          refresh();
+        }}
+      />
+      <DeleteFaceDataDialog
+        person={p}
+        open={dialog === "faceData"}
+        onOpenChange={(o) => setDialog(o ? "faceData" : null)}
+        onDone={(deactivated) => {
+          toast.success(deactivated ? "Face data deleted and person deactivated" : "Face data deleted");
+          refresh();
+        }}
       />
     </>
   );

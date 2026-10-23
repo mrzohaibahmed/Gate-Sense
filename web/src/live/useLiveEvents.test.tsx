@@ -136,3 +136,28 @@ describe("useLiveEvents", () => {
     expect(FakeSocket.all).toHaveLength(1);
   });
 });
+
+describe("live decisions", () => {
+  it("keeps the latest decisions per camera, replacing the previous list", () => {
+    const { hook } = setup();
+    act(() => latest().open());
+    const decision = {
+      time: "08:05:01",
+      kind: "match",
+      track: 3,
+      name: "waqas",
+      score: 0.71,
+      second: 0.42,
+      margin: 0.29,
+      face_px: 150,
+      detail: "vote 1/3",
+    };
+    act(() => latest().send({ type: "decisions", camera: "entrance", id: 1, decisions: [decision] }));
+    expect(hook.result.current.decisions.entrance).toEqual([decision]);
+    const skip = { ...decision, kind: "skip", name: null, score: null, second: null, margin: null, face_px: 60 };
+    act(() => latest().send({ type: "decisions", camera: "entrance", id: 1, decisions: [decision, skip] }));
+    act(() => latest().send({ type: "decisions", camera: "exit", id: 2, decisions: [] }));
+    expect(hook.result.current.decisions.entrance).toHaveLength(2);
+    expect(hook.result.current.decisions.exit).toEqual([]);
+  });
+});

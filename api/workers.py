@@ -162,6 +162,13 @@ class WorkerManager:
                                  "switch off \"Use the camera\" there first")
         return self.info(self._mgr.start(name))
 
+    def log_tail(self, name: str, lines: int) -> list[str]:
+        """The last `lines` lines of the camera's worker log (passwords masked)."""
+        return self._mgr.log_tail(name, lines)
+
+    def log_path(self, name: str) -> Path:
+        return self._mgr.log_path(name)
+
     def stop(self, name: str) -> str:
         """Ask the worker to stop (whoever started it); returns the result text."""
         config.refresh_cameras()

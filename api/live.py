@@ -9,13 +9,16 @@ encoding. The thread stops, and the .watch file goes, with the last viewer.
 
 EventHub: the WebSocket clients of /api/ws. While any are connected, one task
 looks for new events and corrections (in the database, so those from the camera
-workers and the Streamlit dashboard are seen too) every WS_POLL_SECONDS, and sends
+workers and the Streamlit dashboard are seen too) every WS_POLL_SECONDS, sends each
+camera's latest recognition decisions (from data/live/<camera>.json) when they
+change, only to clients with live:decisions (admins), and sends
 every camera's status every WS_CAMERA_SECONDS, when it also closes clients whose
 session ended. Each client has a bounded queue; one that falls WS_QUEUE messages
 behind is disconnected instead of slowing the others.
 """
 
 import asyncio
+import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -30,6 +33,7 @@ from api.schemas import event_out
 from app import config, live
 
 CORRECTIONS = ("add_event", "edit_event", "void_event", "restore_event")
+DECISIONS = "live:decisions"
 SESSION_ENDED = 4401  # WebSocket close code: log in again
 
 
@@ -141,6 +145,7 @@ class Client:
     session_id: int
     queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(config.WS_QUEUE))
     loop: asyncio.AbstractEventLoop = field(default_factory=asyncio.get_running_loop)
+    permissions: frozenset = frozenset()  # the user's, for messages only some roles get
     closed: int | None = None  # close code, once the hub drops it
 
 
@@ -150,10 +155,14 @@ class EventHub:
         self.clients: set[Client] = set()
         self._last: tuple[int, int] | None = None  # (event id, audit id) already sent; None = start from now
         self._camera_due = 0.0
+        self._decisions: dict[str, str] = {}  # camera -> the decision list last sent (as JSON)
+        self._camera_ids: dict[str, int] = {}
 
     def join(self, client: Client) -> None:
         self.clients.add(client)
         self._camera_due = 0.0  # camera statuses at the next tick, so a new client sees them at once
+        if DECISIONS in client.permissions:
+            self._decisions = {}  # and every camera's decisions
 
     def leave(self, client: Client) -> None:
         self.clients.discard(client)
@@ -165,9 +174,11 @@ class EventHub:
             self.clients.discard(client)
             self._deliver(client, None)
 
-    def broadcast(self, message: dict) -> None:
+    def broadcast(self, message: dict, permission: str | None = None) -> None:
+        """To every client, or only to those whose role has `permission`."""
         for client in list(self.clients):
-            self._deliver(client, message)
+            if permission is None or permission in client.permissions:
+                self._deliver(client, message)
 
     def _deliver(self, client: Client, message: dict | None) -> None:
         """Queue a message in the client's own event loop (asyncio queues aren't thread-safe). Under uvicorn that is
@@ -218,7 +229,9 @@ class EventHub:
         self._last = (event_id, audit_id)
         if time.monotonic() >= self._camera_due:
             self._camera_due = time.monotonic() + config.WS_CAMERA_SECONDS
-            await self.cameras_and_sessions()
+            await self.cameras_and_sessions()  # first: it also learns the camera ids the decisions carry
+        if any(DECISIONS in c.permissions for c in self.clients):
+            await self.decisions()
 
     async def cameras_and_sessions(self) -> None:
         from api import auth
@@ -231,8 +244,31 @@ class EventHub:
             return
         statuses = await run_in_threadpool(self.workers.statuses)
         ids = {c["name"]: c["id"] for c in await run_in_threadpool(self.db.cameras, self.workers.cameras)}
+        self._camera_ids = ids
         for info in statuses:
             self.broadcast({
                 "type": "camera", "id": ids.get(info.camera), "name": info.camera, "status": info.state,
                 "fps": info.fps, "error": info.last_error, "warning": info.warning, "held_by": info.held_by,
                 "last_frame_at": info.last_frame_at.isoformat() if info.last_frame_at else None})
+
+    async def decisions(self) -> None:
+        """Each camera's latest decisions, when they changed since last sent (to live:decisions clients only)."""
+        names = [c["name"] for c in self.workers.cameras]
+        found = await run_in_threadpool(lambda: {n: live.read_info(n, self.workers.live_dir).get("decisions", [])
+                                                 for n in names})
+        for name, rows in found.items():
+            key = json.dumps(rows, sort_keys=True)
+            if self._decisions.get(name) == key:
+                continue
+            self._decisions[name] = key
+            self.broadcast({"type": "decisions", "camera": name, "id": self._camera_ids.get(name),
+                            "decisions": [decision_out(d) for d in rows]}, DECISIONS)
+
+
+def decision_out(d: dict) -> dict:
+    """A worker's decision (app/live.py LiveWriter.decision) with the margin over the second-best person."""
+    score, second = d.get("score"), d.get("second")
+    return {"time": d.get("time"), "kind": d.get("kind"), "track": d.get("track"), "name": d.get("name"),
+            "score": score, "second": second,
+            "margin": round(score - second, 3) if score is not None and second is not None else None,
+            "face_px": d.get("face_px"), "detail": d.get("detail") or ""}
