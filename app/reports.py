@@ -6,21 +6,26 @@ import sqlite3
 from datetime import date
 
 from app import db
-from app.attendance import MISSING_ENTRY, MISSING_EXIT, PRESENT
+from app.attendance import ABSENT, CAME_IN, CHECK, MISSING_ENTRY, MISSING_EXIT
 
 
 # Both build on db.day_summaries (attendance.summarize_person: first IN to last OUT of the calendar day), the same
 # rule as /api/attendance and the overview: shift windows would be added there, in one place.
+# Wording, as on the screens: "present" = came in that day (complete, missing exit or check); today's day without an
+# OUT yet is "inside", not "missing exit" (missing_out is False until the day is over).
+INSIDE = "inside"
 
 DAILY_COLUMNS_RANGE = [  # (header, key, kind) for exports
     ("Date", "date", "date"), ("Employee code", "employee_code", "text"), ("Name", "name", "text"),
     ("Department", "department", "text"), ("First IN", "first_in", "time"), ("Last OUT", "last_out", "time"),
-    ("Hours worked", "worked_hours", "hours"), ("Missing OUT", "missing_out", "yesno"), ("Status", "status", "text"),
+    ("Hours worked", "worked_hours", "hours"), ("Missing OUT", "missing_out", "yesno"), ("Check", "check", "yesno"),
+    ("Status", "export_status", "text"),
 ]
 TOTAL_COLUMNS = [
     ("Employee code", "employee_code", "text"), ("Name", "name", "text"), ("Department", "department", "text"),
     ("Days", "days", "int"), ("Days present", "days_present", "int"), ("Missing exits", "days_missing_exit", "int"),
-    ("Missing entries", "days_missing_entry", "int"), ("Days absent", "days_absent", "int"),
+    ("Missing entries", "days_missing_entry", "int"), ("Days to check", "days_check", "int"),
+    ("Days absent", "days_absent", "int"),
     ("Total hours", "total_hours", "hours"), ("Average hours per worked day", "avg_hours", "hours"),
 ]
 
@@ -31,6 +36,7 @@ def range_rows(conn: sqlite3.Connection, first: date, last: date, department: st
     name. Read-only."""
     from datetime import timedelta
 
+    today = date.today()
     people = {r["employee_code"]: dict(r) for r in db.list_persons(conn)}
     rows = []
     day = first
@@ -44,25 +50,29 @@ def range_rows(conn: sqlite3.Connection, first: date, last: date, department: st
                 continue
             rows.append({"date": day, "employee_code": s.person, "name": p.get("name", s.person),
                          "department": p.get("department"), "first_in": s.first_in, "last_out": s.last_out,
-                         "worked_hours": s.worked_hours, "missing_out": s.status == MISSING_EXIT, "status": s.status})
+                         "worked_hours": s.worked_hours, "missing_out": s.status == MISSING_EXIT and day != today,
+                         "check": s.status == CHECK, "status": s.status,
+                         "export_status": INSIDE if s.status == MISSING_EXIT and day == today else s.status})
         day += timedelta(days=1)
     return sorted(rows, key=lambda r: (r["date"], r["name"].lower(), r["employee_code"]))
 
 
 def person_totals(rows: list[dict]) -> list[dict]:
     """Per person, from the daily rows only (so the totals always add up to them): days in the range, days present
-    (came in), missing exits and entries, absent days, total hours, and the average over the days with hours."""
+    (came in), missing exits (not counting today while still inside) and entries, days to check, absent days, total
+    hours, and the average over the days with hours."""
     totals: dict[str, dict] = {}
     for r in rows:
         t = totals.setdefault(r["employee_code"], {
             "employee_code": r["employee_code"], "name": r["name"], "department": r["department"], "days": 0,
-            "days_present": 0, "days_missing_exit": 0, "days_missing_entry": 0, "days_absent": 0,
+            "days_present": 0, "days_missing_exit": 0, "days_missing_entry": 0, "days_check": 0, "days_absent": 0,
             "total_hours": 0.0, "avg_hours": None, "_worked_days": 0})
         t["days"] += 1
-        t["days_present"] += r["status"] in (PRESENT, MISSING_EXIT)
-        t["days_missing_exit"] += r["status"] == MISSING_EXIT
+        t["days_present"] += r["status"] in CAME_IN
+        t["days_missing_exit"] += r["missing_out"]
         t["days_missing_entry"] += r["status"] == MISSING_ENTRY
-        t["days_absent"] += r["status"] == "absent"
+        t["days_check"] += r["check"]
+        t["days_absent"] += r["status"] == ABSENT
         if r["worked_hours"] is not None:
             t["total_hours"] += r["worked_hours"]
             t["_worked_days"] += 1

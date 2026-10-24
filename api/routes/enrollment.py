@@ -15,6 +15,9 @@ With an IP camera instead (/api/enrollment/sources, then /api/enrollment/session
 (sharing a running worker's frames, see api/enroll_camera.py), serves a live preview (MJPEG) and runs the same
 checks on the camera's full-resolution enrollment window; Capture returns that window as the photo. The session is
 held, renewed and released like the webcam claim. The user's last choice is remembered (user_preferences).
+
+While LIVENESS_ENABLED, the frame checks and the final check of each captured photo also refuse a phone screen or
+a printed photo (app/liveness.py); photo files uploaded on the People page are not checked.
 """
 
 import asyncio
@@ -38,6 +41,7 @@ from api.routes.people import _enroll_lock, get_or_404
 from api.schemas import OptionalReason
 from api.workers import CameraBusy
 from app import config, enroll_guide, enrollment
+from app.liveness import LivenessUnavailable
 from app.workers import WorkerError
 
 router = APIRouter(tags=["enrollment"], responses=auth.PROTECTED_RESPONSES)
@@ -64,6 +68,8 @@ class FrameCheck(BaseModel):
     score: float | None = Field(description="photo quality 0-100")
     box: list[float] | None = Field(description="the face: [x1, y1, x2, y2] as fractions of the frame")
     guide: list[float] = Field(description="the guide box the face must be in, as fractions of the frame")
+    liveness: float | None = Field(None, description="live score 0-1 (below LIVENESS_THRESHOLD = a photo or a "
+                                                     "screen); null when not checked")
 
 
 class PhotoIn(BaseModel):
@@ -168,6 +174,7 @@ class CameraCheck(BaseModel):
     score: float | None
     box: list[float] | None
     guide: list[float]
+    liveness: float | None = None
     connected: bool = Field(description="frames are arriving")
     width: int | None = Field(description="the enrollment window at full resolution")
     height: int | None
@@ -277,6 +284,18 @@ def session_of(request: Request, user: CurrentUser, session_id: str):
     return session
 
 
+def liveness_checker(request: Request):
+    """The liveness checker while LIVENESS_ENABLED (loaded, and downloaded if needed, on first use), else None.
+    503 if it's on but can't run: the wizard never takes photos without it."""
+    config.refresh_settings()
+    if not config.LIVENESS_ENABLED:
+        return None
+    try:
+        return request.app.state.liveness()
+    except LivenessUnavailable as e:
+        raise HTTPException(503, f"The liveness check can't run: {e}.") from None
+
+
 def frame_check(img, result) -> dict:
     """The FrameCheck fields for one evaluated image (boxes as fractions of it)."""
     h, w = img.shape[:2]
@@ -287,7 +306,7 @@ def frame_check(img, result) -> dict:
         pitch=None if result.pitch is None else round(result.pitch, 1),
         face_px=q.face_px if q and q.detection is not None else None, score=q.score if q else None,
         box=fractions(result.face_box, w, h) if result.face_box is not None else None,
-        guide=fractions(enroll_guide.guide_box(img.shape), w, h))
+        guide=fractions(enroll_guide.guide_box(img.shape), w, h), liveness=result.liveness)
 
 
 async def evaluate_window(request: Request, session, step):
@@ -297,10 +316,11 @@ async def evaluate_window(request: Request, session, step):
         return None
     img = window(got[1])
     detector, _recognizer = await run_in_threadpool(request.app.state.face_models)
+    checker = await run_in_threadpool(liveness_checker, request)
 
     def run():
         with _enroll_lock:
-            return enroll_guide.evaluate(img, step, detector)
+            return enroll_guide.evaluate(img, step, detector, checker)
 
     return img, await run_in_threadpool(run)
 
@@ -396,10 +416,11 @@ async def check_frame(request: Request, step: str = Query("front", description="
     s = step_of(step)
     img = decode(await request.body())
     detector, _recognizer = await run_in_threadpool(request.app.state.face_models)
+    checker = await run_in_threadpool(liveness_checker, request)
 
     def run():
         with _enroll_lock:
-            return enroll_guide.evaluate(img, s, detector)
+            return enroll_guide.evaluate(img, s, detector, checker)
 
     return FrameCheck(**frame_check(img, await run_in_threadpool(run)))
 
@@ -407,12 +428,13 @@ async def check_frame(request: Request, step: str = Query("front", description="
 def captures(request: Request, photos: list[PhotoIn], code: str):
     """(session with the usable photos, per-photo review rows) — final_check per step, like the dashboard."""
     detector, recognizer = request.app.state.face_models()
+    checker = liveness_checker(request)
     session = enroll_guide.GuidedSession(code)
     rows = []
     with _enroll_lock:
         for photo in photos:
             s = step_of(photo.step)
-            cap, problem = enroll_guide.capture_photo(decode_b64(photo.image), s, detector, recognizer)
+            cap, problem = enroll_guide.capture_photo(decode_b64(photo.image), s, detector, recognizer, checker)
             if cap is not None:
                 session.accept(cap)
             q = cap.quality if cap else None

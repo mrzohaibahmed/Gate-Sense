@@ -40,6 +40,14 @@ def main() -> int:
     print(f"Model loaded in {time.perf_counter() - t0:.1f}s: {sorted(fa.models)}")
     print(f"Providers in use: {providers_in_use()}")
 
+    from app import liveness
+
+    bad = liveness.problems()
+    state = "OK, SHA-256 verified" if not bad else ", ".join(f"{n} {why}" for n, why in bad.items())
+    print(f"Liveness models ({'on' if config.LIVENESS_ENABLED else 'OFF'}): {state} in {config.LIVENESS_MODEL_DIR}")
+    if bad:
+        print("  run scripts\\get_models.py (they also download on a camera's first start)")
+
     source = config.CAMERAS[0]["source"]
     print(f"\nOpening camera {source!r}...")
     backend = cv2.CAP_DSHOW if isinstance(source, int) and sys.platform == "win32" else cv2.CAP_ANY

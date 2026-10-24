@@ -1,5 +1,6 @@
 """recognize.py's Pipeline reports every decision to the live view: skip, unknown (below threshold / low margin),
-match with vote count, event and cool-down. Uses the fake detector and controlled embeddings.
+match with vote count, event and cool-down; liveness (spoof skips, events wait for live frames). Uses the fake
+detector and liveness and controlled embeddings.
 Also: detection on the FRAME_WIDTH copy, quality/embedding/snapshot on the full frame, and a worker run on
 a 1920x1080 clip."""
 
@@ -16,7 +17,8 @@ from app.attendance import Cooldown
 from app.detector import Detection
 from app.gallery import Gallery
 from app.live import LiveWriter
-from tests.fakes import FRONTAL_112, FakeDetector, photo
+from app.tracker import TrackState
+from tests.fakes import FRONTAL_112, FakeDetector, FakeLiveness, photo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import recognize  # noqa: E402
@@ -45,6 +47,11 @@ class StubRecorder:
 
     def __init__(self):
         self.cooldown = Cooldown(300)
+        self.spoofs = []
+
+    def save_spoof(self, now, track_id, score, image):
+        self.spoofs.append((track_id, score, image.shape))
+        return f"snapshots/2026-10-20/spoof/{track_id}.jpg"
 
     def record(self, stamp, now, track, name, votes):
         if not self.cooldown.allow(name, "entrance", now):
@@ -52,10 +59,10 @@ class StubRecorder:
         return "event", f"IN saved (votes {votes})"
 
 
-def run(vector, kind="good", frames=4, pipeline=None, start=0.0):
+def run(vector, kind="good", frames=4, pipeline=None, start=0.0, liveness=None):
     gallery = Gallery.from_people({"waqas": [unit(0)], "ali": [unit(1)]})
     p = pipeline or recognize.Pipeline(gallery, FakeDetector(), FixedRecognizer(vector), StubRecorder(),
-                                       LiveWriter("entrance"))
+                                       LiveWriter("entrance"), liveness=liveness)
     p.recognizer = FixedRecognizer(vector)
     t0 = datetime(2026, 10, 20, 9, 0)
     for i in range(frames):
@@ -226,6 +233,8 @@ def test_worker_run_on_a_1080p_clip(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(recognize, "Detector", lambda: detector)
     monkeypatch.setattr(recognize, "Recognizer", lambda: recognizer)
     monkeypatch.setattr(recognize, "providers_in_use", lambda: {"detection": ["CPUExecutionProvider"]})
+    checker = FakeLiveness(0.97)
+    monkeypatch.setattr(recognize, "Liveness", lambda: checker)
 
     cam = {"name": "gate", "source": str(clip), "direction": "IN"}
     args = argparse.Namespace(no_db=False, no_window=True)
@@ -238,10 +247,14 @@ def test_worker_run_on_a_1080p_clip(tmp_path, monkeypatch, capsys):
     assert detector.sizes == [(360, 640)] * 5
     assert {img.shape for img, _ in recognizer.calls} == {(1080, 1920, 3)}
     assert all(np.allclose(det.bbox, [600, 300, 750, 450]) for _, det in recognizer.calls)
-    kinds = [(d["kind"], d["face_px"]) for d in live.decisions]
-    assert kinds[:4] == [("match", 150), ("match", 150), ("match", 150), ("event", None)]
+    # The liveness check also gets the full-resolution frame and the face in camera pixels, before each embedding.
+    assert len(checker.calls) == 3 and {shape for shape, _ in checker.calls} == {(1080, 1920, 3)}
+    assert all(np.allclose(bbox, [600, 300, 750, 450]) for _, bbox in checker.calls)
+    kinds = [(d["kind"], d["face_px"], d["liveness"]) for d in live.decisions]
+    assert kinds[:4] == [("match", 150, 0.97), ("match", 150, 0.97), ("match", 150, 0.97), ("event", None, None)]
     out = capsys.readouterr().out
     assert "frame size 1920x1080: detection at 640x360 (scale 3.00)" in out
+    assert "Liveness on: live score >= 0.8, 3 live frames per track" in out
     assert "too small" not in out
 
     conn = db.connect()
@@ -250,3 +263,111 @@ def test_worker_run_on_a_1080p_clip(tmp_path, monkeypatch, capsys):
     assert [(e["employee_code"], e["direction"]) for e in events] == [("waqas", "IN")]
     snap = cv2.imread(str(config.DATA_DIR / events[0]["snapshot_path"]))
     assert max(snap.shape[:2]) == config.SNAPSHOT_SIZE  # cropped from the 1920 px frame
+
+
+# --- Liveness (anti-spoofing) ----------------------------------------------------------------------------------
+
+
+def test_spoof_frames_never_vote(capsys):
+    """A phone or a photo: every frame is skipped as a spoof, nothing is embedded or recorded, one review snapshot
+    and one warning for the track."""
+    p, decisions = run(unit(0), frames=6, liveness=FakeLiveness(0.12))
+    assert decisions == [("skip", None, "spoof (0.12)")] * 6
+    assert [d["liveness"] for d in p.live.decisions] == [0.12] * 6 and p.live.decisions[0]["face_px"] == 200
+    track = next(iter(p.tracks.values()))
+    assert track.samples == [] and track.decided is None and track.spoof_frames == 6
+    assert p.recorder.spoofs == [(track.track_id, 0.12, (320, 320, 3))]  # once per track, with the background
+    out = capsys.readouterr().out
+    assert out.count("WARNING: track") == 1 and "looks like a phone screen or a printed photo" in out
+    assert "snapshots/2026-10-20/spoof/" in out and out.count("spoof (live 0.120 < 0.8)") == 6
+    assert p.stats["skip: spoof"] == 6
+
+
+def test_an_event_needs_three_live_frames():
+    """Real frames among spoofs: only the live ones vote, and the event comes with the third live one."""
+    p, decisions = run(unit(0), frames=5, liveness=FakeLiveness(0.95, 0.30, 0.91, 0.40, 0.88))
+    assert decisions == [
+        ("match", "waqas", "vote 1/3, live 1/3"),
+        ("skip", None, "spoof (0.30)"),
+        ("match", "waqas", "vote 2/3, live 2/3, 1 spoof"),
+        ("skip", None, "spoof (0.40)"),
+        ("match", "waqas", "vote 3/3, live 3/3, 2 spoof"),
+        ("event", "waqas", "IN saved (votes 3)"),
+    ]
+
+
+def test_a_won_vote_waits_for_live_frames(monkeypatch, capsys):
+    """VOTE_MIN_AGREE 1, one kept frame: the vote is won at once, but the event waits for LIVENESS_MIN_FRAMES live
+    frames, which are checked even though the track wants no more embeddings."""
+    monkeypatch.setattr(config, "VOTE_MIN_AGREE", 1)
+    monkeypatch.setattr(TrackState.vote, "__defaults__", (1,))  # its defaults are read when it's imported
+    monkeypatch.setattr(TrackState.wants, "__defaults__", (1,))
+    checker = FakeLiveness(0.9)
+    gallery = Gallery.from_people({"waqas": [unit(0)], "ali": [unit(1)]})
+    recognizer = RecordingRecognizer(unit(0))
+    p = recognize.Pipeline(gallery, FakeDetector(), recognizer, StubRecorder(), LiveWriter("entrance"),
+                           liveness=checker)
+    when = datetime(2026, 10, 20, 9, 0)
+    for i in range(2):
+        p.process(photo("good", seed=i), i * 0.125, when, f"t={i}")
+    assert [d["kind"] for d in p.live.decisions] == ["match"]  # vote won, no event yet
+    assert "vote won, waiting for liveness (live 1/3)" in capsys.readouterr().out
+    p.process(photo("good", seed=2), 0.25, when, "t=2")
+    assert [d["kind"] for d in p.live.decisions] == ["match", "event"]
+    assert len(recognizer.calls) == 1 and len(checker.calls) == 3
+
+
+def test_a_track_that_leaves_reports_its_liveness():
+    p, _ = run(unit(0), frames=2, liveness=FakeLiveness(0.95, 0.1))
+    run(unit(0), kind="none", frames=20, pipeline=p, start=1)  # the face is gone: the track closes
+    closed = p.live.decisions[-1]
+    assert closed["kind"] == "closed" and closed["detail"] == "left without a decision (waqas 1; live 1/3, 1 spoof)"
+
+
+def test_without_liveness_nothing_changes():
+    p, decisions = run(unit(0))
+    assert decisions[2] == ("match", "waqas", "vote 3/3") and decisions[3][0] == "event"
+    assert all(d["liveness"] is None for d in p.live.decisions) and not p.liveness_ms
+
+
+def test_liveness_time_is_measured():
+    p, _ = run(unit(0), frames=3, liveness=FakeLiveness(0.95))
+    assert p.ms_per_liveness() == 1.0 and "liveness 1.0 ms/face" in p.stats_line()
+
+
+def test_a_spoof_snapshot_is_saved_for_review():
+    """The real Recorder writes it under snapshots/<day>/spoof/ (removed with its day by the nightly cleanup)."""
+    recorder = recognize.Recorder({"name": "gate", "direction": "IN"}, 0, use_db=True)
+    try:
+        rel = recorder.save_spoof(datetime(2026, 10, 20, 9, 5, 7), 12, 0.123, photo("good"))
+    finally:
+        recorder.conn.close()
+    assert rel == "snapshots/2026-10-20/spoof/090507_track12_gate_0.12.jpg"
+    assert cv2.imread(str(config.DATA_DIR / rel)).shape == (320, 320, 3)
+    assert recognize.Recorder({"name": "gate", "direction": "IN"}, 0, use_db=False).save_spoof(
+        datetime(2026, 10, 20), 1, 0.1, photo("good")) is None  # --no-db writes nothing
+
+
+def test_worker_refuses_to_run_without_the_liveness_models(tmp_path, monkeypatch, capsys):
+    """Liveness on but its models can't be had (no download in tests): the worker stops instead of recording
+    without it."""
+    Gallery.from_people({"waqas": [unit(0)]}).save()
+    monkeypatch.setattr(recognize, "Detector", FakeDetector)
+    monkeypatch.setattr(recognize, "Recognizer", lambda: FixedRecognizer(unit(0)))
+    monkeypatch.setattr(recognize, "providers_in_use", lambda: {})
+    cam = {"name": "gate", "source": str(tmp_path / "clip.avi"), "direction": "IN"}
+    args = argparse.Namespace(no_db=True, no_window=True)
+    runtime, live = workers.WorkerRuntime("gate", cam["source"]), LiveWriter("gate")
+    try:
+        reason = recognize.run(args, cam, cam["source"], runtime, live)
+    finally:
+        runtime.close("test")
+    assert reason == "liveness model missing" and reason in recognize.FAILURES
+    assert "the liveness check is on (LIVENESS_ENABLED) but can't run" in capsys.readouterr().out
+    monkeypatch.setattr(config, "LIVENESS_ENABLED", False)  # off: it runs (and says so)
+    runtime = workers.WorkerRuntime("gate", cam["source"])
+    try:
+        assert recognize.run(args, cam, cam["source"], runtime, live) == "video file not found"
+    finally:
+        runtime.close("test")
+    assert "Liveness OFF" in capsys.readouterr().out

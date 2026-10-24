@@ -318,12 +318,16 @@ export function DecisionsTable({ decisions }: { decisions: Decision[] }) {
             <Th className="text-right">Second</Th>
             <Th className="text-right">Margin</Th>
             <Th className="text-right">Face px</Th>
+            <Th className="text-right">Live</Th>
             <Th>Detail</Th>
           </tr>
         </thead>
         <tbody>
           {[...decisions].reverse().map((d, i) => {
-            const kind = KIND[d.kind] ?? { label: d.kind, tone: "neutral" as const };
+            const spoof = d.kind === "skip" && d.detail.startsWith("spoof");
+            const kind = spoof
+              ? { label: "skip", tone: "error" as const }
+              : (KIND[d.kind] ?? { label: d.kind, tone: "neutral" as const });
             return (
               <tr key={`${d.time}-${d.track}-${i}`}>
                 <Td className="whitespace-nowrap">{d.time}</Td>
@@ -338,7 +342,8 @@ export function DecisionsTable({ decisions }: { decisions: Decision[] }) {
                   {num(d.margin)}
                 </Td>
                 <Td className="text-right">{d.face_px ?? ""}</Td>
-                <Td className="text-muted-foreground">{d.detail}</Td>
+                <Td className={cn("text-right", spoof && "text-destructive")}>{num(d.liveness, 2)}</Td>
+                <Td className={spoof ? "text-destructive" : "text-muted-foreground"}>{d.detail}</Td>
               </tr>
             );
           })}

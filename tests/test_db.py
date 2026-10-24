@@ -4,7 +4,7 @@ from datetime import date, datetime
 import pytest
 
 from app import db
-from app.attendance import MISSING_EXIT, PRESENT
+from app.attendance import COMPLETE, MISSING_EXIT
 
 
 @pytest.fixture
@@ -16,7 +16,8 @@ def conn(tmp_path):
 
 def test_tables_created(conn):
     names = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert {"persons", "cameras", "attendance_events", "daily_attendance"} <= names
+    assert {"persons", "cameras", "attendance_events"} <= names
+    assert "daily_attendance" not in names  # removed in schema step 4: summaries are computed from the events
 
 
 def test_sync_persons_deactivates_removed(conn):
@@ -93,11 +94,11 @@ def test_manual_event_fixes_missing_exit(setup):
     conn, pid, cam_in, cam_out = setup
     day = date(2026, 10, 20)
     db.add_event(conn, pid, cam_in, datetime(2026, 10, 20, 9, 0), 0.8, None)
-    assert db.refresh_daily(conn, day)[0].status == MISSING_EXIT
+    assert db.day_summaries(conn, day)[0][0].status == MISSING_EXIT
 
     eid = db.add_manual_event(conn, pid, cam_out, datetime(2026, 10, 20, 17, 0), "forgot exit camera", "admin")
-    s = db.refresh_daily(conn, day)[0]
-    assert s.status == PRESENT and s.worked_hours == 8.0
+    s = db.day_summaries(conn, day)[0][0]
+    assert s.status == COMPLETE and s.worked_hours == 8.0
     row = conn.execute("SELECT manual, match_score FROM attendance_events WHERE id = ?", (eid,)).fetchone()
     assert row["manual"] == 1 and row["match_score"] == 0
     [entry] = audit(conn)
@@ -111,10 +112,10 @@ def test_void_and_restore_event(setup):
     db.add_event(conn, pid, cam_in, datetime(2026, 10, 20, 9, 0), 0.8, None)
     wrong = db.add_event(conn, pid, cam_out, datetime(2026, 10, 20, 9, 1), 0.5, None)
     db.set_event_voided(conn, wrong, True, "was someone else", "admin")
-    assert db.refresh_daily(conn, day)[0].status == MISSING_EXIT
+    assert db.day_summaries(conn, day)[0][0].status == MISSING_EXIT
     assert len(db.events_on(conn, day)) == 2  # still listed for the corrections page
     db.set_event_voided(conn, wrong, False, "it was him after all", "admin")
-    assert db.refresh_daily(conn, day)[0].status == PRESENT
+    assert db.day_summaries(conn, day)[0][0].status == COMPLETE
     assert [e["action"] for e in audit(conn)] == ["restore_event", "void_event"]
 
 
@@ -141,7 +142,7 @@ def test_voided_events_do_not_seed_cooldown(setup):
     conn, pid, cam_in, _ = setup
     eid = db.add_event(conn, pid, cam_in, datetime(2026, 10, 20, 9, 0), 0.8, None)
     db.set_event_voided(conn, eid, True, "wrong person", "admin")
-    assert db.last_event_times(conn, "entrance") == {}
+    assert db.last_event_times(conn, date(2026, 10, 20)) == {}
 
 
 def test_camera_passwords_never_stored(conn):
@@ -160,7 +161,7 @@ def test_ensure_cameras_keeps_existing_source(conn):
     assert cams == {"entrance": "0", "exit": "clip.mp4"}
 
 
-def test_events_to_daily_attendance(conn):
+def test_events_to_day_summaries(conn):
     db.sync_persons(conn, ["ali", "waqas"])
     ids = db.person_ids(conn)
     cam_in = db.upsert_camera(conn, "entrance", 0, "IN")
@@ -171,24 +172,77 @@ def test_events_to_daily_attendance(conn):
     db.add_event(conn, ids["ali"], cam_in, datetime(2026, 10, 20, 9, 15), 0.6, None)
     db.add_event(conn, ids["ali"], cam_out, datetime(2026, 10, 19, 18, 0), 0.6, None)  # yesterday: ignored
 
-    summaries = {s.person: s for s in db.refresh_daily(conn, day)}
-    assert summaries["waqas"].status == PRESENT
-    assert summaries["waqas"].worked_hours == 8.5
+    summaries = {s.person: s for s in db.day_summaries(conn, day)[0]}
+    assert summaries["waqas"].status == COMPLETE and summaries["waqas"].worked_hours == 8.5
+    assert summaries["waqas"].first_in == datetime(2026, 10, 20, 9, 0)
     assert summaries["ali"].status == MISSING_EXIT
 
-    row = conn.execute(
-        "SELECT * FROM daily_attendance WHERE person_id = ? AND date = ?", (ids["waqas"], "2026-10-20")
-    ).fetchone()
-    assert row["first_in"] == "2026-10-20 09:00:00" and row["last_out"] == "2026-10-20 17:30:00"
 
-    db.refresh_daily(conn, day)  # re-running updates rows instead of duplicating them
-    assert conn.execute("SELECT COUNT(*) FROM daily_attendance").fetchone()[0] == 2
-
-
-def test_last_event_times_per_camera(conn):
+def test_last_event_times_per_direction_of_one_day(conn):
     db.sync_persons(conn, ["waqas"])
-    cam = db.upsert_camera(conn, "entrance", 0, "IN")
-    db.add_event(conn, db.person_ids(conn)["waqas"], cam, datetime(2026, 10, 20, 9, 0), 0.8, None)
-    db.add_event(conn, db.person_ids(conn)["waqas"], cam, datetime(2026, 10, 20, 9, 7), 0.8, None)
-    assert db.last_event_times(conn, "entrance") == {("waqas", "entrance"): datetime(2026, 10, 20, 9, 7)}
-    assert db.last_event_times(conn, "exit") == {}
+    pid = db.person_ids(conn)["waqas"]
+    gate1, gate2 = db.upsert_camera(conn, "gate1", 0, "IN"), db.upsert_camera(conn, "gate2", 1, "IN")
+    out = db.upsert_camera(conn, "exit", 2, "OUT")
+    db.add_event(conn, pid, gate1, datetime(2026, 10, 20, 9, 0), 0.8, None)
+    db.add_event(conn, pid, gate2, datetime(2026, 10, 20, 9, 7), 0.8, None)
+    db.add_event(conn, pid, out, datetime(2026, 10, 20, 17, 0), 0.8, None)
+    db.add_event(conn, pid, gate1, datetime(2026, 10, 19, 23, 59), 0.8, None)  # yesterday: not today's cool-down
+    assert db.last_event_times(conn, date(2026, 10, 20)) == {
+        ("waqas", "IN"): datetime(2026, 10, 20, 9, 7), ("waqas", "OUT"): datetime(2026, 10, 20, 17, 0)}
+    assert db.last_event_times(conn, date(2026, 10, 21)) == {}
+
+
+@pytest.fixture
+def gates(conn):
+    db.sync_persons(conn, ["waqas"])
+    pid = db.person_ids(conn)["waqas"]
+    return (pid, db.upsert_camera(conn, "gate1", 0, "IN"), db.upsert_camera(conn, "gate2", 1, "IN"),
+            db.upsert_camera(conn, "exit", 2, "OUT"))
+
+
+def test_camera_event_cooldown_across_cameras_of_one_direction(conn, gates):
+    pid, gate1, gate2, out = gates
+    t = datetime(2026, 10, 20, 8, 0)
+    first, previous = db.add_camera_event(conn, pid, gate1, t, 0.8, None, 300)
+    assert first and previous is None
+    assert db.add_camera_event(conn, pid, gate2, t.replace(second=20), 0.8, None, 300) == (None, t)  # other IN camera
+    assert db.add_camera_event(conn, pid, out, t.replace(minute=1), 0.8, None, 300)[0]  # OUT: another direction
+    later, previous = db.add_camera_event(conn, pid, gate2, t.replace(minute=5), 0.8, None, 300)
+    assert later and previous == t  # 5 minutes after the recorded IN
+    assert conn.execute("SELECT count(*) FROM attendance_events").fetchone()[0] == 3
+
+
+def test_camera_event_cooldown_resets_at_midnight_and_ignores_voided(conn, gates):
+    pid, gate1, gate2, _ = gates
+    late = datetime(2026, 10, 20, 23, 58)
+    voided = db.add_camera_event(conn, pid, gate1, late, 0.8, None, 300)[0]
+    assert db.add_camera_event(conn, pid, gate2, datetime(2026, 10, 21, 0, 2), 0.8, None, 300)[0]  # a new day
+    db.set_event_voided(conn, voided, True, "someone else", "admin")
+    assert db.add_camera_event(conn, pid, gate2, datetime(2026, 10, 20, 23, 59), 0.8, None, 300)[0]
+
+
+def test_two_workers_seeing_one_person_at_once_record_one_event(tmp_path):
+    """Two worker processes (two IN cameras) write at the same moment: BEGIN IMMEDIATE makes the second one see the
+    first one's event."""
+    import threading
+
+    path = tmp_path / "race.db"
+    setup = db.connect(path)
+    db.sync_persons(setup, ["waqas"])
+    pid = db.person_ids(setup)["waqas"]
+    cams = [db.upsert_camera(setup, f"gate{i}", i, "IN") for i in range(4)]
+    setup.close()
+    results, barrier = [], threading.Barrier(len(cams))
+
+    def worker(cam):
+        c = db.connect(path)
+        barrier.wait()
+        results.append(db.add_camera_event(c, pid, cam, datetime(2026, 10, 20, 8, 0, 1), 0.8, None, 300)[0])
+        c.close()
+
+    threads = [threading.Thread(target=worker, args=(cam,)) for cam in cams]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sum(r is not None for r in results) == 1

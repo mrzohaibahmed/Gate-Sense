@@ -128,13 +128,16 @@ class LiveWriter:
         self.write_info(None, None)
 
     def decision(self, kind: str, track: int | None = None, name: str | None = None, score: float | None = None,
-                 second: float | None = None, detail: str = "", face_px: int | None = None) -> None:
-        """kind: match, unknown, skip, event, cool-down, not saved, closed. face_px: face width in camera pixels."""
+                 second: float | None = None, detail: str = "", face_px: int | None = None,
+                 liveness: float | None = None) -> None:
+        """kind: match, unknown, skip, event, cool-down, not saved, closed. face_px: face width in camera pixels.
+        liveness: the frame's live score (0-1) when it was checked; a spoof is a skip with detail "spoof (score)"."""
         self.decisions.append({
             "time": datetime.now().strftime("%H:%M:%S"), "kind": kind, "track": track, "name": name,
             "score": None if score is None else round(float(score), 3),
             "second": None if second is None else round(float(second), 3),
             "face_px": None if face_px is None else int(face_px), "detail": detail,
+            "liveness": None if liveness is None else round(float(liveness), 3),
         })
 
     def watched(self) -> bool:

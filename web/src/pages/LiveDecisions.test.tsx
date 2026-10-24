@@ -18,7 +18,8 @@ const d = (over: Partial<Decision>): Decision => ({
   second: 0.42,
   margin: 0.29,
   face_px: 150,
-  detail: "vote 1/3",
+  liveness: 0.97,
+  detail: "vote 1/3, live 1/3",
   ...over,
 });
 
@@ -59,7 +60,36 @@ describe("DecisionsTable", () => {
     expect(match.getByText("0.420")).toBeInTheDocument();
     expect(match.getByText("0.290")).toBeInTheDocument();
     expect(match.getByText("150")).toBeInTheDocument();
+    expect(match.getByText("0.97")).toBeInTheDocument(); // the frame's live score
     expect(within(rows[1]!).getByText("0.030").className).toContain("text-warn"); // a small margin stands out
+  });
+
+  it("shows a spoof as a skip with its live score, in red", () => {
+    render(
+      <DecisionsTable
+        decisions={[
+          d({
+            kind: "skip",
+            name: null,
+            score: null,
+            second: null,
+            margin: null,
+            face_px: 140,
+            liveness: 0.12,
+            detail: "spoof (0.12)",
+          }),
+          d({ time: "08:05:02", kind: "skip", liveness: null, detail: "blurry (var 20 < 60)" }),
+        ]}
+      />,
+    );
+    const [blurry, spoof] = within(screen.getByRole("table", { name: "Decisions" }))
+      .getAllByRole("row")
+      .slice(1);
+    expect(within(spoof!).getByText("skip").className).toContain("text-destructive");
+    expect(within(spoof!).getByText("0.12").className).toContain("text-destructive");
+    expect(within(spoof!).getByText("spoof (0.12)").className).toContain("text-destructive");
+    expect(within(blurry!).getByText("skip").className).not.toContain("text-destructive");
+    expect(within(blurry!).getAllByRole("cell")[8]!.textContent).toBe(""); // not checked: no live score
   });
 
   it("says when nothing was decided yet", () => {

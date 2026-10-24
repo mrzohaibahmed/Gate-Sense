@@ -5,6 +5,9 @@ track only the best BEST_FRAMES_PER_TRACK frames are embedded and kept; a
 frame is embedded only if the track has room or the frame beats its worst
 kept frame. The track is decided as soon as one person wins VOTE_MIN_AGREE of
 the kept frames, and after that it is no longer embedded at all.
+
+With the liveness check on, only frames that pass it are embedded (a spoof never votes), and a won vote is
+recorded only once LIVENESS_MIN_FRAMES of the track's frames have passed it.
 """
 
 import warnings
@@ -64,6 +67,10 @@ class TrackState:
     last_seen: float = 0.0
     samples: list[Sample] = field(default_factory=list)
     decided: str | None = None  # person name once the vote is won
+    live_frames: int = 0  # frames that passed the liveness check (only those can vote)
+    spoof_frames: int = 0  # frames refused as a phone screen or printed photo
+    spoof_snapshot: str | None = None  # the review snapshot of its first spoof frame ("" = couldn't be saved)
+    waiting_logged: bool = False  # "vote won, waiting for liveness" was logged
 
     def wants(self, quality: float, keep: int = config.BEST_FRAMES_PER_TRACK) -> bool:
         """Is a frame of this quality worth embedding?"""
@@ -92,3 +99,7 @@ class TrackState:
     def votes_summary(self) -> str:
         counts = Counter(s.match.name or "unknown" for s in self.samples)
         return ", ".join(f"{name} {n}" for name, n in counts.most_common())
+
+    def liveness_summary(self, need: int) -> str:
+        spoof = f", {self.spoof_frames} spoof" if self.spoof_frames else ""
+        return f"live {min(self.live_frames, need)}/{need}{spoof}"

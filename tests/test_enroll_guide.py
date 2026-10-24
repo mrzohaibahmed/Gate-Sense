@@ -9,7 +9,7 @@ import pytest
 from app import config, db, enroll_guide, enroll_quality, enrollment
 from app.detector import Detection
 from app.enroll_guide import GuidedSession, evaluate, guide_box
-from tests.fakes import FRONTAL_112, FakeRecognizer
+from tests.fakes import FRONTAL_112, FakeLiveness, FakeRecognizer
 
 STEPS = {s.key: s for s in enroll_guide.steps()}
 
@@ -217,3 +217,31 @@ def test_finish_saves_photos_with_steps(conn):
     enrollment.enroll_one("e1", FaceAt(), FakeRecognizer(), conn)  # a later rebuild keeps the steps
     assert enrollment.read_sidecar(config.KNOWN_DIR / "e1")["2.jpg"]["step"] == "left"
     assert json.loads((config.KNOWN_DIR / "e1" / "photos.json").read_text())["photos"]["1.jpg"]["ok"]
+
+
+# --- Liveness ----------------------------------------------------------------------------------------------------
+
+
+def test_a_spoof_is_refused_in_the_guide():
+    spoof = FakeLiveness(0.15)
+    result = evaluate(frame(), STEPS["front"], FaceAt(), spoof)
+    assert (result.state, result.hint, result.liveness) == ("bad", "Use a real face, not a photo or a screen", 0.15)
+    assert spoof.calls[0][0] == (480, 640, 3)  # the whole frame: the background gives a screen away
+    real = evaluate(frame(), STEPS["front"], FaceAt(), FakeLiveness(0.97))
+    assert (result.quality.ok, real.state, real.liveness) == (True, "good", 0.97)
+    assert evaluate(frame(), STEPS["front"], FaceAt()).liveness is None  # no checker: as before
+
+
+def test_liveness_runs_only_on_an_otherwise_good_frame():
+    checker = FakeLiveness(0.15)
+    assert evaluate(frame(), STEPS["left"], FaceAt(yaw=0), checker).hint == "Turn a little more left"
+    assert checker.calls == []
+
+
+def test_a_spoof_capture_is_refused():
+    cap, problem = enroll_guide.capture_photo(frame(), STEPS["front"], FaceAt(), FakeRecognizer(), FakeLiveness(0.3))
+    assert cap is None and problem.startswith("This looks like a photo or a screen, not a real face (live score 0.30")
+    cap, problem = enroll_guide.capture_photo(frame(), STEPS["front"], FaceAt(), FakeRecognizer(), FakeLiveness(0.9))
+    assert cap is not None and problem is None
+    _, problem = enroll_guide.final_check(frame(), STEPS["left"], FaceAt(yaw=3), FakeLiveness(0.3))
+    assert "Slightly left" in problem  # the angle is the first thing to fix

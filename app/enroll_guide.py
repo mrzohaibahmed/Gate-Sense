@@ -6,6 +6,10 @@ Yaw convention: InsightFace's yaw on a RAW (not mirrored) camera image is positi
 points to the image's right. In a raw image the person's left is the image's right, so a positive
 yaw means the person turned to THEIR left. All camera frames here are raw (the browser's camera frames
 and OpenCV don't mirror); only the preview the person sees in the wizard is mirrored, like a selfie.
+
+Liveness: with a `liveness` checker (app/liveness.py; the API passes one while LIVENESS_ENABLED), a frame that is
+otherwise good but looks like a phone screen or a printed photo is refused, in the per-frame check and again in
+the final check of each captured photo. Photo files uploaded on the People page don't come through here.
 """
 
 from dataclasses import dataclass, field
@@ -88,14 +92,24 @@ class GuideResult:
     quality: QualityResult | None = None
     yaw: float | None = None  # person's point of view
     pitch: float | None = None
+    liveness: float | None = None  # live score 0-1, when checked
 
     @property
     def face_box(self):
         return None if self.quality is None or self.quality.detection is None else self.quality.detection.bbox
 
 
-def evaluate(frame: np.ndarray, step: Step, detector) -> GuideResult:
-    """What the guide shows for one frame: check_photo() plus position in the box and the step's angles."""
+SPOOF_HINT = "Use a real face, not a photo or a screen"
+
+
+def spoof_reason(score: float) -> str:
+    return (f"This looks like a photo or a screen, not a real face (live score {score:.2f}, needs "
+            f"{config.LIVENESS_THRESHOLD:.2f}). Photograph the person themselves.")
+
+
+def evaluate(frame: np.ndarray, step: Step, detector, liveness=None) -> GuideResult:
+    """What the guide shows for one frame: check_photo() plus position in the box and the step's angles, then (if
+    `liveness` is given) the liveness check on a frame that is otherwise good."""
     q = check_photo(frame, detector)
     if q.code == "faces":
         return GuideResult("bad", "Only one person please", q)
@@ -120,18 +134,30 @@ def evaluate(frame: np.ndarray, step: Step, detector) -> GuideResult:
         return bad("Hold still")
     if not q.ok:
         return bad(q.reason.split(".")[0])
+    if liveness is not None:
+        live = liveness.check(frame, q.detection.bbox)
+        if not live.live:
+            return GuideResult("bad", SPOOF_HINT, q, yaw, pitch, live.score)
+        return GuideResult("good", "Good, hold still", q, yaw, pitch, live.score)
     return GuideResult("good", "Good, hold still", q, yaw, pitch)
 
 
-def final_check(frame: np.ndarray, step: Step, detector) -> tuple[QualityResult, str | None]:
-    """Check a captured full-resolution photo: every enrollment rule plus the step's angle range.
+def final_check(frame: np.ndarray, step: Step, detector, liveness=None) -> tuple[QualityResult, str | None]:
+    """Check a captured full-resolution photo: every enrollment rule plus the step's angle range, then (if
+    `liveness` is given) the liveness check.
 
     Returns (quality, None) when it can be kept, or (quality, plain reason) when not.
     """
     q = check_photo(frame, detector)
     if not q.ok:
         return q, q.reason
-    return q, step_message(step, person_yaw(q.yaw), q.pitch)
+    if problem := step_message(step, person_yaw(q.yaw), q.pitch):
+        return q, problem
+    if liveness is not None:
+        live = liveness.check(frame, q.detection.bbox)
+        if not live.live:
+            return q, spoof_reason(live.score)
+    return q, None
 
 
 # --- Captures, review and finish ---------------------------------------------------------------------------------
@@ -183,9 +209,10 @@ class GuidedSession:
         self.captures.pop(step_key, None)
 
 
-def capture_photo(frame: np.ndarray, step: Step, detector, recognizer) -> tuple[Capture | None, str | None]:
+def capture_photo(frame: np.ndarray, step: Step, detector, recognizer,
+                  liveness=None) -> tuple[Capture | None, str | None]:
     """Final check of a captured frame; (Capture, None) if kept, (None, plain reason) if not."""
-    q, problem = final_check(frame, step, detector)
+    q, problem = final_check(frame, step, detector, liveness)
     if problem:
         return None, problem
     return Capture(step.key, frame, q, recognizer.embed(frame, q.detection)), None

@@ -75,7 +75,7 @@ function Tile({
 
 function Kpis({ o, isToday }: { o: Overview; isToday: boolean }) {
   return (
-    <section aria-label="Key figures" className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+    <section aria-label="Key figures" className="grid grid-cols-2 gap-4 sm:grid-cols-4 xl:grid-cols-7">
       <Tile label="Present / enrolled" value={`${o.present} / ${o.people}`} sub="came in" tone="accent" />
       <Tile
         label="Inside now"
@@ -83,13 +83,15 @@ function Kpis({ o, isToday }: { o: Overview; isToday: boolean }) {
         sub={isToday ? "in, not out yet" : "only for today"}
         tone="inside"
       />
-      <Tile label="Left" value={o.left} sub="in and out" tone="left" />
+      <Tile label="Complete" value={o.complete} sub="in and out" tone="left" />
       <Tile
         label="Missing exit"
         value={o.missing_exit}
         sub={isToday ? "no OUT yet" : "no OUT that day"}
         tone="missing"
       />
+      <Tile label="Missing entry" value={o.missing_entry} sub="OUT without an IN" tone="missing" />
+      <Tile label="Check" value={o.check} sub="last OUT before first IN" tone="missing" />
       <Tile label="Absent" value={o.absent} tone="absent" />
     </section>
   );
@@ -250,7 +252,7 @@ function NeedsAttention({ date, siteId, isToday }: { date: string; siteId: numbe
   });
   // Today a missing exit only means "still inside"; it needs attention once the day is over.
   const items = (rows.data?.items ?? []).filter(
-    (r) => r.status === "missing entry" || (!isToday && r.status === "missing exit"),
+    (r) => r.status === "missing entry" || r.status === "check" || (!isToday && r.status === "missing exit"),
   );
   return (
     <Card>
@@ -266,7 +268,9 @@ function NeedsAttention({ date, siteId, isToday }: { date: string; siteId: numbe
         <div className="h-40" />
       ) : items.length === 0 ? (
         <EmptyState icon={<UserCheck />} title="Nothing to fix">
-          {isToday ? "Missing entries show here; missing exits once the day is over." : "Every IN has its OUT."}
+          {isToday
+            ? "Missing entries and days to check show here; missing exits once the day is over."
+            : "Every IN has its OUT."}
         </EmptyState>
       ) : (
         <div className="max-h-96 overflow-auto">

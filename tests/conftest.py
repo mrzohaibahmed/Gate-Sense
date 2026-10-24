@@ -39,3 +39,13 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "WEB_DIST", tmp_path / "no-web-dist")
     monkeypatch.setattr(config, "MAINTENANCE_CHECK_SECONDS", 3600)
     monkeypatch.setattr(config, "BACKUP_COPY_DIR", None)  # never a real second backup folder
+    # Never the real liveness models, and never a download: tests inject a fake (tests/fakes.py FakeLiveness).
+    from app import liveness
+
+    monkeypatch.setattr(config, "LIVENESS_MODEL_DIR", tmp_path / "models")
+
+    def no_download(url, dest):
+        raise OSError("no downloads in tests")
+
+    monkeypatch.setattr(liveness, "fetch", no_download)
+    liveness.shared.cache_clear()

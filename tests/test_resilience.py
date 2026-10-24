@@ -20,6 +20,7 @@ from api.main import create_app
 from app import config, db, fileutil, live, workers
 from app.gallery import Gallery, Match
 from app.tracker import Sample, TrackState
+from tests.fakes import FakeLiveness
 from tests.test_pipeline import RecordingRecognizer, SmallFaceDetector, full_hd, unit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -130,15 +131,16 @@ def test_a_snapshot_that_cant_be_saved_never_costs_the_event(recorder, monkeypat
 
 
 def test_events_wait_while_the_database_is_locked_then_are_written_in_order(recorder, monkeypatch, capsys):
-    real, locked = db.add_event, [True]
+    real, locked = db.add_camera_event, [True]
 
-    def add_event(*args):
+    def add_camera_event(*args):
         if locked[0]:
             raise sqlite3.OperationalError("database is locked")
         return real(*args)
 
-    monkeypatch.setattr(db, "add_event", add_event)
+    monkeypatch.setattr(db, "add_camera_event", add_camera_event)
     recorder.cooldown.seconds = 0  # the recorder took the cool-down when it was made
+    monkeypatch.setattr(config, "COOLDOWN_SECONDS", 0)  # and the database check reads it at each event
     t0 = datetime(2026, 10, 23, 9)
     assert recorder.record("09:00:00", t0, track(), "waqas", 3) == ("event", "IN waiting for the database (votes 3/3)")
     recorder.record("09:00:05", t0 + timedelta(seconds=5), track(), "waqas", 3)
@@ -155,8 +157,10 @@ def test_events_wait_while_the_database_is_locked_then_are_written_in_order(reco
 
 
 def test_the_waiting_queue_is_bounded(recorder, monkeypatch, capsys):
-    monkeypatch.setattr(db, "add_event", lambda *a: (_ for _ in ()).throw(sqlite3.OperationalError("disk I/O error")))
+    monkeypatch.setattr(db, "add_camera_event",
+                        lambda *a: (_ for _ in ()).throw(sqlite3.OperationalError("disk I/O error")))
     recorder.cooldown.seconds = 0  # the recorder took the cool-down when it was made
+    monkeypatch.setattr(config, "COOLDOWN_SECONDS", 0)  # and the database check reads it at each event
     monkeypatch.setattr(config, "EVENT_QUEUE_MAX", 2)
     for i in range(3):
         recorder.record(f"09:00:0{i}", datetime(2026, 10, 23, 9, 0, i), track(), "waqas", 3)
@@ -209,6 +213,7 @@ def run_worker(tmp_path, monkeypatch, detector, frames: int = 24):
     monkeypatch.setattr(recognize, "Detector", lambda: detector)
     monkeypatch.setattr(recognize, "Recognizer", lambda: RecordingRecognizer(unit(0)))
     monkeypatch.setattr(recognize, "providers_in_use", lambda: {})
+    monkeypatch.setattr(recognize, "Liveness", FakeLiveness)
     runtime, writer = workers.WorkerRuntime("gate", str(source)), live.LiveWriter("gate")
     try:
         reason = recognize.run(argparse.Namespace(no_db=False, no_window=True),

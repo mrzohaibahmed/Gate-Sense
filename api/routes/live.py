@@ -91,7 +91,8 @@ async def live_updates(websocket: WebSocket) -> None:
     - {"type": "attendance_changed", "action", "target", "user", "reason"} after a correction (API or dashboard);
     - admins only (live:decisions): {"type": "decisions", "camera", "id", "decisions": [{"time", "kind" (match,
       unknown, skip, event, cool-down, not saved, closed), "track", "name", "score", "second", "margin", "face_px"
-      (camera pixels), "detail" (vote or skip reason)}]} with a camera's latest decisions whenever they change.
+      (camera pixels), "liveness" (the frame's live score 0-1, null if not checked), "detail" (vote or skip reason,
+      e.g. "spoof (0.12)")}]} with a camera's latest decisions whenever they change.
 
     Refused (policy violation, 1008) without a valid session, without attendance:read, or from another site's page;
     closed with 4401 when the session ends.

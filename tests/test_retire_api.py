@@ -45,8 +45,11 @@ def audit(app, action: str) -> list[dict]:
 
 def test_decision_margin():
     out = decision_out({"time": "09:00:01", "kind": "match", "track": 3, "name": "waqas", "score": 0.712,
-                        "second": 0.42, "face_px": 150, "detail": "vote 1/3"})
-    assert out["margin"] == 0.292 and out["face_px"] == 150
+                        "second": 0.42, "face_px": 150, "detail": "vote 1/3", "liveness": 0.97})
+    assert out["margin"] == 0.292 and out["face_px"] == 150 and out["liveness"] == 0.97
+    spoof = decision_out({"kind": "skip", "detail": "spoof (0.12)", "liveness": 0.12, "face_px": 140})
+    assert (spoof["detail"], spoof["liveness"]) == ("spoof (0.12)", 0.12)
+    assert decision_out({"kind": "skip", "detail": "too small (60px < 80)"})["liveness"] is None
     assert decision_out({"kind": "skip", "detail": "too small (60px < 80)"})["margin"] is None
 
 
@@ -257,7 +260,8 @@ def test_monthly_totals_match_the_daily_rows(app):
         hours = [d["worked_hours"] for d in mine if d["worked_hours"] is not None]
         assert total["days"] == len(mine) == 7
         assert total["total_hours"] == round(sum(hours), 2)
-        assert total["days_present"] == sum(d["status"] in ("present", "missing exit") for d in mine)
+        assert total["days_present"] == sum(d["status"] in ("complete", "missing exit", "check") for d in mine)
+        assert total["days_check"] == sum(d["check"] for d in mine)
         assert total["days_missing_exit"] == sum(d["missing_out"] for d in mine)
         assert total["days_absent"] == sum(d["status"] == "absent" for d in mine)
         assert total["avg_hours"] == (round(total["total_hours"] / len(hours), 2) if hours else None)

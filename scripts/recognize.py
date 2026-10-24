@@ -2,14 +2,20 @@
 
 Run one instance per camera from app/config.py CAMERAS. Each frame (about
 PROCESS_FPS per second) goes through: detect -> ByteTrack -> quality filter ->
-embed the track's best frames -> match -> vote. Detection and tracking run on
+liveness -> embed the track's best frames -> match -> vote. Detection and tracking run on
 a FRAME_WIDTH px copy; the faces are then scaled back to the camera's pixels,
-so the quality filter (MIN_FACE_PX is camera pixels), the ArcFace alignment
+so the quality filter (MIN_FACE_PX is camera pixels), the liveness crops, the ArcFace alignment
 and the snapshot use the full-resolution frame. When a
 track's vote is won, an event is written to data/attendance.db with a face
 snapshot in data/snapshots/, unless the person is still in the cool-down for
 this camera. Every match decision is logged (time, track, name or unknown,
 score, second-best score) for threshold tuning.
+
+Liveness (LIVENESS_ENABLED, app/liveness.py): a face that looks like a phone
+screen or a printed photo (live score below LIVENESS_THRESHOLD) is skipped
+("skip: spoof (score)"), never votes, is logged with a warning and gets one
+review snapshot per track in data/snapshots/<day>/spoof/; a won vote is recorded
+only after LIVENESS_MIN_FRAMES of the track's frames passed.
 
 The worker reports its status in data/run/<camera>.json and exits cleanly when
 data/run/<camera>.stop appears (see app/workers.py), so the dashboard's
@@ -44,7 +50,7 @@ import sys
 import time
 import traceback
 from collections import Counter, deque
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -61,12 +67,14 @@ from app.fileutil import ErrorLog  # noqa: E402
 from app.gallery import LOAD_ERRORS, Gallery, Match  # noqa: E402
 from app.images import crop_face, write_image  # noqa: E402
 from app.live import CameraHealth, LiveWriter  # noqa: E402
+from app.liveness import SOURCE as LIVENESS_SOURCE, Liveness, LivenessUnavailable, context_crop  # noqa: E402
 from app.models import providers_in_use  # noqa: E402
 from app.recognizer import Recognizer  # noqa: E402
 from app.tracker import FaceTracker, Sample, TrackState  # noqa: E402
 
-GREEN, RED, GRAY, YELLOW = (0, 200, 0), (0, 0, 255), (160, 160, 160), (0, 220, 220)
-FAILURES = {"no gallery", "could not open source", "video file not found", "lost the camera"}
+GREEN, RED, GRAY, YELLOW, ORANGE = (0, 200, 0), (0, 0, 255), (160, 160, 160), (0, 220, 220), (0, 140, 255)
+FAILURES = {"no gallery", "could not open source", "video file not found", "lost the camera",
+            "liveness model missing"}
 STATS_SECONDS = 60  # log a summary of what the pipeline saw this often
 
 
@@ -112,6 +120,10 @@ def find_camera(name: str | None) -> dict:
 class Recorder:
     """Applies the cool-down, saves the snapshot and writes the event.
 
+    Cool-down: one event per person per direction per COOLDOWN_SECONDS, whichever camera of that direction saw
+    them, reset at local midnight. This worker's own memory (Cooldown) skips the obvious repeats cheaply; the
+    database write (db.add_camera_event) checks again, in one transaction, against every camera's events.
+
     A snapshot that can't be saved never costs the event (it is recorded without one). An event the database
     can't take right now (locked for too long, disk full) waits in `pending`, in order, and is written by the
     next flush() (each event and every housekeeping round); at most EVENT_QUEUE_MAX wait, the oldest go first.
@@ -123,7 +135,7 @@ class Recorder:
         last = {}
         if self.conn:
             self.camera_id = db.upsert_camera(self.conn, self.cam_name, source, self.direction)
-            last = db.last_event_times(self.conn, self.cam_name)
+            last = db.last_event_times(self.conn, date.today())
         self.cooldown = Cooldown(config.COOLDOWN_SECONDS, last)
         self.pending: deque[dict] = deque()
         self.db_errors = ErrorLog(f"{self.cam_name}: writing an event to the database (kept, will retry)")
@@ -139,14 +151,37 @@ class Recorder:
             return None
         return snap.relative_to(config.DATA_DIR).as_posix()
 
+    def save_spoof(self, now: datetime, track_id: int, score: float, image) -> str | None:
+        """A spoof's review snapshot in data/snapshots/<day>/spoof/ (deleted with its day after
+        SNAPSHOT_RETENTION_DAYS); its path relative to data/, or None (--no-db, or it couldn't be saved)."""
+        if self.conn is None:
+            return None
+        snap = (config.SNAPSHOT_DIR / f"{now:%Y-%m-%d}" / "spoof"
+                / f"{now:%H%M%S}_track{track_id}_{self.cam_name}_{score:.2f}.jpg")
+        try:
+            write_image(snap, image)
+        except Exception as e:  # noqa: BLE001  only a review aid: never stop the camera for it
+            self.snapshot_errors(e)
+            return None
+        return snap.relative_to(config.DATA_DIR).as_posix()
+
+    def drop_snapshot(self, rel: str | None) -> None:
+        if rel:
+            try:
+                (config.DATA_DIR / rel).unlink(missing_ok=True)
+            except OSError as e:
+                self.snapshot_errors(e)
+
     def flush(self) -> None:
         """Write the waiting events, oldest first; stops at the first database error (tried again later)."""
         while self.pending:
             ev = self.pending[0]
+            event_id = previous = None
             try:
                 person_id = db.active_person_id(self.conn, ev["code"])  # each time: dashboard changes apply live
                 if person_id is not None:
-                    db.add_event(self.conn, person_id, self.camera_id, ev["time"], ev["score"], ev["snapshot"])
+                    event_id, previous = db.add_camera_event(self.conn, person_id, self.camera_id, ev["time"],
+                                                             ev["score"], ev["snapshot"], config.COOLDOWN_SECONDS)
             except sqlite3.Error as e:
                 self.db_errors(e)
                 return
@@ -154,6 +189,13 @@ class Recorder:
             if person_id is None:
                 ev["outcome"] = "inactive"
                 print(f"{ev['head']}  NOT SAVED: inactive in the dashboard, or not enrolled (run scripts\\enroll.py)")
+                continue
+            if event_id is None:  # another camera of this direction recorded them a moment ago
+                ev["outcome"], ev["previous"] = "cool-down", previous
+                self.cooldown.seen(ev["code"], self.direction, previous)
+                self.drop_snapshot(ev["snapshot"])
+                print(f"{ev['head']}  ignored: cool-down ({config.COOLDOWN_SECONDS}s): {self.direction} already "
+                      f"recorded at {previous:%H:%M:%S} (another camera)")
                 continue
             ev["outcome"] = "saved"
             late = f" (waited since {ev['queued']:%H:%M:%S})" if ev.get("late") else ""
@@ -164,7 +206,7 @@ class Recorder:
         """Returns (decision kind, detail) for the live view: event, cool-down or not saved."""
         best = track.best_sample(name)
         head = f"{stamp}  track{track.track_id:<4} {self.direction:<3} {name}"
-        if not self.cooldown.allow(name, self.cam_name, now):
+        if not self.cooldown.allow(name, self.direction, now):
             print(f"{head}  ignored: cool-down ({config.COOLDOWN_SECONDS}s) since last {self.direction}")
             return "cool-down", f"{self.direction} already recorded in the last {config.COOLDOWN_SECONDS} s"
         if self.conn is None:
@@ -179,6 +221,8 @@ class Recorder:
         self.flush()
         if ev.get("outcome") == "inactive":
             return "not saved", "person inactive or not enrolled"
+        if ev.get("outcome") == "cool-down":
+            return "cool-down", f"{self.direction} already recorded at {ev['previous']:%H:%M:%S} by another camera"
         if ev.get("outcome") is None:
             ev["late"] = True
             print(f"{head}  EVENT waiting for the database ({len(self.pending)} waiting); written as soon as it can be")
@@ -194,16 +238,21 @@ class Pipeline:
 
     With `mirror`, only the returned view is flipped left-right (like a mirror or a video call); detection,
     recognition and snapshots use the original frame, the same orientation as the enrollment photos.
+
+    `liveness` (app.liveness.Liveness, or None = no check): each quality-passing face of an undecided track is
+    checked before it is embedded, while the track wants the frame or still needs live frames; a spoof is skipped.
     """
 
     def __init__(self, gallery: Gallery, detector, recognizer, recorder: Recorder, live: LiveWriter,
-                 mirror: bool = False):
+                 mirror: bool = False, liveness=None):
         self.gallery, self.detector, self.recognizer = gallery, detector, recognizer
         self.recorder, self.live = recorder, live
         self.mirror = mirror
+        self.liveness = liveness
         self.tracker = FaceTracker(config.PROCESS_FPS)
         self.tracks: dict[int, TrackState] = {}
         self.times = deque(maxlen=20)
+        self.liveness_ms = deque(maxlen=200)  # time of each liveness check (both models, one face)
         self.stats = Counter()
         self.frame_size: tuple[int, int] | None = None  # camera frame (width, height), logged when it changes
 
@@ -255,34 +304,47 @@ class Pipeline:
                 mark(det, GRAY, f"#{tid} skip: {skip.split(' (')[0]}")
                 continue
             q = quality_score(full)
-            if not track.wants(q):
+            wants = track.wants(q)
+            live = None
+            if self.liveness is not None and (wants or track.live_frames < config.LIVENESS_MIN_FRAMES):
+                live = self.liveness.check(frame, full.bbox)
+                self.liveness_ms.append(live.ms)
+                if not live.live:
+                    self.spoof(stamp, now, track, frame, full, live.score)
+                    mark(det, ORANGE, f"#{tid} spoof {live.score:.2f}")
+                    continue
+                track.live_frames += 1
+            if not wants:
                 mark(det, YELLOW, f"#{tid} ...")
+                self.decide(stamp, now, track)  # a live frame may be what a won vote was waiting for
                 continue
             m = self.gallery.match(self.recognizer.embed(frame, full))
             log_match(stamp, tid, m)
             track.add(Sample(q, m, crop_face(frame, full.bbox, config.SNAPSHOT_SIZE)))
+            score = None if live is None else live.score
             if m.name:
                 self.stats["matched"] += 1
                 votes = sum(s.match.name == m.name for s in track.samples)
-                self.live.decision("match", tid, m.name, m.score, m.second_score,
-                                   f"vote {votes}/{config.VOTE_MIN_AGREE}", face_px=full.width)
+                detail = f"vote {votes}/{config.VOTE_MIN_AGREE}"
+                if self.liveness is not None:
+                    detail += f", {track.liveness_summary(config.LIVENESS_MIN_FRAMES)}"
+                self.live.decision("match", tid, m.name, m.score, m.second_score, detail, face_px=full.width,
+                                   liveness=score)
             else:
                 self.stats[f"unknown: {m.reason}"] += 1
                 self.live.decision("unknown", tid, m.best_name, m.score, m.second_score, m.reason,
-                                   face_px=full.width)
+                                   face_px=full.width, liveness=score)
             mark(det, GREEN if m.name else RED, f"#{tid} {m.name or 'unknown'} {m.score:.2f}")
-            won = track.vote()
-            if won:
-                track.decided = won[0]
-                kind, detail = self.recorder.record(stamp, now, track, *won)
-                self.stats[kind] += 1
-                self.live.decision(kind, tid, won[0], track.best_sample(won[0]).match.score, detail=detail)
+            self.decide(stamp, now, track)
 
         for tid, track in list(self.tracks.items()):
             if t - track.last_seen > config.TRACK_LOST_SECONDS:
-                if not track.decided and track.samples:
-                    print(f"{stamp}  track{tid:<4} closed as unknown (votes: {track.votes_summary()})")
-                    self.live.decision("closed", tid, detail=f"left without a decision ({track.votes_summary()})")
+                if not track.decided and (track.samples or track.spoof_frames):
+                    summary = track.votes_summary() or "no votes"
+                    if self.liveness is not None:
+                        summary += f"; {track.liveness_summary(config.LIVENESS_MIN_FRAMES)}"
+                    print(f"{stamp}  track{tid:<4} closed as unknown (votes: {summary})")
+                    self.live.decision("closed", tid, detail=f"left without a decision ({summary})")
                 del self.tracks[tid]
 
         # A new image either way, so the capture's buffer is never drawn on.
@@ -299,13 +361,49 @@ class Pipeline:
         self.times.append(time.perf_counter() - t0)
         return view
 
+    def decide(self, stamp: str, now: datetime, track: TrackState) -> None:
+        """Record the track once one person won the vote and, with liveness on, enough of its frames were live."""
+        won = track.vote()
+        if not won:
+            return
+        need = config.LIVENESS_MIN_FRAMES if self.liveness is not None else 0
+        if track.live_frames < need:
+            if not track.waiting_logged:
+                track.waiting_logged = True
+                print(f"{stamp}  track{track.track_id:<4} {won[0]:<12} vote won, waiting for liveness "
+                      f"({track.liveness_summary(need)})")
+            return
+        track.decided = won[0]
+        kind, detail = self.recorder.record(stamp, now, track, *won)
+        self.stats[kind] += 1
+        self.live.decision(kind, track.track_id, won[0], track.best_sample(won[0]).match.score, detail=detail)
+
+    def spoof(self, stamp: str, now: datetime, track: TrackState, frame, full, score: float) -> None:
+        """A frame that looks like a phone screen or a printed photo: logged, shown, never embedded. The track's
+        first spoof frame is saved for review (what the liveness model saw, with the background)."""
+        tid = track.track_id
+        track.spoof_frames += 1
+        self.stats["skip: spoof"] += 1
+        print(f"{stamp}  track{tid:<4} {'skip':<12} spoof (live {score:.3f} < {config.LIVENESS_THRESHOLD})")
+        if track.spoof_snapshot is None:
+            track.spoof_snapshot = self.recorder.save_spoof(now, tid, score, context_crop(frame, full.bbox)) or ""
+            print(f"{stamp}  WARNING: track{tid} looks like a phone screen or a printed photo (live score "
+                  f"{score:.3f}, face {full.width}px); not recorded. Snapshot: {track.spoof_snapshot or 'not saved'}")
+        self.live.decision("skip", tid, detail=f"spoof ({score:.2f})", face_px=full.width, liveness=score)
+
     def ms_per_frame(self) -> float:
         return 1000 * sum(self.times) / len(self.times) if self.times else 0.0
+
+    def ms_per_liveness(self) -> float:
+        return sum(self.liveness_ms) / len(self.liveness_ms) if self.liveness_ms else 0.0
 
     def stats_line(self) -> str:
         s = dict(self.stats)
         self.stats.clear()
-        return "stats: " + (", ".join(f"{k} {v}" for k, v in s.items()) if s else "no frames processed")
+        line = "stats: " + (", ".join(f"{k} {v}" for k, v in s.items()) if s else "no frames processed")
+        if self.liveness_ms:
+            line += f"; liveness {self.ms_per_liveness():.1f} ms/face"
+        return line
 
 
 def main() -> int:
@@ -373,10 +471,22 @@ def run(args, cam: dict, source, runtime: "workers.WorkerRuntime", live: LiveWri
     )
     detector, recognizer = Detector(), Recognizer()
     print(f"Model {config.MODEL_PACK}, providers {providers_in_use()}")
+    checker = None
+    if config.LIVENESS_ENABLED:
+        try:
+            checker = Liveness()  # downloads the models on first use, like InsightFace
+        except LivenessUnavailable as e:  # on, but unavailable: never record without it (fail closed)
+            print(f"ERROR: the liveness check is on (LIVENESS_ENABLED) but can't run: {e}")
+            return "liveness model missing"
+        print(f"Liveness on: live score >= {config.LIVENESS_THRESHOLD}, {config.LIVENESS_MIN_FRAMES} live frames per "
+              f"track ({LIVENESS_SOURCE})")
+    else:
+        print("Liveness OFF (LIVENESS_ENABLED): phone screens and printed photos are not refused")
     mirror = bool(cam.get("mirror"))
     if mirror:
         print("View mirrored left-right (recognition uses the original frame)")
-    pipeline = Pipeline(gallery, detector, recognizer, Recorder(cam, source, use_db=not args.no_db), live, mirror)
+    pipeline = Pipeline(gallery, detector, recognizer, Recorder(cam, source, use_db=not args.no_db), live, mirror,
+                        checker)
     window = f"GateSense {cam['name']} ({cam['direction']})"
     label = f"{cam['name']} ({cam['direction']})"
 
@@ -419,6 +529,8 @@ def run(args, cam: dict, source, runtime: "workers.WorkerRuntime", live: LiveWri
             pipeline.recorder.conn.close()
         if pipeline.times:
             print(f"Average processing time: {pipeline.ms_per_frame():.0f} ms/frame")
+        if pipeline.liveness_ms:
+            print(f"Average liveness check: {pipeline.ms_per_liveness():.1f} ms/face")
 
 
 def run_live(source, runtime, live: LiveWriter, pipeline: Pipeline, housekeeping, show) -> str:

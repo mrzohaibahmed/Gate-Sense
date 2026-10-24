@@ -10,11 +10,13 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from api.db import Database, parse_ts
-from app.attendance import ABSENT, MISSING_ENTRY, MISSING_EXIT, PRESENT
+from app.attendance import STATUSES
 
-Status = Literal["present", "missing exit", "missing entry", "absent"]
+# A day: complete (first IN, a later last OUT), missing exit (no OUT; for today: still inside), missing entry (no IN),
+# check (the last OUT is earlier than the first IN), absent.
+Status = Literal["complete", "missing exit", "missing entry", "check", "absent"]
 Direction = Literal["IN", "OUT"]
-assert set(Status.__args__) == {PRESENT, MISSING_EXIT, MISSING_ENTRY, ABSENT}
+assert set(Status.__args__) == set(STATUSES)
 
 
 class OptionalReason(BaseModel):
@@ -52,9 +54,10 @@ class AttendanceRow(BaseModel):
     site_id: int | None
     first_in: datetime | None
     last_out: datetime | None
-    worked_hours: float | None = Field(description="last OUT minus first IN, in hours (2 decimals)")
+    worked_hours: float | None = Field(description="last OUT minus first IN, in hours (2 decimals); only for complete")
     worked_minutes: int | None
     status: Status
+    inside: bool = Field(description="the day's last event is an IN (for today: in the building now)")
 
 
 def attendance_rows(db: Database, first: date, last: date) -> list[dict]:
@@ -72,7 +75,7 @@ def attendance_rows(db: Database, first: date, last: date) -> list[dict]:
                 "department": p.get("department"), "site_id": p.get("site_id"), "first_in": s.first_in,
                 "last_out": s.last_out, "worked_hours": s.worked_hours,
                 "worked_minutes": None if s.worked_hours is None else round((s.last_out - s.first_in).total_seconds() / 60),
-                "status": s.status,
+                "status": s.status, "inside": s.inside,
             })
         day += timedelta(days=1)
     return rows
@@ -95,11 +98,14 @@ class Event(BaseModel):
     score: float | None = Field(description="match score; None for a manual event")
     manual: bool
     voided: bool
+    repeat: bool = Field(False, description="not the person's first IN or last OUT that day: kept, but the day "
+                                            "doesn't use it (e.g. back in after the last OUT, a lunch break)")
     snapshot_url: str | None = Field(description="GET it with the session cookie; None if there is no snapshot")
 
 
-def event_out(row: dict) -> Event:
-    return Event(
+def event_out(row: dict, repeats: set[int] | frozenset = frozenset()) -> Event:
+    """`repeats`: ids of repeat events (Database.repeat_ids of the rows being returned)."""
+    return Event(repeat=row["id"] in repeats,
         id=row["id"], timestamp=parse_ts(row["timestamp"]), original_timestamp=parse_ts(row["original_timestamp"]),
         person_id=row["person_id"], employee_code=row["employee_code"], name=row["name"], camera_id=row["camera_id"],
         camera=row["camera"], direction=row["direction"], site_id=row["site_id"],

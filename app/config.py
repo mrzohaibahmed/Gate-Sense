@@ -48,6 +48,29 @@ TRACK_ACTIVATION_THRESHOLD = 0.5  # detector score needed to start a new track
 TRACK_MATCH_THRESHOLD = 0.8  # ByteTrack matching threshold (higher = more lenient box matching)
 TRACK_LOST_SECONDS = 1.5  # a track not seen for this long is closed
 
+# --- Liveness (anti-spoofing: a phone screen or a printed photo held up to the camera) ------------------
+# Silent-Face-Anti-Spoofing (MiniVision, Apache-2.0): two MiniFASNet models on 80x80 crops of the full-resolution
+# frame, 2.7 and 4 times the face box (the background around the face is what gives a screen or a print away).
+# The live score is their average "real" probability (0-1). A face below LIVENESS_THRESHOLD is a spoof: it never
+# votes, and a track is recorded only after LIVENESS_MIN_FRAMES of its frames passed. The enrollment wizard
+# refuses a spoof too (photo files uploaded on the People page are not checked).
+LIVENESS_ENABLED = True
+LIVENESS_THRESHOLD = 0.8  # minimum live score
+LIVENESS_MIN_FRAMES = 3  # frames of a track that must pass before it can be recorded
+SPOOF_SNAPSHOT_SIZE = 320  # longest side of the review snapshot of a spoof (data/snapshots/<day>/spoof/)
+LIVENESS_THREADS = 1  # onnxruntime threads per liveness model (tiny models: more threads only slow the others down)
+# The ONNX exports of the official weights (yakhyo/face-anti-spoofing, Apache-2.0), verified by SHA-256 after
+# download (scripts/get_models.py, or automatically on first use). file: (url, sha256, crop scale).
+LIVENESS_MODEL_DIR = Path(os.environ.get("GATESENSE_MODEL_DIR") or Path.home() / ".gatesense" / "models")
+LIVENESS_MODELS = {
+    "MiniFASNetV2.onnx": (
+        "https://github.com/yakhyo/face-anti-spoofing/releases/download/weights/MiniFASNetV2.onnx",
+        "b32929adc2d9c34b9486f8c4c7bc97c1b69bc0ea9befefc380e4faae4e463907", 2.7),
+    "MiniFASNetV1SE.onnx": (
+        "https://github.com/yakhyo/face-anti-spoofing/releases/download/weights/MiniFASNetV1SE.onnx",
+        "ebab7f90c7833fbccd46d3a555410e78d969db5438e169b6524be444862b3676", 4.0),
+}
+
 # --- Enrollment ----------------------------------------------------------------
 ENROLL_MIN_PHOTOS = 5  # warn when a person has fewer accepted photos
 # Enrollment photo checks (app/enroll_quality.py). Head pose comes from InsightFace's 3D-landmark model.
@@ -193,7 +216,6 @@ LOGIN_MAX_FAILURES = 5  # wrong passwords in a row before the account is locked
 LOGIN_LOCK_MINUTES = 15
 PASSWORD_MIN_LENGTH = 10  # for passwords set through the API (the first admin password is changed at first login)
 DEFAULT_SITE_NAME = "Main site"  # every camera belongs to a site; existing ones go here
-DEFAULT_SITE_TIMEZONE = "local"  # IANA name, or "local" = this PC's time zone (event times are local time)
 
 # --- Nightly maintenance (api/maintenance.py, while the app runs) -----------------------------------
 BACKUP_HOUR = 2  # the nightly backup runs once a day at or after this hour (local time)
@@ -246,6 +268,9 @@ EDITABLE_SETTINGS = {
     "BEST_FRAMES_PER_TRACK": (int, 1, 20, "frames embedded and kept per tracked face"),
     "VOTE_MIN_AGREE": (int, 1, 20, "kept frames one person must win to be recorded (at most BEST_FRAMES_PER_TRACK)"),
     "TRACK_LOST_SECONDS": (float, 0.2, 30.0, "a track not seen for this long is closed"),
+    "LIVENESS_ENABLED": (bool, 0, 1, "refuse phone screens and printed photos (anti-spoofing)"),
+    "LIVENESS_THRESHOLD": (float, 0.1, 0.99, "minimum live score (0-1); a face below it is treated as a spoof"),
+    "LIVENESS_MIN_FRAMES": (int, 1, 20, "frames of a tracked face that must pass the liveness check to be recorded"),
     "COOLDOWN_SECONDS": (int, 0, 86400, "debounce: the same person on the same camera is ignored for this long"),
     "PROCESS_FPS": (int, 1, 30, "frames processed per second"),
     "SNAPSHOT_RETENTION_DAYS": (int, 1, 3650, "face snapshots of events are deleted after this many days"),
@@ -260,6 +285,10 @@ def check_setting(name: str, value):
     if name not in EDITABLE_SETTINGS:
         raise ValueError(f"{name} can't be changed here")
     kind, low, high, _ = EDITABLE_SETTINGS[name]
+    if kind is bool:  # on/off: true/false, or 1/0
+        if not isinstance(value, (bool, int, float)) or value not in (0, 1):
+            raise ValueError(f"{name} must be on or off (true/false)")
+        return bool(value)
     if isinstance(value, bool) or not isinstance(value, (int, float)) or (kind is int and value != int(value)):
         raise ValueError(f"{name} must be {'a whole number' if kind is int else 'a number'}")
     value = kind(value)

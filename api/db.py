@@ -264,17 +264,17 @@ class Database:
     def sites(self) -> list[dict]:
         with self.conn() as conn:
             return [dict(r) for r in conn.execute(
-                "SELECT s.id, s.name, s.timezone, "
+                "SELECT s.id, s.name, "
                 "(SELECT count(*) FROM cameras c WHERE c.site_id = s.id) AS cameras, "
                 "(SELECT count(*) FROM persons p WHERE p.site_id = s.id) AS people FROM sites s")]
 
     def site(self, site_id: int) -> dict | None:
         return next((s for s in self.sites() if s["id"] == site_id), None)
 
-    def create_site(self, name: str, timezone: str, actor: str, reason: str) -> int:
+    def create_site(self, name: str, actor: str, reason: str) -> int:
         with self.transaction() as conn:
-            cur = conn.execute("INSERT INTO sites (name, timezone) VALUES (?, ?)", (name, timezone))
-            app_db.write_audit(conn, actor, "add_site", f"site:{name}", {"timezone": timezone}, reason)
+            cur = conn.execute("INSERT INTO sites (name) VALUES (?)", (name,))
+            app_db.write_audit(conn, actor, "add_site", f"site:{name}", {}, reason)
             return cur.lastrowid
 
     def update_site(self, site_id: int, changes: dict, actor: str, reason: str) -> None:
@@ -291,8 +291,7 @@ class Database:
         with self.transaction() as conn:
             old = conn.execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone()
             conn.execute("DELETE FROM sites WHERE id = ?", (site_id,))
-            app_db.write_audit(conn, actor, "delete_site", f"site:{old['name']}", {"timezone": old["timezone"]},
-                               reason)
+            app_db.write_audit(conn, actor, "delete_site", f"site:{old['name']}", {}, reason)
 
     # --- People ------------------------------------------------------------------------
 
@@ -355,6 +354,17 @@ class Database:
     def day_summaries(self, day: date) -> tuple[list, dict[str, int]]:
         with self.conn() as conn:
             return app_db.day_summaries(conn, day)
+
+    def repeat_ids(self, rows: list[dict]) -> set[int]:
+        """Which of these event rows are repeats of their person's day (app.attendance.repeat_ids)."""
+        by_day: dict[date, set[int]] = {}
+        for r in rows:
+            if not r["voided"]:
+                by_day.setdefault(parse_ts(r["timestamp"]).date(), set()).add(r["person_id"])
+        if not by_day:
+            return set()
+        with self.conn() as conn:
+            return set().union(*(app_db.repeat_event_ids(conn, day, sorted(people)) for day, people in by_day.items()))
 
     # --- Events ----------------------------------------------------------------------------
 

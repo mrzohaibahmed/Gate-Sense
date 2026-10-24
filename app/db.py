@@ -19,7 +19,11 @@ tables, columns and rows; nothing existing is changed or deleted. Before the
 first step runs on a database that has data, a copy goes to backups/ next to it.
 Step 1 adds the API's users, sessions and sites (every camera in one default site).
 Step 2 gives people a site too, and events an original_timestamp: the time an
-event had before its first correction (edit_event_time keeps it).
+event had before its first correction (edit_event_time keeps it). Step 3 adds
+user_preferences. Step 4 is the one step that removes: the daily_attendance table
+(a copy of the summaries that nothing read; they are computed from the events)
+and sites.timezone (stored but never applied: a day is local midnight to midnight).
+The usual backup copy is made first, so the old values are kept there.
 """
 
 import json
@@ -29,7 +33,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from app import config
-from app.attendance import DaySummary, Event, summarize_day
+from app.attendance import DaySummary, Event, repeat_ids, summarize_day, within_cooldown
 from app.camera import mask_source
 
 SCHEMA = """
@@ -58,15 +62,6 @@ CREATE TABLE IF NOT EXISTS attendance_events (
     voided        INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON attendance_events(timestamp);
-CREATE TABLE IF NOT EXISTS daily_attendance (
-    person_id    INTEGER NOT NULL REFERENCES persons(id),
-    date         TEXT NOT NULL,
-    first_in     TEXT,
-    last_out     TEXT,
-    worked_hours REAL,
-    status       TEXT NOT NULL,
-    PRIMARY KEY (person_id, date)
-);
 CREATE TABLE IF NOT EXISTS audit_log (
     id        INTEGER PRIMARY KEY,
     timestamp TEXT NOT NULL,
@@ -133,8 +128,7 @@ def _v1_users_sessions_sites(conn: sqlite3.Connection) -> None:
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)")
     if conn.execute("SELECT 1 FROM sites LIMIT 1").fetchone() is None:
-        conn.execute("INSERT INTO sites (name, timezone) VALUES (?, ?)",
-                     (config.DEFAULT_SITE_NAME, config.DEFAULT_SITE_TIMEZONE))
+        conn.execute("INSERT INTO sites (name, timezone) VALUES (?, 'local')", (config.DEFAULT_SITE_NAME,))
     if "site_id" not in _columns(conn, "cameras"):
         # Nullable: SQLite only adds a REFERENCES column with a NULL default; filled in just below.
         conn.execute("ALTER TABLE cameras ADD COLUMN site_id INTEGER REFERENCES sites(id)")
@@ -162,8 +156,15 @@ def _v3_user_preferences(conn: sqlite3.Connection) -> None:
     )""")
 
 
+def _v4_drop_unused(conn: sqlite3.Connection) -> None:
+    """Remove what nothing uses: the daily_attendance table and sites.timezone (see the module docstring)."""
+    conn.execute("DROP TABLE IF EXISTS daily_attendance")
+    if "timezone" in _columns(conn, "sites"):
+        conn.execute("ALTER TABLE sites DROP COLUMN timezone")
+
+
 VERSIONS = [_v1_users_sessions_sites, _v2_person_sites_original_times,
-            _v3_user_preferences]  # PRAGMA user_version = how many have run
+            _v3_user_preferences, _v4_drop_unused]  # PRAGMA user_version = how many have run
 
 
 def _has_data(conn) -> bool:
@@ -435,6 +436,34 @@ def add_event(
     return cur.lastrowid
 
 
+def add_camera_event(conn: sqlite3.Connection, person_id: int, camera_id: int, timestamp: datetime, score: float,
+                     snapshot_path: str | None, cooldown_seconds: float) -> tuple[int | None, datetime | None]:
+    """A camera's event, unless the person already has one in the same direction (from any camera, not voided)
+    earlier that day within `cooldown_seconds`: then nothing is written. Returns (new event id or None, the latest
+    earlier event's time). Checked and written in one transaction (BEGIN IMMEDIATE), so two cameras of the same
+    direction that see the person at the same moment, in different worker processes, record it once."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT MAX(e.timestamp) AS ts FROM attendance_events e JOIN cameras c ON c.id = e.camera_id "
+            "WHERE e.person_id = ? AND e.voided = 0 AND c.direction = (SELECT direction FROM cameras WHERE id = ?) "
+            "AND e.timestamp >= ? AND e.timestamp <= ?",
+            (person_id, camera_id, timestamp.date().isoformat(), _ts(timestamp))).fetchone()
+        previous = datetime.fromisoformat(row["ts"]) if row["ts"] else None
+        if within_cooldown(previous, timestamp, cooldown_seconds):
+            conn.rollback()
+            return None, previous
+        cur = conn.execute(
+            "INSERT INTO attendance_events (person_id, camera_id, timestamp, match_score, snapshot_path) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (person_id, camera_id, _ts(timestamp), score, snapshot_path))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return cur.lastrowid, previous
+
+
 EVENT_COLUMNS = (
     "SELECT e.id, e.timestamp, e.match_score, e.snapshot_path, e.manual, e.voided, e.original_timestamp, "
     "e.person_id, e.camera_id, c.site_id, "
@@ -499,33 +528,42 @@ def audit_entries(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.Ro
     return conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
 
 
-def last_event_times(conn: sqlite3.Connection, camera_name: str) -> dict[tuple[str, str], datetime]:
-    """Latest event per person on this camera, to seed the cool-down after a restart."""
+def last_event_times(conn: sqlite3.Connection, day: date) -> dict[tuple[str, str], datetime]:
+    """Each person's latest event per direction on `day` (any camera, not voided), to seed a worker's cool-down."""
     rows = conn.execute(
-        "SELECT p.employee_code, MAX(e.timestamp) AS ts FROM attendance_events e "
+        "SELECT p.employee_code, c.direction, MAX(e.timestamp) AS ts FROM attendance_events e "
         "JOIN persons p ON p.id = e.person_id JOIN cameras c ON c.id = e.camera_id "
-        "WHERE c.name = ? AND e.voided = 0 GROUP BY p.employee_code",
-        (camera_name,),
+        "WHERE e.voided = 0 AND e.timestamp >= ? AND e.timestamp < ? GROUP BY p.employee_code, c.direction",
+        (day.isoformat(), (day + timedelta(days=1)).isoformat()),
     )
-    return {(r["employee_code"], camera_name): datetime.fromisoformat(r["ts"]) for r in rows}
+    return {(r["employee_code"], r["direction"]): datetime.fromisoformat(r["ts"]) for r in rows}
 
 
-def events_for_day(conn: sqlite3.Connection, day: date) -> list[Event]:
-    """A day's non-voided events, for the daily summary."""
+def events_for_day(conn: sqlite3.Connection, day: date, person_ids: list[int] | None = None) -> list[Event]:
+    """A day's non-voided events (of `person_ids`, or everyone), for the daily summary."""
     start, end = day.isoformat(), (day + timedelta(days=1)).isoformat()
+    only = f" AND e.person_id IN ({','.join('?' * len(person_ids))})" if person_ids else ""
     rows = conn.execute(
-        "SELECT p.employee_code, e.timestamp, c.direction FROM attendance_events e "
+        "SELECT e.id, p.employee_code, e.timestamp, c.direction FROM attendance_events e "
         "JOIN persons p ON p.id = e.person_id JOIN cameras c ON c.id = e.camera_id "
-        "WHERE e.timestamp >= ? AND e.timestamp < ? AND e.voided = 0 ORDER BY e.timestamp",
-        (start, end),
+        "WHERE e.timestamp >= ? AND e.timestamp < ? AND e.voided = 0" + only + " ORDER BY e.timestamp, e.id",
+        (start, end, *(person_ids or ())),
     )
-    return [Event(r["employee_code"], datetime.fromisoformat(r["timestamp"]), r["direction"]) for r in rows]
+    return [Event(r["employee_code"], datetime.fromisoformat(r["timestamp"]), r["direction"], r["id"]) for r in rows]
+
+
+def repeat_event_ids(conn: sqlite3.Connection, day: date, person_ids: list[int] | None = None) -> set[int]:
+    """The day's repeat events (not the person's first IN or last OUT): kept and listed, but not used for the day."""
+    by_person: dict[str, list[Event]] = {}
+    for e in events_for_day(conn, day, person_ids):
+        by_person.setdefault(e.person, []).append(e)
+    return set().union(*(repeat_ids(evs) for evs in by_person.values()))
 
 
 def day_summaries(conn: sqlite3.Connection, day: date) -> tuple[list[DaySummary], dict[str, int]]:
     """A day's summaries (every active person, plus anyone with events), and employee_code -> person id.
 
-    Read-only: the Today page (via refresh_daily) and the API both use this, so they always agree.
+    Read-only: the API's attendance rows, overview and reports, and scripts/today.py all use this, so they agree.
     """
     ids = person_ids(conn)
     events = events_for_day(conn, day)
@@ -533,17 +571,3 @@ def day_summaries(conn: sqlite3.Connection, day: date) -> tuple[list[DaySummary]
     for code in {e.person for e in events} - ids.keys():
         ids[code] = conn.execute("SELECT id FROM persons WHERE employee_code = ?", (code,)).fetchone()["id"]
     return summarize_day(events, list(ids)), ids
-
-
-def refresh_daily(conn: sqlite3.Connection, day: date) -> list[DaySummary]:
-    """Recompute daily_attendance for `day` from the raw events and return it."""
-    summaries, ids = day_summaries(conn, day)
-    with conn:
-        conn.execute("DELETE FROM daily_attendance WHERE date = ?", (day.isoformat(),))
-        for s in summaries:
-            conn.execute(
-                "INSERT INTO daily_attendance (person_id, date, first_in, last_out, worked_hours, status) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (ids[s.person], day.isoformat(), _ts(s.first_in), _ts(s.last_out), s.worked_hours, s.status),
-            )
-    return summaries

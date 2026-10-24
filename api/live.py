@@ -219,8 +219,10 @@ class EventHub:
         if self._last is None:
             self._last = await run_in_threadpool(self.db.last_ids)
         event_id, audit_id = self._last
-        for row in await run_in_threadpool(self.db.events_after, event_id):
-            self.broadcast({"type": "event", **event_out(row).model_dump(mode="json")})
+        rows = await run_in_threadpool(self.db.events_after, event_id)
+        repeats = await run_in_threadpool(self.db.repeat_ids, rows) if rows else set()
+        for row in rows:
+            self.broadcast({"type": "event", **event_out(row, repeats).model_dump(mode="json")})
             event_id = row["id"]
         rows, audit_id = await run_in_threadpool(self.db.audit_after, audit_id, CORRECTIONS)
         for row in rows:
@@ -271,4 +273,4 @@ def decision_out(d: dict) -> dict:
     return {"time": d.get("time"), "kind": d.get("kind"), "track": d.get("track"), "name": d.get("name"),
             "score": score, "second": second,
             "margin": round(score - second, 3) if score is not None and second is not None else None,
-            "face_px": d.get("face_px"), "detail": d.get("detail") or ""}
+            "face_px": d.get("face_px"), "liveness": d.get("liveness"), "detail": d.get("detail") or ""}

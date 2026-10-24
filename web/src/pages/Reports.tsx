@@ -205,6 +205,7 @@ export function DailyTable({ rows }: { rows: DailyRow[] }) {
           ["Person-days", rows.length],
           ["Present", rows.filter((r) => r.first_in).length],
           ["Missing OUT", rows.filter((r) => r.missing_out).length],
+          ["To check", rows.filter((r) => r.check).length],
           ["Hours worked", worked.toFixed(1)],
         ]}
       />
@@ -249,6 +250,11 @@ export function DailyTable({ rows }: { rows: DailyRow[] }) {
                           missing OUT
                         </Badge>
                       )}
+                      {r.check && (
+                        <Badge tone="error" className="ml-1" title="The last OUT is earlier than the first IN">
+                          check
+                        </Badge>
+                      )}
                     </Td>
                     <Td className="text-right tabular-nums">{hours(r.worked_hours)}</Td>
                     <Td>
@@ -275,6 +281,7 @@ export function MonthlyView({ people }: { people: PersonTotal[] }) {
           ["People", people.length],
           ["Days present", people.reduce((sum, p) => sum + p.days_present, 0)],
           ["Missing exits", people.reduce((sum, p) => sum + p.days_missing_exit, 0)],
+          ["Days to check", people.reduce((sum, p) => sum + p.days_check, 0)],
           ["Hours worked", total.toFixed(1)],
         ]}
       />
@@ -323,6 +330,7 @@ export function MonthlyView({ people }: { people: PersonTotal[] }) {
                   <Th className="text-right">Days present</Th>
                   <Th className="text-right">Missing exits</Th>
                   <Th className="text-right">Missing entries</Th>
+                  <Th className="text-right">Days to check</Th>
                   <Th className="text-right">Absent</Th>
                   <Th className="text-right">Total hours</Th>
                   <Th className="text-right">Average</Th>
@@ -339,6 +347,7 @@ export function MonthlyView({ people }: { people: PersonTotal[] }) {
                     </Td>
                     <Td className="text-right tabular-nums">{p.days_missing_exit || ""}</Td>
                     <Td className="text-right tabular-nums">{p.days_missing_entry || ""}</Td>
+                    <Td className="text-right tabular-nums">{p.days_check || ""}</Td>
                     <Td className="text-right tabular-nums">{p.days_absent || ""}</Td>
                     <Td className="text-right tabular-nums">{hours(p.total_hours)}</Td>
                     <Td className="text-right tabular-nums">{hours(p.avg_hours)}</Td>

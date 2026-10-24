@@ -109,7 +109,7 @@ def test_attendance_matches_the_daily_register(app):
                 r["status"])
 
     assert sorted(map(shape, rows)) == sorted(map(shape, register.json()["rows"]))
-    assert [r["status"] for r in rows] == ["present", "missing exit", "missing entry", "absent"]
+    assert [r["status"] for r in rows] == ["complete", "missing exit", "missing entry", "absent"]
     assert rows[0]["worked_minutes"] == 545 and rows[0]["worked_hours"] == 9.08
 
 
@@ -140,14 +140,14 @@ def test_attendance_filters_paging_and_sort(app):
 
 def test_overview(app):
     o = as_role(app, "guard").get("/api/overview").json()
-    assert (o["people"], o["present"], o["inside_now"], o["left"], o["absent"], o["missing_exit"],
-            o["missing_entry"]) == (4, 2, 1, 1, 1, 1, 1)
+    assert (o["people"], o["present"], o["inside_now"], o["complete"], o["absent"], o["missing_exit"],
+            o["missing_entry"], o["check"]) == (4, 2, 1, 1, 1, 1, 1, 0)
     hours = {h["hour"]: h["arrivals"] for h in o["arrivals_by_hour"]}
     assert len(hours) == 24 and hours[8] == 1 and hours[9] == 1 and sum(hours.values()) == 2
     cams = {c["camera"]: c for c in o["cameras"]}
     assert cams["entrance"]["events"] == 2 and cams["exit"]["events"] == 2 and cams["entrance"]["state"] == "stopped"
     past = as_role(app, "viewer").get("/api/overview", params={"date": YESTERDAY.isoformat()}).json()
-    assert past["inside_now"] is None and past["left"] == 1 and past["absent"] == 3
+    assert past["inside_now"] is None and past["complete"] == 1 and past["absent"] == 3
 
 
 # --- Events and snapshots ------------------------------------------------------------------------
@@ -220,7 +220,7 @@ def test_corrections_add_change_void_restore(app):
 
     day = items(hr.get("/api/attendance", params={"from": YESTERDAY.isoformat(), "to": YESTERDAY.isoformat(),
                                                   "sort": "name"}))
-    assert day[0]["first_in"].endswith("07:45:00") and day[0]["status"] == "present"
+    assert day[0]["first_in"].endswith("07:45:00") and day[0]["status"] == "complete"
     entries = items(as_role(app, "admin").get("/api/audit", params={"user": "hr"}))[:4]  # then hr's login
     assert [e["action"] for e in entries] == ["restore_event", "void_event", "edit_event", "add_event"]
     assert entries[2]["details"]["timestamp"] == [f"{YESTERDAY} 08:00:00", f"{YESTERDAY} 07:45:00"]
@@ -266,7 +266,7 @@ def test_people_list_and_profile(app):
     detail = v.get(f"/api/people/{people[0]['id']}").json()
     assert [ph["file"] for ph in detail["photo_list"]] == ["1.jpg", "2.jpg", "3.jpg"]
     assert detail["photo_list"][0]["accepted"] is None  # not checked yet
-    assert [d["status"] for d in detail["recent_attendance"][:2]] == ["present", "present"]
+    assert [d["status"] for d in detail["recent_attendance"][:2]] == ["complete", "complete"]
     assert len(detail["recent_events"]) == 4
     img = v.get(detail["photo_list"][0]["url"])
     assert img.status_code == 200 and img.content == (config.KNOWN_DIR / "1001" / "1.jpg").read_bytes()
@@ -321,9 +321,8 @@ def test_sites(app):
     assert [(s["name"], s["cameras"], s["people"]) for s in items(hr.get("/api/sites"))] == [
         (config.DEFAULT_SITE_NAME, 2, 4)]
     assert hr.post("/api/sites", json={"name": "Yard", "reason": "x"}).status_code == 403
-    assert a.post("/api/sites", json={"name": "Yard", "timezone": "Mars/Olympus", "reason": "x"}).status_code == 422
-    yard = a.post("/api/sites", json={"name": "Yard", "timezone": "Asia/Karachi", "reason": "new gate"})
-    assert yard.status_code == 201 and yard.json()["timezone"] == "Asia/Karachi"
+    yard = a.post("/api/sites", json={"name": "Yard", "reason": "new gate"})
+    assert yard.status_code == 201 and "timezone" not in yard.json()  # removed: a day is local midnight to midnight
     assert a.post("/api/sites", json={"name": "yard", "reason": "x"}).status_code == 409
     sid = yard.json()["id"]
     assert a.patch(f"/api/sites/{sid}", json={"name": "Back yard", "reason": "renamed"}).json()["name"] == "Back yard"
@@ -380,6 +379,30 @@ def test_settings(app):
     back = a.patch("/api/settings", json={"values": {"match_threshold": 0.45}, "reason": "back to default"})
     assert json.loads(config.SETTINGS_FILE.read_text())["settings"] == {"COOLDOWN_SECONDS": 600}
     assert back.status_code == 200 and as_role(app, "hr").get("/api/settings").status_code == 403
+
+
+def test_liveness_can_be_switched_off_and_tuned(app):
+    a = as_role(app, "admin")
+    s = {x["key"]: x for x in a.get("/api/settings").json()["settings"]}
+    assert (s["liveness_enabled"]["type"], s["liveness_enabled"]["value"], s["liveness_enabled"]["default"]) == (
+        "bool", 1, 1)
+    assert s["liveness_threshold"]["value"] == 0.8 and s["liveness_min_frames"]["value"] == 3
+    r = a.patch("/api/settings", json={"values": {"liveness_enabled": False, "liveness_threshold": 0.7},
+                                       "reason": "pilot: measuring false refusals"})
+    assert r.status_code == 200, r.text
+    s = {x["key"]: x for x in r.json()["settings"]}
+    assert s["liveness_enabled"]["value"] == 0 and s["liveness_enabled"]["changed"]
+    assert config.LIVENESS_ENABLED is False and config.LIVENESS_THRESHOLD == 0.7
+    assert json.loads(config.SETTINGS_FILE.read_text())["settings"] == {"LIVENESS_ENABLED": False,
+                                                                        "LIVENESS_THRESHOLD": 0.7}
+    entry = items(a.get("/api/audit", params={"action": "change_settings"}))[0]
+    assert entry["details"] == {"liveness_enabled": [True, False], "liveness_threshold": [0.8, 0.7]}
+    assert a.patch("/api/settings", json={"values": {"liveness_enabled": 1}, "reason": "on again"}).status_code == 200
+    assert config.LIVENESS_ENABLED is True
+    assert a.patch("/api/settings", json={"values": {"liveness_enabled": 2}, "reason": "x"}).status_code == 422
+    assert a.patch("/api/settings", json={"values": {"match_threshold": True}, "reason": "x"}).status_code == 422
+    config.SETTINGS_FILE.write_text(json.dumps({"settings": {"LIVENESS_ENABLED": False}}))
+    assert config.load_settings() == {"LIVENESS_ENABLED": False} and config.LIVENESS_ENABLED is False
 
 
 def test_settings_file_is_applied_on_load(tmp_path):

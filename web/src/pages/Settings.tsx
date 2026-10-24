@@ -664,12 +664,10 @@ function SitesTab() {
   const [editing, setEditing] = useState<Site | "new" | null>(null);
   const [deleting, setDeleting] = useState<Site | null>(null);
   const [name, setName] = useState("");
-  const [timezone, setTimezone] = useState("local");
   const refresh = () => void queryClient.invalidateQueries({ queryKey: ["sites"] });
   const open = (s: Site | "new") => {
     setEditing(s);
     setName(s === "new" ? "" : s.name);
-    setTimezone(s === "new" ? "local" : s.timezone);
   };
   return (
     <Card>
@@ -688,7 +686,6 @@ function SitesTab() {
           <thead>
             <tr>
               <Th>Name</Th>
-              <Th>Time zone</Th>
               <Th>Cameras</Th>
               <Th>People</Th>
               <Th />
@@ -698,7 +695,6 @@ function SitesTab() {
             {sites.data.items.map((s) => (
               <tr key={s.id}>
                 <Td className="font-medium">{s.name}</Td>
-                <Td>{s.timezone}</Td>
                 <Td>{s.cameras}</Td>
                 <Td>{s.people}</Td>
                 <Td className="text-right">
@@ -726,20 +722,17 @@ function SitesTab() {
         title={editing === "new" ? "Add a site" : `Edit ${editing?.name ?? ""}`}
         confirmLabel="Save"
         onConfirm={async (reason) => {
-          if (editing === "new") await api.post("/api/sites", { body: { name, timezone, reason } });
+          if (editing === "new") await api.post("/api/sites", { body: { name, reason } });
           else if (editing)
             await api.patch("/api/sites/{site_id}", {
               path: { site_id: editing.id },
-              body: { name, timezone, reason },
+              body: { name, reason },
             });
           refresh();
         }}
       >
         <Field label="Name" htmlFor="site-name">
           <Input id="site-name" value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
-        <Field label="Time zone" htmlFor="site-tz" hint='An IANA name like "Asia/Karachi", or "local"'>
-          <Input id="site-tz" value={timezone} onChange={(e) => setTimezone(e.target.value)} />
         </Field>
       </ReasonDialog>
       <ReasonDialog
@@ -953,13 +946,18 @@ function UsersTab() {
 
 // --- Recognition ---------------------------------------------------------------------------------------
 
-const MAIN = ["match_threshold", "match_margin", "cooldown_seconds"];
+const MAIN = ["match_threshold", "match_margin", "cooldown_seconds", "liveness_enabled", "liveness_threshold"];
 const LABELS: Record<string, string> = {
   match_threshold: "Match threshold",
   match_margin: "Margin over the second-best",
   cooldown_seconds: "Debounce (cool-down, seconds)",
   snapshot_retention_days: "Keep event snapshots (days)",
+  liveness_enabled: "Liveness check (anti-spoofing)",
+  liveness_threshold: "Liveness threshold",
+  liveness_min_frames: "Live frames needed per person",
 };
+/** A setting's value for display: on/off for bool settings. */
+const shown = (s: Setting, v: number | string) => (s.type === "bool" ? (Number(v) ? "on" : "off") : String(v));
 
 function RecognitionTab() {
   const queryClient = useQueryClient();
@@ -989,17 +987,32 @@ function RecognitionTab() {
               key={s.key}
               label={`${LABELS[s.key] ?? s.key}${s.changed ? " (changed)" : ""}`}
               htmlFor={`set-${s.key}`}
-              hint={`${s.description}. ${s.minimum}–${s.maximum}, default ${s.default}.`}
+              hint={
+                s.type === "bool"
+                  ? `${s.description}. Default ${shown(s, s.default)}.`
+                  : `${s.description}. ${s.minimum}–${s.maximum}, default ${s.default}.`
+              }
             >
-              <Input
-                id={`set-${s.key}`}
-                type="number"
-                step={s.type === "int" ? 1 : 0.01}
-                min={s.minimum}
-                max={s.maximum}
-                value={value(s)}
-                onChange={(e) => setValues({ ...values, [s.key]: e.target.value })}
-              />
+              {s.type === "bool" ? (
+                <div className="flex h-9 items-center gap-2">
+                  <Switch
+                    id={`set-${s.key}`}
+                    checked={Number(value(s)) === 1}
+                    onCheckedChange={(on) => setValues({ ...values, [s.key]: on ? "1" : "0" })}
+                  />
+                  <span className="text-sm">{shown(s, value(s))}</span>
+                </div>
+              ) : (
+                <Input
+                  id={`set-${s.key}`}
+                  type="number"
+                  step={s.type === "int" ? 1 : 0.01}
+                  min={s.minimum}
+                  max={s.maximum}
+                  value={value(s)}
+                  onChange={(e) => setValues({ ...values, [s.key]: e.target.value })}
+                />
+              )}
             </Field>
           ))}
         </div>
@@ -1014,7 +1027,9 @@ function RecognitionTab() {
         open={confirm}
         onOpenChange={setConfirm}
         title="Change recognition settings?"
-        description={changed.map((s) => `${LABELS[s.key] ?? s.key}: ${s.value} → ${values[s.key]}`).join("; ")}
+        description={changed
+          .map((s) => `${LABELS[s.key] ?? s.key}: ${shown(s, s.value)} → ${shown(s, values[s.key] ?? s.value)}`)
+          .join("; ")}
         confirmLabel="Save"
         onConfirm={async (reason) => {
           await api.patch("/api/settings", {

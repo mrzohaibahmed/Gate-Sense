@@ -49,4 +49,4 @@ def test_excel_and_csv_export(conn):
     assert wb["Daily detail"].max_row == len(rows) + 1
     csv = reports.rows_csv(reports.DAILY_COLUMNS_RANGE, rows).decode("utf-8-sig")
     assert csv.splitlines()[0].startswith("Date,Employee code,Name")
-    assert "2026-10-02,ali,ali,,09:30:00,,,YES,missing exit" in csv.splitlines()
+    assert "2026-10-02,ali,ali,,09:30:00,,,YES,,missing exit" in csv.splitlines()  # Missing OUT, Check, Status

@@ -18,7 +18,8 @@ const row = (over: Partial<AttendanceRow>): AttendanceRow => ({
   last_out: "2026-10-21T17:10:00",
   worked_hours: 9.08,
   worked_minutes: 545,
-  status: "present",
+  status: "complete",
+  inside: false,
   ...over,
 });
 
@@ -238,5 +239,45 @@ describe("void and restore", () => {
     await user.click(within(panel).getByRole("switch", { name: "Show voided events" }));
     expect(within(panel).queryByRole("listitem", { name: "OUT at 17:10 (voided)" })).not.toBeInTheDocument();
     expect(within(panel).getByRole("listitem", { name: "IN at 08:05" })).toBeInTheDocument();
+  });
+});
+
+describe("repeats and check", () => {
+  it("greys the repeat events of the day and tags them; a check day shows its badge", async () => {
+    const user = userEvent.setup();
+    const ev = (id: number, time: string, direction: string, repeat: boolean) => ({
+      id,
+      timestamp: `2026-10-21T${time}`,
+      original_timestamp: null,
+      person_id: 1,
+      employee_code: "1001",
+      name: "Ayesha",
+      camera_id: direction === "IN" ? 1 : 2,
+      camera: direction === "IN" ? "entrance" : "exit",
+      direction,
+      site_id: 1,
+      score: 0.7,
+      manual: false,
+      voided: false,
+      repeat,
+      snapshot_url: null,
+    });
+    api = fakeApi({
+      "GET /api/attendance": () =>
+        page([row({}), row({ person_id: 2, employee_code: "1002", name: "Bilal", status: "check" })]),
+      "GET /api/events": () =>
+        page([ev(1, "08:00:00", "IN", false), ev(2, "16:00:00", "OUT", false), ev(3, "17:00:00", "IN", true)]),
+    });
+    vi.stubGlobal("fetch", api.fetchMock);
+    renderRoutes(routes, "/attendance?from=2026-10-21", makeMe("viewer", PERMISSIONS.viewer!));
+    expect(await screen.findByText("Check")).toBeInTheDocument();
+    await user.click(screen.getByRole("row", { name: "Ayesha, 2026-10-21" }));
+    const panel = await screen.findByRole("dialog");
+    const repeat = await within(panel).findByRole("listitem", { name: "IN at 17:00 (repeat)" });
+    expect(within(repeat).getByText("repeat")).toBeInTheDocument();
+    expect(repeat.className).toContain("opacity-60");
+    const used = within(panel).getByRole("listitem", { name: "OUT at 16:00" });
+    expect(used.className).not.toContain("opacity-60");
+    expect(within(used).queryByText("repeat")).not.toBeInTheDocument();
   });
 });

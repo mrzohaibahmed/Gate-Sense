@@ -9,7 +9,7 @@ import pytest
 
 from api import auth
 from app import config, enroll_guide, enrollment
-from tests.fakes import FRONTAL_112, FakeRecognizer
+from tests.fakes import FRONTAL_112, FakeLiveness, FakeRecognizer
 from app.detector import Detection
 from tests.test_data_api import as_role, first_password, items  # noqa: F401  (first_password: fixture)
 
@@ -53,7 +53,9 @@ def app():
     from api.main import create_app
     from tests.test_data_api import seed
 
-    application = create_app(models=lambda: (PosingDetector(), FakeRecognizer()))
+    application = create_app(models=lambda: (PosingDetector(), FakeRecognizer()),
+                             liveness=lambda: application.state.live)
+    application.state.live = FakeLiveness()  # every face live; tests set their own scores
     with TestClient(application):
         application.state.seed = seed()
         yield application
@@ -145,3 +147,53 @@ def test_new_endpoints_need_a_login(app):
         assert anonymous.request(method, path).status_code == 401, path
     assert auth.PROTECTED_RESPONSES  # documented on every protected route
     assert enroll_guide.person_yaw(25.0) == 25.0  # the fake's convention: raw frames
+
+
+# --- Liveness in the wizard ----------------------------------------------------------------------------------
+
+
+def check(client, step, img):
+    return client.post("/api/enrollment/check", params={"step": step}, content=jpeg(img),
+                       headers={"content-type": "image/jpeg"})
+
+
+def test_the_wizard_refuses_a_photo_or_a_screen(app):
+    hr = as_role(app, "hr")
+    assert check(hr, "front", frame("front")).json()["liveness"] == 0.99
+    app.state.live = FakeLiveness(0.21)
+    body = check(hr, "front", frame("front")).json()
+    assert body["ok"] is False and body["message"] == "Use a real face, not a photo or a screen"
+    assert body["liveness"] == 0.21
+    pid = app.state.seed["people"]["1004"]
+    photos = [{"step": s, "image": b64(frame(s, seed=i))} for i, s in enumerate(("front", "left", "right"))]
+    review = hr.post("/api/enrollment/review", params={"person_id": pid}, json={"photos": photos}).json()
+    assert not review["ready"] and all("not a real face" in p["problem"] for p in review["photos"])
+    r = hr.post(f"/api/people/{pid}/enroll", json={"photos": photos})
+    assert r.status_code == 422 and "not a real face" in r.json()["detail"]
+    assert not enrollment.photo_paths(config.KNOWN_DIR / "1004")
+
+
+def test_liveness_off_or_unavailable(app, monkeypatch):
+    hr = as_role(app, "hr")
+    monkeypatch.setattr(config, "LIVENESS_ENABLED", False)
+    app.state.live = FakeLiveness(0.1)
+    body = check(hr, "front", frame("front")).json()
+    assert body["ok"] is True and body["liveness"] is None and app.state.live.calls == []
+    monkeypatch.setattr(config, "LIVENESS_ENABLED", True)
+    from app.liveness import LivenessUnavailable
+
+    def missing():
+        raise LivenessUnavailable("couldn't download MiniFASNetV2.onnx (offline)")
+
+    monkeypatch.setattr(app.state, "liveness", missing)
+    r = check(hr, "front", frame("front"))
+    assert r.status_code == 503 and "liveness check can't run" in r.json()["detail"]
+
+
+def test_uploaded_photo_files_are_not_liveness_checked(app):
+    """Photo files (People page) may be a scan or a picture someone sent: only the wizard refuses spoofs."""
+    hr = as_role(app, "hr")
+    app.state.live = FakeLiveness(0.05)
+    pid = app.state.seed["people"]["1004"]
+    r = hr.post(f"/api/people/{pid}/photos", json={"photos": [{"name": "a.jpg", "image": b64(frame("front"))}]})
+    assert r.status_code == 200 and r.json()["saved"] == 1 and app.state.live.calls == []

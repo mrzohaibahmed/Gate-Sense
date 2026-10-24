@@ -17,10 +17,11 @@ const EMPTY_OVERVIEW = {
   people: 0,
   present: 0,
   inside_now: 0,
-  left: 0,
+  complete: 0,
   absent: 0,
   missing_exit: 0,
   missing_entry: 0,
+  check: 0,
   arrivals_by_hour: [],
   cameras: [],
 };

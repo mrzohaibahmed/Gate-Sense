@@ -81,7 +81,14 @@ After updating GateSense's code, restart it (`stop.bat`, then `start.bat`); star
 .venv\Scripts\python scripts\check_env.py
 ```
 
-On the first run this downloads the buffalo_s model (about 120 MB) to `%USERPROFILE%\.insightface\models`. It then opens the webcam, grabs one frame and prints how many faces it found and how long detection took.
+On the first run this downloads the buffalo_s model (about 120 MB) to `%USERPROFILE%\.insightface\models`. It then opens the webcam, grabs one frame and prints how many faces it found and how long detection took, and whether the liveness models are in place.
+
+To download and verify every model in one go (do it before a gate PC goes offline):
+
+```
+.venv\Scripts\python scripts\get_models.py           # download what's missing, check every SHA-256
+.venv\Scripts\python scripts\get_models.py --check   # check only
+```
 
 ## Enroll people
 
@@ -138,7 +145,7 @@ Run one worker per camera, either with the Start buttons on the dashboard's **Li
 .venv\Scripts\python scripts\recognize.py --camera exit --source data\clips\out.mp4  # clip as OUT
 ```
 
-Each face is tracked (ByteTrack); its best 5 frames are embedded, and when one person wins 3 of them an event is saved with a face snapshot in `data/snapshots/`. The same person on the same camera is ignored for the 5-minute cool-down. Add `--no-window` to log without video, or `--no-db` to tune without recording anything. Log lines look like:
+Each face is tracked (ByteTrack); its best 5 frames are embedded, and when one person wins 3 of them an event is saved with a face snapshot in `data/snapshots/`. After an event, the same person in the same direction is ignored for the 5-minute cool-down, whichever camera of that direction sees them (two entrance cameras record one IN); the cool-down starts afresh at midnight. Add `--no-window` to log without video, or `--no-db` to tune without recording anything. Log lines look like:
 
 ```
 13:28:34.814  track1    waqas        score=0.910 (waqas)          second=0.312 (ali)            ACCEPT
@@ -149,6 +156,33 @@ Each face is tracked (ByteTrack); its best 5 frames are embedded, and when one p
 
 Use the scores to tune `MATCH_THRESHOLD` and `MATCH_MARGIN` in `app/config.py`.
 
+## Liveness (anti-spoofing)
+
+A phone screen or a printed photo held up to the camera is refused. Each face is checked by Silent-Face-Anti-Spoofing's two MiniFASNet models (2.7 and 4 times the face box, so the edge of a phone or a sheet of paper is in view) on the full-resolution frame, before it can vote. Their average "real" probability is the live score (0 to 1):
+
+- below `LIVENESS_THRESHOLD` (0.8) the frame is skipped as a spoof: "skip: spoof (0.12)" in the Live decisions table (with the score in the Live column), a WARNING in the camera's log, and one review snapshot per track in `data/snapshots/<day>/spoof/` (deleted with the day's other snapshots after `SNAPSHOT_RETENTION_DAYS`);
+- a person is recorded only when they win the vote and `LIVENESS_MIN_FRAMES` (3) of the track's frames passed the check;
+- the enrollment wizard refuses a spoof too ("Use a real face, not a photo or a screen"), for the webcam and IP cameras. Photo files uploaded on the People page are not checked.
+
+`LIVENESS_ENABLED`, `LIVENESS_THRESHOLD` and `LIVENESS_MIN_FRAMES` are in Settings > Recognition (restart running cameras to apply). With liveness on and its models missing (no internet for the first download), a camera refuses to start ("liveness model missing") rather than record without it.
+
+**Models and licences.** The models download on first use (or with `scripts\get_models.py`) to `%USERPROFILE%\.gatesense\models` (`GATESENSE_MODEL_DIR`), and are used only if their SHA-256 matches `LIVENESS_MODELS` in `app/config.py`. They are [Silent-Face-Anti-Spoofing](https://github.com/minivision-ai/Silent-Face-Anti-Spoofing) by MiniVision, **Apache-2.0**, in the ONNX export from [yakhyo/face-anti-spoofing](https://github.com/yakhyo/face-anti-spoofing) (also Apache-2.0). The exports were checked against MiniVision's official PyTorch weights: the same output to within 1e-6 on the same input. GateSense doesn't ship the files; if you redistribute them, include the Apache-2.0 licence and notices. (The buffalo_s face models remain non-commercial research use: see PLAN.md, Models.)
+
+**Speed.** One check (both models, one face) takes about 8 to 17 ms on a 2-core i5-6300U. It runs only on faces of undecided tracks, so the worst case is a frame whose face is still being decided. Measured there: about 65-75 ms per frame without liveness and 79-93 ms with it (13-16 fps down to 11-13 fps at most; the worker processes 8). Measure your PC with a photo of one real face:
+
+```
+.venv\Scripts\python scriptsench_liveness.py photo.jpg --width 1920
+```
+
+**Testing it for real.** Start a camera, open Live cameras > full screen > Decisions (admin), then:
+
+1. Walk past as yourself: decisions show "match ... live 1/3" up to "live 3/3" and an event, with Live scores near 1.
+2. Hold up your enrollment photo on a phone, then a printout of it, at the distance you normally stand: each frame should show "skip ... spoof (0.xx)" in red, no event, a WARNING in the camera log and a snapshot in `data/snapshots/<today>/spoof/`. Try a laptop screen and a tablet too, at different angles and distances.
+3. Watch the Live scores of real people at the real gate for a few days. If real people get refused (scores often below 0.8, e.g. in backlight or with small faces), lower `LIVENESS_THRESHOLD` a little; if a phone or photo ever gets through, raise it, or raise `LIVENESS_MIN_FRAMES`. Small faces (under about 100 px) give less reliable scores: get the camera closer.
+4. In the enrollment wizard, hold up a phone with a photo: Capture stays disabled with "Use a real face, not a photo or a screen".
+
+No software check stops every attack (a good mask, a high-resolution screen at the right distance). For stronger protection use an IR or depth camera.
+
 ## Today's attendance
 
 ```
@@ -156,7 +190,19 @@ Use the scores to tune `MATCH_THRESHOLD` and `MATCH_MARGIN` in `app/config.py`.
 .venv\Scripts\python scripts\today.py --date 2026-10-20
 ```
 
-Prints name, first IN, last OUT, worked hours and a missing-exit flag for every enrolled person. Status is `present`, `missing exit` (no OUT after the last IN), `missing entry` (OUT without IN) or `absent`.
+Prints name, first IN, last OUT, worked hours and the missing-exit and check flags for every enrolled person, with the same rule as the dashboard and the reports.
+
+**One attendance per person per day:** the day is the first IN and the last OUT (local midnight to midnight); every other event is a *repeat* (kept, listed greyed with a "repeat" tag in the day's events, not used). Status:
+
+| Status | When | Hours |
+|---|---|---|
+| `complete` | an IN, and the last OUT is after the first IN (an IN after the last OUT, e.g. IN 8, OUT 16, IN 17, is a repeat: 08:00-16:00, 8 h) | last OUT - first IN |
+| `missing exit` | an IN but no OUT at all; for today this reads `inside` (screens and exports) | - |
+| `missing entry` | OUTs but no IN | - |
+| `check` | the last OUT is earlier than the first IN: someone should look | - |
+| `absent` | no events | - |
+
+"Present" means came in that day (complete, missing exit or check): the Overview's Present tile and the reports' Days present. A night shift (IN 23:50, OUT 00:10) is still two days; shift windows come later.
 
 ## Dashboard
 
@@ -183,8 +229,8 @@ role (admin, HR, viewer, guard) sees only its own menu items.
   refused one. While the wizard has the webcam open, webcam camera workers can't start (and the wizard can't take
   the webcam from a running one); it gives the webcam back when it closes, or at the latest 90 seconds after the tab
   was closed.
-- **Reports**: the daily register (first IN, last OUT, hours worked, missing OUT) and the monthly summary per person
-  (days present, total hours, missing exits) for any date range and department, exported as CSV or Excel.
+- **Reports**: the daily register (first IN, last OUT, hours worked, missing OUT, check) and the monthly summary per person
+  (days present, total hours, missing exits, days to check) for any date range and department, exported as CSV or Excel.
 - **Audit log**: every change with who, when and why; CSV export.
 - **Settings**: cameras (add, edit, test the connection, reorder, delete, view and download the log), sites, users and
   roles, recognition thresholds, and system information with "Back up now".
@@ -213,7 +259,7 @@ It listens on `http://127.0.0.1:8000` (this PC only; change it with `GATESENSE_H
 
 **Users and login.** The API has its own user accounts with four roles: **admin** (everything, including user accounts), **hr**, **viewer** and **guard** (the permissions of each are in `api/permissions.py`). On its first start the API creates the user `admin` with the `GATESENSE_ADMIN_PASSWORD`; that password must be changed at the first login. To try it, open `http://127.0.0.1:8000/docs`, run `POST /api/auth/login` with `{"username": "admin", "password": "..."}` (the page keeps the session cookie), then `POST /api/auth/password`, then the other endpoints. Admins manage accounts under `/api/users` (create with a temporary password, change role, deactivate, reset password; each change needs a reason). Sessions end after 8 hours without activity; 5 wrong passwords in a row lock an account for 15 minutes. Logins, failed logins, logouts and refused requests go to the audit log. On the first start after this update the database gets new tables (users, sessions, sites); a copy of the old database is saved in `data/backups/` first.
 
-**Data endpoints** (used by the dashboard; all listed with their response types at `/docs`): `/api/overview` (the day at a glance: present, inside now, left, absent, missing exit, arrivals per hour, every camera's status), `/api/attendance` (daily rows, the same as the Overview), `/api/events` (raw IN/OUT events with score and snapshot; `/api/snapshots/{id}` shows a snapshot to logged-in users only), `/api/attendance/corrections` (HR and admin: add an IN/OUT, change a time, void or restore an event; the original time is kept and every correction needs a reason), `/api/people` (list, profile with photos and recent attendance, add, edit, deactivate, re-enroll), `/api/cameras` (list with status, add, edit, start, stop, and `/api/cameras/test` to open a camera once and see its resolution and fps), `/api/sites`, `/api/audit` and `/api/settings` (thresholds and the cool-down; admin only, each change audited, applied to cameras started afterwards). Lists take `page`, `page_size`, `sort` (e.g. `-date`), `q` (search) and, where it applies, `site_id`. Camera passwords never appear in a response: sources keep their `${VAR}` placeholders. A camera's region of interest can be saved, but the camera worker doesn't use it yet.
+**Data endpoints** (used by the dashboard; all listed with their response types at `/docs`): `/api/overview` (the day at a glance: present, inside now, complete, missing exit, missing entry, check, absent, arrivals per hour, every camera's status), `/api/attendance` (daily rows, the same as the Overview), `/api/events` (raw IN/OUT events with score and snapshot; `/api/snapshots/{id}` shows a snapshot to logged-in users only), `/api/attendance/corrections` (HR and admin: add an IN/OUT, change a time, void or restore an event; the original time is kept and every correction needs a reason), `/api/people` (list, profile with photos and recent attendance, add, edit, deactivate, re-enroll), `/api/cameras` (list with status, add, edit, start, stop, and `/api/cameras/test` to open a camera once and see its resolution and fps), `/api/sites`, `/api/audit` and `/api/settings` (thresholds and the cool-down; admin only, each change audited, applied to cameras started afterwards). Lists take `page`, `page_size`, `sort` (e.g. `-date`), `q` (search) and, where it applies, `site_id`. Camera passwords never appear in a response: sources keep their `${VAR}` placeholders. A camera's region of interest can be saved, but the camera worker doesn't use it yet.
 
 **Live video and live updates.** While logged in (admin, HR or guard), open `http://127.0.0.1:8000/api/cameras/1/stream` in the browser (or use it as an image source): the running camera's picture with face boxes and names, up to 8 frames a second and 960 px wide (`STREAM_FPS`, `STREAM_MAX_WIDTH` in `app/config.py`); `/api/cameras/1/snapshot.jpg` is one current frame. The camera encodes each frame once however many people watch, and goes back to its normal pace when nobody does. A web page can open the WebSocket `/api/ws` to get each new IN/OUT event, every camera's status every 2 seconds, and a notice after each correction.
 

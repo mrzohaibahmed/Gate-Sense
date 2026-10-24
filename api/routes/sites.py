@@ -1,10 +1,8 @@
 """Sites: every camera and every person belongs to one. Changing them is admin only; the list is readable by every
-role, for the site filter."""
-
-import zoneinfo
+role, for the site filter. (A site has no time zone of its own: a day is local midnight to midnight on this PC.)"""
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from api import auth
 from api.auth import CurrentUser, require_permission
@@ -18,36 +16,16 @@ manage = require_permission("sites:manage")
 class Site(BaseModel):
     id: int
     name: str
-    timezone: str = Field(description='IANA name (e.g. "Asia/Karachi") or "local" (this PC\'s time zone)')
     cameras: int
     people: int
 
 
-def check_timezone(tz: str) -> str:
-    tz = tz.strip()
-    if tz != "local" and tz not in zoneinfo.available_timezones():
-        raise ValueError('use an IANA time zone name such as "Asia/Karachi", or "local"')
-    return tz
-
-
 class SiteIn(Reason):
     name: str = Field(min_length=1, max_length=80)
-    timezone: str = "local"
-
-    @field_validator("timezone")
-    @classmethod
-    def valid_timezone(cls, v: str) -> str:
-        return check_timezone(v)
 
 
 class SitePatch(Reason):
     name: str | None = Field(None, min_length=1, max_length=80)
-    timezone: str | None = None
-
-    @field_validator("timezone")
-    @classmethod
-    def valid_timezone(cls, v: str | None) -> str | None:
-        return None if v is None else check_timezone(v)
 
 
 def get_or_404(request: Request, site_id: int) -> dict:
@@ -65,7 +43,7 @@ def name_free(request: Request, name: str, except_id: int | None = None) -> None
 @router.get("", response_model=Page[Site])
 def list_sites(request: Request, params: ListParams = Depends(global_list_params),
                _: CurrentUser = Depends(require_permission("sites:read"))) -> dict:
-    return paginate(auth.db_of(request).sites(), params, ("name", "timezone"), ("id", "name", "timezone"), "id")
+    return paginate(auth.db_of(request).sites(), params, ("name",), ("id", "name"), "id")
 
 
 @router.get("/{site_id}", response_model=Site)
@@ -76,14 +54,14 @@ def get_site(site_id: int, request: Request, _: CurrentUser = Depends(require_pe
 @router.post("", response_model=Site, status_code=201)
 def create_site(body: SiteIn, request: Request, admin: CurrentUser = Depends(manage)) -> dict:
     name_free(request, body.name.strip())
-    site_id = auth.db_of(request).create_site(body.name.strip(), body.timezone, admin.username, body.reason)
+    site_id = auth.db_of(request).create_site(body.name.strip(), admin.username, body.reason)
     return get_or_404(request, site_id)
 
 
 @router.patch("/{site_id}", response_model=Site)
 def update_site(site_id: int, body: SitePatch, request: Request, admin: CurrentUser = Depends(manage)) -> dict:
     site = get_or_404(request, site_id)
-    changes = {k: v.strip() for k, v in (("name", body.name), ("timezone", body.timezone)) if v is not None}
+    changes = {"name": body.name.strip()} if body.name is not None else {}
     if "name" in changes:
         name_free(request, changes["name"], site_id)
     auth.db_of(request).update_site(site_id, changes, admin.username, body.reason)

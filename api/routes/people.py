@@ -132,9 +132,11 @@ def get_person(person_id: int, request: Request, _: CurrentUser = Depends(read))
     today = date.today()
     first = today - timedelta(days=RECENT_DAYS - 1)
     days = [r for r in attendance_rows(db, first, today) if r["person_id"] == person_id]
+    events = db.recent_events(person_id, first)
+    repeats = db.repeat_ids(events)
     return PersonDetail(**person, photo_list=photos,
                         recent_attendance=sorted(days, key=lambda r: r["date"], reverse=True),
-                        recent_events=[event_out(e) for e in db.recent_events(person_id, first)])
+                        recent_events=[event_out(e, repeats) for e in events])
 
 
 @router.get("/{person_id}/photos/{file}", response_class=FileResponse,

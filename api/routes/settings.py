@@ -1,4 +1,4 @@
-"""Recognition thresholds and the debounce (cool-down): see and change them. Admin only; every change audited.
+"""Recognition thresholds, the liveness check and the debounce (cool-down): see and change them. Admin only; every change audited.
 
 The values live in app/config.py; changes are saved to settings.json and applied over them
 (config.EDITABLE_SETTINGS lists what can be changed). Camera workers read them when they start.
@@ -27,9 +27,9 @@ def key(name: str) -> str:
 
 class Setting(BaseModel):
     key: str = Field(description="e.g. match_threshold (config.MATCH_THRESHOLD)")
-    value: float
+    value: float = Field(description="for a bool setting: 1 = on, 0 = off")
     default: float = Field(description="the value in app/config.py")
-    type: Literal["int", "float"]
+    type: Literal["int", "float", "bool"]
     minimum: float
     maximum: float
     description: str
@@ -43,7 +43,9 @@ class Settings(BaseModel):
 
 
 class SettingsPatch(Reason):
-    values: dict[str, float] = Field(description='{"match_threshold": 0.5, "cooldown_seconds": 600, ...}')
+    values: dict[str, float | bool] = Field(description='{"match_threshold": 0.5, "cooldown_seconds": 600, '
+                                                    '"liveness_enabled": false, ...} (bool settings: true/false '
+                                                    'or 1/0)')
 
 
 def current(request: Request) -> Settings:
@@ -51,8 +53,8 @@ def current(request: Request) -> Settings:
     items = []
     for name, (kind, low, high, meaning) in config.EDITABLE_SETTINGS.items():
         value, default = getattr(config, name), config.DEFAULT_SETTINGS[name]
-        items.append(Setting(key=key(name), value=value, default=default, type=kind.__name__, minimum=low,
-                             maximum=high, description=meaning, changed=value != default))
+        items.append(Setting(key=key(name), value=float(value), default=float(default), type=kind.__name__,
+                             minimum=low, maximum=high, description=meaning, changed=value != default))
     running = [w.camera for w in request.app.state.workers.statuses() if w.state != "stopped"]
     return Settings(settings=items, applies=APPLIES, running_cameras=running)
 

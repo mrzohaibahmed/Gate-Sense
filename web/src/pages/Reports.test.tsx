@@ -19,7 +19,8 @@ const daily: DailyRow[] = [
     last_out: "2026-10-21T17:10:00",
     worked_hours: 9.08,
     missing_out: false,
-    status: "present",
+    check: false,
+    status: "complete",
   },
   {
     date: "2026-10-21",
@@ -30,6 +31,7 @@ const daily: DailyRow[] = [
     last_out: null,
     worked_hours: null,
     missing_out: true,
+    check: false,
     status: "missing exit",
   },
 ];
@@ -42,6 +44,7 @@ const totals: PersonTotal[] = [
     days_present: 20,
     days_missing_exit: 1,
     days_missing_entry: 0,
+    days_check: 0,
     days_absent: 1,
     total_hours: 172.5,
     avg_hours: 9.08,

@@ -15,16 +15,17 @@ export function DirectionBadge({ direction, className }: { direction: Direction 
   );
 }
 
-const STATUS: Record<Status, { tone: "inside" | "left" | "missing" | "absent"; label: string }> = {
-  present: { tone: "left", label: "Left" },
+const STATUS: Record<Status, { tone: "inside" | "left" | "missing" | "absent" | "error"; label: string }> = {
+  complete: { tone: "left", label: "Complete" },
   "missing exit": { tone: "missing", label: "Missing exit" },
   "missing entry": { tone: "missing", label: "Missing entry" },
+  check: { tone: "error", label: "Check" },
   absent: { tone: "absent", label: "Absent" },
 };
 
 /**
- * A day's status. "present" (came in and went out) reads "Left"; for today, "missing exit" means still inside,
- * so pass `today` to show "Inside".
+ * A day's status: complete (first IN, a later last OUT), missing exit, missing entry, check (the last OUT is earlier
+ * than the first IN), absent. For today, "missing exit" means still inside, so pass `today` to show "Inside".
  */
 export function StatusBadge({ status, today }: { status: Status; today?: boolean }) {
   if (today && status === "missing exit") return <Badge tone="inside">Inside</Badge>;

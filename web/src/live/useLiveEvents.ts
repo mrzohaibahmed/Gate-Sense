@@ -35,6 +35,7 @@ export type Decision = {
   second: number | null;
   margin: number | null;
   face_px: number | null;
+  liveness: number | null; // the frame's live score 0-1 (null: not checked); a spoof is a skip "spoof (score)"
   detail: string;
 };
 export type DecisionsMessage = { type: "decisions"; camera: string; id: number | null; decisions: Decision[] };

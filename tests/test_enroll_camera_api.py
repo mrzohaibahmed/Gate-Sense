@@ -19,7 +19,7 @@ from app.workers import WorkerManager as AppWorkerManager
 from tests.test_api import FAKE, wait_for
 from tests.test_data_api import as_role, clip, first_password, items, seed  # noqa: F401  (fixture)
 from tests.test_web_api import PosingDetector, frame
-from tests.fakes import FakeRecognizer
+from tests.fakes import FakeLiveness, FakeRecognizer
 
 PASSWORD = "p@ss #1"
 
@@ -79,7 +79,7 @@ def app(tmp_path, monkeypatch, opener):
     inner = AppWorkerManager(None, script=FAKE, run_dir=run, log_dir=logs, live_dir=live_dir,
                              extra_args=("--no-window", "--run-dir", str(run), "--frames", "--live-dir", str(live_dir)))
     application = create_app(workers=WorkerManager(inner), models=lambda: (PosingDetector(), FakeRecognizer()),
-                             enroll_opener=opener)
+                             enroll_opener=opener, liveness=FakeLiveness)
     try:
         with TestClient(application):
             application.state.seed = seed()
@@ -159,6 +159,11 @@ def test_checks_and_capture_use_the_full_resolution_window(app, opener):
     assert gx1 <= (x1 + x2) / 2 <= gx2 and gy1 <= (y1 + y2) / 2 <= gy2
     wrong = hr.post(f"/api/enrollment/sessions/{sid}/capture", params={"step": "left"})
     assert wrong.status_code == 409 and "left" in wrong.json()["detail"].lower()
+    assert check["liveness"] == 0.99
+    app.state.liveness = lambda: FakeLiveness(0.2)  # someone holds up a phone to the gate camera
+    spoof = hr.post(f"/api/enrollment/sessions/{sid}/capture", params={"step": "front"})
+    assert spoof.status_code == 409 and spoof.json()["detail"] == "Use a real face, not a photo or a screen."
+    app.state.liveness = FakeLiveness
 
     photos = []
     for i, step in enumerate(("front", "left", "right")):

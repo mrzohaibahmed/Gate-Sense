@@ -2,7 +2,8 @@
 preview and as CSV or Excel downloads. Every export is written to the audit log.
 
 A working day is the calendar date, first IN to last OUT (app/reports.py range_rows -> app.db.day_summaries, the
-same rule as the Today page and /api/attendance); there are no shifts or late rules yet.
+same rule as /api/attendance and the overview); there are no shifts or late rules yet. The exports' Status column
+says "inside" for today's days without an OUT yet, like the screens.
 """
 
 from datetime import date, datetime
@@ -29,8 +30,9 @@ class DailyRow(BaseModel):
     department: str | None
     first_in: datetime | None
     last_out: datetime | None
-    worked_hours: float | None = Field(description="last OUT minus first IN, in hours")
-    missing_out: bool = Field(description="came in but no OUT after the last IN")
+    worked_hours: float | None = Field(description="last OUT minus first IN, in hours (complete days only)")
+    missing_out: bool = Field(description="came in but no OUT that day (not for today: still inside)")
+    check: bool = Field(description="the last OUT is earlier than the first IN: needs a look")
     status: Status
 
 
@@ -39,9 +41,10 @@ class PersonTotal(BaseModel):
     name: str
     department: str | None
     days: int = Field(description="days in the range")
-    days_present: int = Field(description="days with an IN")
-    days_missing_exit: int
+    days_present: int = Field(description="days with an IN (complete, missing exit or check)")
+    days_missing_exit: int = Field(description="days with an IN but no OUT (today not counted while still inside)")
     days_missing_entry: int
+    days_check: int = Field(description="days whose last OUT is earlier than the first IN")
     days_absent: int
     total_hours: float
     avg_hours: float | None = Field(description="total hours / days with hours worked")
@@ -89,7 +92,7 @@ FILTERS = {
 def daily_report(request: Request, date_from: date | None = FILTERS["date_from"],
                  date_to: date | None = FILTERS["date_to"], department: str | None = FILTERS["department"],
                  site_id: int | None = FILTERS["site_id"], _: CurrentUser = Depends(read)) -> dict:
-    """The daily register: each person each day, first IN, last OUT, hours worked, missing OUT."""
+    """The daily register: each person each day, first IN, last OUT, hours worked, missing OUT, check."""
     first, last = resolve("daily", date_from, date_to)
     return {"first": first, "last": last, "rows": rows_for(request, first, last, department, site_id)}
 
@@ -98,7 +101,8 @@ def daily_report(request: Request, date_from: date | None = FILTERS["date_from"]
 def monthly_report(request: Request, date_from: date | None = FILTERS["date_from"],
                    date_to: date | None = FILTERS["date_to"], department: str | None = FILTERS["department"],
                    site_id: int | None = FILTERS["site_id"], _: CurrentUser = Depends(read)) -> dict:
-    """Per person over the range: days present, missing exits, total hours (added up from the daily register)."""
+    """Per person over the range: days present, missing exits, days to check, total hours (added up from the daily
+    register)."""
     first, last = resolve("monthly", date_from, date_to)
     return {"first": first, "last": last,
             "people": reports.person_totals(rows_for(request, first, last, department, site_id))}

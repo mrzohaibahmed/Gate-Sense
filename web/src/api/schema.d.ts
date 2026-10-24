@@ -201,8 +201,10 @@ export interface paths {
         };
         /**
          * List Attendance
-         * @description One row per person per day: first IN, last OUT, worked time and status, computed from the events like the
-         *     dashboard's Today page (voided events are ignored). site_id = the person's site. Default sort: -date, then name.
+         * @description One row per person per day: first IN, last OUT, worked time and status, computed from the events (voided ones
+         *     ignored; any other event is a repeat). Status: complete, missing exit (today: still inside), missing entry, check
+         *     (the last OUT is earlier than the first IN; no hours), absent. site_id = the person's site. Default sort: -date,
+         *     then name.
          */
         get: operations["list_attendance"];
         put?: never;
@@ -222,8 +224,9 @@ export interface paths {
         };
         /**
          * List Events
-         * @description Raw IN/OUT events with score and snapshot URL, manual and voided ones included. site_id = the camera's site.
-         *     Default sort: -timestamp.
+         * @description Raw IN/OUT events with score and snapshot URL, manual and voided ones included; `repeat` marks the events the
+         *     person's day doesn't use (not the first IN or the last OUT). site_id = the camera's site. Default sort:
+         *     -timestamp.
          */
         get: operations["list_events"];
         put?: never;
@@ -1077,7 +1080,7 @@ export interface paths {
         };
         /**
          * Daily Report
-         * @description The daily register: each person each day, first IN, last OUT, hours worked, missing OUT.
+         * @description The daily register: each person each day, first IN, last OUT, hours worked, missing OUT, check.
          */
         get: operations["daily_report"];
         put?: never;
@@ -1097,7 +1100,8 @@ export interface paths {
         };
         /**
          * Monthly Report
-         * @description Per person over the range: days present, missing exits, total hours (added up from the daily register).
+         * @description Per person over the range: days present, missing exits, days to check, total hours (added up from the daily
+         *     register).
          */
         get: operations["monthly_report"];
         put?: never;
@@ -1156,7 +1160,7 @@ export interface components {
             last_out: string | null;
             /**
              * Worked Hours
-             * @description last OUT minus first IN, in hours (2 decimals)
+             * @description last OUT minus first IN, in hours (2 decimals); only for complete
              */
             worked_hours: number | null;
             /** Worked Minutes */
@@ -1165,7 +1169,12 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "present" | "missing exit" | "missing entry" | "absent";
+            status: "complete" | "missing exit" | "missing entry" | "check" | "absent";
+            /**
+             * Inside
+             * @description the day's last event is an IN (for today: in the building now)
+             */
+            inside: boolean;
         };
         /** AuditEntry */
         AuditEntry: {
@@ -1343,6 +1352,8 @@ export interface components {
             box: number[] | null;
             /** Guide */
             guide: number[];
+            /** Liveness */
+            liveness?: number | null;
             /**
              * Connected
              * @description frames are arriving
@@ -1655,7 +1666,10 @@ export interface components {
             direction?: ("IN" | "OUT") | null;
             /** Camera Id */
             camera_id?: number | null;
-            /** Timestamp */
+            /**
+             * Timestamp
+             * @description local time without a time zone, e.g. 2026-10-20T08:30:00
+             */
             timestamp?: string | null;
         };
         /** CurrentUser */
@@ -1714,19 +1728,24 @@ export interface components {
             last_out: string | null;
             /**
              * Worked Hours
-             * @description last OUT minus first IN, in hours
+             * @description last OUT minus first IN, in hours (complete days only)
              */
             worked_hours: number | null;
             /**
              * Missing Out
-             * @description came in but no OUT after the last IN
+             * @description came in but no OUT that day (not for today: still inside)
              */
             missing_out: boolean;
+            /**
+             * Check
+             * @description the last OUT is earlier than the first IN: needs a look
+             */
+            check: boolean;
             /**
              * Status
              * @enum {string}
              */
-            status: "present" | "missing exit" | "missing entry" | "absent";
+            status: "complete" | "missing exit" | "missing entry" | "check" | "absent";
         };
         /** DatabaseStatus */
         DatabaseStatus: {
@@ -1848,6 +1867,12 @@ export interface components {
             /** Voided */
             voided: boolean;
             /**
+             * Repeat
+             * @description not the person's first IN or last OUT that day: kept, but the day doesn't use it (e.g. back in after the last OUT, a lunch break)
+             * @default false
+             */
+            repeat?: boolean;
+            /**
              * Snapshot Url
              * @description GET it with the session cookie; None if there is no snapshot
              */
@@ -1917,6 +1942,11 @@ export interface components {
              * @description the guide box the face must be in, as fractions of the frame
              */
             guide: number[];
+            /**
+             * Liveness
+             * @description live score 0-1 (below LIVENESS_THRESHOLD = a photo or a screen); null when not checked
+             */
+            liveness?: number | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2056,24 +2086,24 @@ export interface components {
             people: number;
             /**
              * Present
-             * @description came in that day (has an IN)
+             * @description came in that day (has an IN: complete, missing exit or check)
              */
             present: number;
             /**
              * Inside Now
-             * @description came in and hasn't gone out yet; only for today (None otherwise)
+             * @description their last event today is an IN (in the building now); only for today (None otherwise)
              */
             inside_now: number | null;
             /**
-             * Left
-             * @description came in and went out (status present)
+             * Complete
+             * @description first IN and a later last OUT
              */
-            left: number;
+            complete: number;
             /** Absent */
             absent: number;
             /**
              * Missing Exit
-             * @description last event is an IN (for today: same people as inside_now)
+             * @description an IN but no OUT at all (for today: still inside, not a problem yet)
              */
             missing_exit: number;
             /**
@@ -2081,6 +2111,11 @@ export interface components {
              * @description went out without an IN that day
              */
             missing_entry: number;
+            /**
+             * Check
+             * @description the last OUT is earlier than the first IN: needs a look
+             */
+            check: number;
             /** Arrivals By Hour */
             arrivals_by_hour: components["schemas"]["HourCount"][];
             /** Cameras */
@@ -2318,13 +2353,21 @@ export interface components {
             days: number;
             /**
              * Days Present
-             * @description days with an IN
+             * @description days with an IN (complete, missing exit or check)
              */
             days_present: number;
-            /** Days Missing Exit */
+            /**
+             * Days Missing Exit
+             * @description days with an IN but no OUT (today not counted while still inside)
+             */
             days_missing_exit: number;
             /** Days Missing Entry */
             days_missing_entry: number;
+            /**
+             * Days Check
+             * @description days whose last OUT is earlier than the first IN
+             */
+            days_check: number;
             /** Days Absent */
             days_absent: number;
             /** Total Hours */
@@ -2554,7 +2597,10 @@ export interface components {
              * @description e.g. match_threshold (config.MATCH_THRESHOLD)
              */
             key: string;
-            /** Value */
+            /**
+             * Value
+             * @description for a bool setting: 1 = on, 0 = off
+             */
             value: number;
             /**
              * Default
@@ -2565,7 +2611,7 @@ export interface components {
              * Type
              * @enum {string}
              */
-            type: "int" | "float";
+            type: "int" | "float" | "bool";
             /** Minimum */
             minimum: number;
             /** Maximum */
@@ -2599,10 +2645,10 @@ export interface components {
             reason: string;
             /**
              * Values
-             * @description {"match_threshold": 0.5, "cooldown_seconds": 600, ...}
+             * @description {"match_threshold": 0.5, "cooldown_seconds": 600, "liveness_enabled": false, ...} (bool settings: true/false or 1/0)
              */
             values: {
-                [key: string]: number;
+                [key: string]: number | boolean;
             };
         };
         /** Site */
@@ -2611,11 +2657,6 @@ export interface components {
             id: number;
             /** Name */
             name: string;
-            /**
-             * Timezone
-             * @description IANA name (e.g. "Asia/Karachi") or "local" (this PC's time zone)
-             */
-            timezone: string;
             /** Cameras */
             cameras: number;
             /** People */
@@ -2630,11 +2671,6 @@ export interface components {
             reason: string;
             /** Name */
             name: string;
-            /**
-             * Timezone
-             * @default local
-             */
-            timezone?: string;
         };
         /** SitePatch */
         SitePatch: {
@@ -2645,8 +2681,6 @@ export interface components {
             reason: string;
             /** Name */
             name?: string | null;
-            /** Timezone */
-            timezone?: string | null;
         };
         /** StepInfo */
         StepInfo: {
@@ -3363,7 +3397,7 @@ export interface operations {
                 to?: string | null;
                 /** @description person id */
                 person?: number | null;
-                status?: ("present" | "missing exit" | "missing entry" | "absent") | null;
+                status?: ("complete" | "missing exit" | "missing entry" | "check" | "absent") | null;
                 /** @description exact department name */
                 department?: string | null;
                 page?: number;

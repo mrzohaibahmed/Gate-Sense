@@ -40,6 +40,7 @@ from api.routes import auth as auth_routes
 from api.workers import WorkerManager
 from app import config
 from app import db as app_db
+from app import liveness as app_liveness
 
 PUBLIC_PATHS = {"/api/health", "/api/auth/login"}  # the only endpoints without require_permission
 
@@ -86,9 +87,10 @@ def face_models():
 
 
 def create_app(workers: WorkerManager | None = None, database: Database | None = None, models=None,
-               enroll_opener=None) -> FastAPI:
-    """`workers`, `database`, `models` (a callable returning (detector, recognizer)) and `enroll_opener` (opens an
-    IP camera for the enrollment wizard: (source, name) -> newest-frame reader) are injectable for tests."""
+               enroll_opener=None, liveness=None) -> FastAPI:
+    """`workers`, `database`, `models` (a callable returning (detector, recognizer)), `enroll_opener` (opens an
+    IP camera for the enrollment wizard: (source, name) -> newest-frame reader) and `liveness` (a callable returning
+    the enrollment wizard's liveness checker, app.liveness.shared) are injectable for tests."""
     manager = workers or WorkerManager()
     database = database or Database()
     enroll_cameras = EnrollCameras(manager, enroll_opener)
@@ -121,6 +123,7 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
                   generate_unique_id_function=lambda route: route.name)  # operation ids = function names
     app.state.workers, app.state.db, app.state.started = manager, database, time.time()
     app.state.face_models = models or face_models
+    app.state.liveness = liveness or app_liveness.shared
     app.state.enroll_cameras = enroll_cameras
     app.state.frames = FrameHub(lambda: manager.live_dir)
     app.state.events = EventHub(database, manager)

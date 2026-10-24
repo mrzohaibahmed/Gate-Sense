@@ -1,4 +1,4 @@
-"""Fake detector/recognizer and synthetic photos for enrollment tests (no models needed).
+"""Fake detector/recognizer/liveness and synthetic photos for enrollment tests (no models needed).
 
 A photo's 20x20 top-left block encodes what the fake detector "sees", so the
 result survives saving as JPEG: ~30 no face, ~100 one face, ~170 two faces,
@@ -8,7 +8,9 @@ result survives saving as JPEG: ~30 no face, ~100 one face, ~170 two faces,
 import cv2
 import numpy as np
 
+from app import config
 from app.detector import Detection
+from app.liveness import LivenessResult
 
 FRONTAL_112 = np.array([[38.3, 51.7], [73.5, 51.5], [56.0, 71.7], [41.5, 92.4], [70.7, 92.2]], np.float32)
 MARKERS = {"none": 30, "one": 100, "two": 170, "small": 240}
@@ -43,3 +45,18 @@ class FakeRecognizer:
     def embed(self, img, det):
         v = np.random.default_rng(int(img.sum()) % (2**32)).standard_normal(512).astype(np.float32)
         return v / np.linalg.norm(v)
+
+
+class FakeLiveness:
+    """Liveness without models. Each check returns the next of `scores` (the last one repeats); `calls` records
+    (image shape, bbox) so tests can see which frame and box it was given."""
+
+    def __init__(self, *scores: float):
+        self.scores = list(scores) or [0.99]
+        self.calls: list[tuple[tuple, np.ndarray]] = []
+
+    def check(self, img, bbox, threshold=None):
+        threshold = config.LIVENESS_THRESHOLD if threshold is None else threshold
+        score = self.scores[min(len(self.calls), len(self.scores) - 1)]
+        self.calls.append((img.shape, np.asarray(bbox, np.float32).copy()))
+        return LivenessResult(score, score >= threshold, 1.0)

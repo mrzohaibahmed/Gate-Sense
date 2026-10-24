@@ -150,6 +150,7 @@ describe("live decisions", () => {
       second: 0.42,
       margin: 0.29,
       face_px: 150,
+      liveness: 0.97,
       detail: "vote 1/3",
     };
     act(() => latest().send({ type: "decisions", camera: "entrance", id: 1, decisions: [decision] }));

@@ -1,6 +1,7 @@
-"""Print a day's attendance: name, first IN, last OUT, worked hours, missing-exit flag.
+"""Print a day's attendance: name, first IN, last OUT, worked hours, missing-exit and check flags.
 
-Recomputes daily_attendance for that day from the raw events first.
+Computed from the raw events with the same rule as the dashboard and the reports (app.db.day_summaries):
+one line per person, first IN to last OUT; today's days without an OUT yet say "inside".
 
 Run from the project root:
     .venv\\Scripts\\python scripts\\today.py
@@ -15,7 +16,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import db  # noqa: E402
-from app.attendance import MISSING_EXIT  # noqa: E402
+from app.attendance import CHECK, MISSING_EXIT  # noqa: E402
+from app.reports import INSIDE  # noqa: E402
 
 
 def hhmm(dt) -> str:
@@ -28,7 +30,7 @@ def main() -> int:
     args = parser.parse_args()
 
     conn = db.connect()
-    summaries = db.refresh_daily(conn, args.date)
+    summaries, _ = db.day_summaries(conn, args.date)
     names = {r["employee_code"]: r["name"] for r in conn.execute("SELECT employee_code, name FROM persons")}
     conn.close()
 
@@ -36,12 +38,16 @@ def main() -> int:
     if not summaries:
         print("No one enrolled. Run scripts\\enroll.py first.")
         return 0
-    print(f"{'Name':<20} {'First IN':<9} {'Last OUT':<9} {'Hours':>6}  {'Missing exit':<12} Status")
-    print("-" * 72)
+    today = args.date == date.today()
+    print(f"{'Name':<20} {'First IN':<9} {'Last OUT':<9} {'Hours':>6}  {'Missing exit':<12} {'Check':<5} Status")
+    print("-" * 80)
     for s in summaries:
         hours = f"{s.worked_hours:.2f}" if s.worked_hours is not None else "-"
-        flag = "YES" if s.status == MISSING_EXIT else ""
-        print(f"{names.get(s.person, s.person):<20} {hhmm(s.first_in):<9} {hhmm(s.last_out):<9} {hours:>6}  {flag:<12} {s.status}")
+        flag = "YES" if s.status == MISSING_EXIT and not today else ""
+        check = "YES" if s.status == CHECK else ""
+        status = INSIDE if s.status == MISSING_EXIT and today else s.status
+        print(f"{names.get(s.person, s.person):<20} {hhmm(s.first_in):<9} {hhmm(s.last_out):<9} {hours:>6}  "
+              f"{flag:<12} {check:<5} {status}")
     return 0
 
 

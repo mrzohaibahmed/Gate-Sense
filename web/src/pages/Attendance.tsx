@@ -22,7 +22,14 @@ import { cn, duration, hhmm, today } from "@/lib/utils";
 
 import { CorrectionForm } from "./CorrectionForm";
 
-export const STATUSES: Status[] = ["present", "missing exit", "missing entry", "absent"];
+export const STATUSES: Status[] = ["complete", "missing exit", "missing entry", "check", "absent"];
+const STATUS_OPTION: Record<Status, string> = {
+  complete: "Complete (in and out)",
+  "missing exit": "Missing exit",
+  "missing entry": "Missing entry",
+  check: "Check (last OUT before first IN)",
+  absent: "Absent",
+};
 const PAGE_SIZE = 100;
 
 function columns(isToday: boolean): ColumnDef<AttendanceRow>[] {
@@ -197,7 +204,7 @@ export function AttendancePage() {
                 <option value="">All statuses</option>
                 {STATUSES.map((s) => (
                   <option key={s} value={s}>
-                    {s === "present" ? "Left (in and out)" : s[0]!.toUpperCase() + s.slice(1)}
+                    {STATUS_OPTION[s]}
                   </option>
                 ))}
               </NativeSelect>
@@ -306,8 +313,11 @@ export function DayPanel({ row }: { row: AttendanceRow }) {
             {shown.map((e) => (
               <li
                 key={e.id}
-                className={cn("flex items-center gap-2 rounded-md border p-2", e.voided && "bg-muted/50 opacity-60")}
-                aria-label={`${e.direction} at ${hhmm(e.timestamp)}${e.voided ? " (voided)" : ""}`}
+                className={cn(
+                  "flex items-center gap-2 rounded-md border p-2",
+                  (e.voided || e.repeat) && "bg-muted/50 opacity-60",
+                )}
+                aria-label={`${e.direction} at ${hhmm(e.timestamp)}${e.voided ? " (voided)" : e.repeat ? " (repeat)" : ""}`}
               >
                 {e.snapshot_url ? (
                   <a href={resourceUrl(e.snapshot_url)} target="_blank" rel="noreferrer">
@@ -330,6 +340,7 @@ export function DayPanel({ row }: { row: AttendanceRow }) {
                       <span className="text-xs text-muted-foreground">was {hhmm(e.original_timestamp)}</span>
                     )}
                     {e.voided && <Badge tone="error">Voided</Badge>}
+                    {e.repeat && <Badge title="Kept, but the day uses the first IN and the last OUT">repeat</Badge>}
                   </span>
                   <span className="text-xs text-muted-foreground">
                     {e.camera}

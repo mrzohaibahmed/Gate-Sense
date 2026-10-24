@@ -74,7 +74,7 @@ Mark attendance only when several frames of one tracked face agree on the same e
 2. **Pick the best 3 to 5 frames** of each track by the quality filter, and embed those.
 3. **Match** each embedding against the gallery. Accept a frame when the top cosine score clears the threshold (start around 0.45 for ArcFace and tune on your own footage) and beats the second-best person by a clear margin.
 4. **Vote** across the track's frames; the person must win the majority, otherwise the track is unknown.
-5. **Debounce:** ignore the same person on the same camera for a cool-down window (for example 5 minutes) so standing near the gate does not log 50 events.
+5. **Debounce:** ignore the same person in the same direction (any camera of that direction) for a cool-down window (for example 5 minutes, reset at midnight) so standing near the gate does not log 50 events.
 6. **Write the event** with camera direction, timestamp, score and a small face snapshot for audit.
 7. **Daily summary:** first IN of the day is the in-time and last OUT is the out-time; all raw events are kept so mid-day exits and returns are visible.
 

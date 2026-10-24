@@ -216,9 +216,10 @@ function shiftMonth(month: string, delta: number): string {
 }
 
 const CELL: Record<string, string> = {
-  present: "bg-status-left/15 text-status-left",
+  complete: "bg-status-left/15 text-status-left",
   "missing exit": "bg-status-missing/15 text-status-missing",
   "missing entry": "bg-status-missing/15 text-status-missing",
+  check: "bg-destructive/15 text-destructive",
   absent: "bg-status-absent/10 text-status-absent",
 };
 
