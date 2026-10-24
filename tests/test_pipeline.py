@@ -254,7 +254,7 @@ def test_worker_run_on_a_1080p_clip(tmp_path, monkeypatch, capsys):
     assert kinds[:4] == [("match", 150, 0.97), ("match", 150, 0.97), ("match", 150, 0.97), ("event", None, None)]
     out = capsys.readouterr().out
     assert "frame size 1920x1080: detection at 640x360 (scale 3.00)" in out
-    assert "Liveness on: live score >= 0.8, 3 live frames per track" in out
+    assert "Liveness on: live score >= 0.7, 3 live frames per track" in out
     assert "too small" not in out
 
     conn = db.connect()
@@ -279,7 +279,7 @@ def test_spoof_frames_never_vote(capsys):
     assert p.recorder.spoofs == [(track.track_id, 0.12, (320, 320, 3))]  # once per track, with the background
     out = capsys.readouterr().out
     assert out.count("WARNING: track") == 1 and "looks like a phone screen or a printed photo" in out
-    assert "snapshots/2026-10-20/spoof/" in out and out.count("spoof (live 0.120 < 0.8)") == 6
+    assert "snapshots/2026-10-20/spoof/" in out and out.count("spoof (live 0.120 < 0.7)") == 6
     assert p.stats["skip: spoof"] == 6
 
 

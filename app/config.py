@@ -55,7 +55,7 @@ TRACK_LOST_SECONDS = 1.5  # a track not seen for this long is closed
 # votes, and a track is recorded only after LIVENESS_MIN_FRAMES of its frames passed. The enrollment wizard
 # refuses a spoof too (photo files uploaded on the People page are not checked).
 LIVENESS_ENABLED = True
-LIVENESS_THRESHOLD = 0.8  # minimum live score
+LIVENESS_THRESHOLD = 0.7  # minimum live score (0.8 refused too many real people at the gate)
 LIVENESS_MIN_FRAMES = 3  # frames of a track that must pass before it can be recorded
 SPOOF_SNAPSHOT_SIZE = 320  # longest side of the review snapshot of a spoof (data/snapshots/<day>/spoof/)
 LIVENESS_THREADS = 1  # onnxruntime threads per liveness model (tiny models: more threads only slow the others down)

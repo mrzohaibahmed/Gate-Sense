@@ -168,4 +168,4 @@ def test_liveness_settings_are_editable():
     with pytest.raises(ValueError):
         config.check_setting("LIVENESS_THRESHOLD", 1.5)
     assert config.check_setting("LIVENESS_MIN_FRAMES", 4) == 4
-    assert (config.LIVENESS_ENABLED, config.LIVENESS_THRESHOLD, config.LIVENESS_MIN_FRAMES) == (True, 0.8, 3)
+    assert (config.LIVENESS_ENABLED, config.LIVENESS_THRESHOLD, config.LIVENESS_MIN_FRAMES) == (True, 0.7, 3)

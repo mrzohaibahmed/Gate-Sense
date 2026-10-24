@@ -386,17 +386,17 @@ def test_liveness_can_be_switched_off_and_tuned(app):
     s = {x["key"]: x for x in a.get("/api/settings").json()["settings"]}
     assert (s["liveness_enabled"]["type"], s["liveness_enabled"]["value"], s["liveness_enabled"]["default"]) == (
         "bool", 1, 1)
-    assert s["liveness_threshold"]["value"] == 0.8 and s["liveness_min_frames"]["value"] == 3
-    r = a.patch("/api/settings", json={"values": {"liveness_enabled": False, "liveness_threshold": 0.7},
+    assert s["liveness_threshold"]["value"] == 0.7 and s["liveness_min_frames"]["value"] == 3
+    r = a.patch("/api/settings", json={"values": {"liveness_enabled": False, "liveness_threshold": 0.75},
                                        "reason": "pilot: measuring false refusals"})
     assert r.status_code == 200, r.text
     s = {x["key"]: x for x in r.json()["settings"]}
     assert s["liveness_enabled"]["value"] == 0 and s["liveness_enabled"]["changed"]
-    assert config.LIVENESS_ENABLED is False and config.LIVENESS_THRESHOLD == 0.7
+    assert config.LIVENESS_ENABLED is False and config.LIVENESS_THRESHOLD == 0.75
     assert json.loads(config.SETTINGS_FILE.read_text())["settings"] == {"LIVENESS_ENABLED": False,
-                                                                        "LIVENESS_THRESHOLD": 0.7}
+                                                                        "LIVENESS_THRESHOLD": 0.75}
     entry = items(a.get("/api/audit", params={"action": "change_settings"}))[0]
-    assert entry["details"] == {"liveness_enabled": [True, False], "liveness_threshold": [0.8, 0.7]}
+    assert entry["details"] == {"liveness_enabled": [True, False], "liveness_threshold": [0.7, 0.75]}
     assert a.patch("/api/settings", json={"values": {"liveness_enabled": 1}, "reason": "on again"}).status_code == 200
     assert config.LIVENESS_ENABLED is True
     assert a.patch("/api/settings", json={"values": {"liveness_enabled": 2}, "reason": "x"}).status_code == 422

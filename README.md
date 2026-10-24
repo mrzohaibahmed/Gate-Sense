@@ -160,7 +160,7 @@ Use the scores to tune `MATCH_THRESHOLD` and `MATCH_MARGIN` in `app/config.py`.
 
 A phone screen or a printed photo held up to the camera is refused. Each face is checked by Silent-Face-Anti-Spoofing's two MiniFASNet models (2.7 and 4 times the face box, so the edge of a phone or a sheet of paper is in view) on the full-resolution frame, before it can vote. Their average "real" probability is the live score (0 to 1):
 
-- below `LIVENESS_THRESHOLD` (0.8) the frame is skipped as a spoof: "skip: spoof (0.12)" in the Live decisions table (with the score in the Live column), a WARNING in the camera's log, and one review snapshot per track in `data/snapshots/<day>/spoof/` (deleted with the day's other snapshots after `SNAPSHOT_RETENTION_DAYS`);
+- below `LIVENESS_THRESHOLD` (0.7) the frame is skipped as a spoof: "skip: spoof (0.12)" in the Live decisions table (with the score in the Live column), a WARNING in the camera's log, and one review snapshot per track in `data/snapshots/<day>/spoof/` (deleted with the day's other snapshots after `SNAPSHOT_RETENTION_DAYS`);
 - a person is recorded only when they win the vote and `LIVENESS_MIN_FRAMES` (3) of the track's frames passed the check;
 - the enrollment wizard refuses a spoof too ("Use a real face, not a photo or a screen"), for the webcam and IP cameras. Photo files uploaded on the People page are not checked.
 
@@ -178,7 +178,7 @@ A phone screen or a printed photo held up to the camera is refused. Each face is
 
 1. Walk past as yourself: decisions show "match ... live 1/3" up to "live 3/3" and an event, with Live scores near 1.
 2. Hold up your enrollment photo on a phone, then a printout of it, at the distance you normally stand: each frame should show "skip ... spoof (0.xx)" in red, no event, a WARNING in the camera log and a snapshot in `data/snapshots/<today>/spoof/`. Try a laptop screen and a tablet too, at different angles and distances.
-3. Watch the Live scores of real people at the real gate for a few days. If real people get refused (scores often below 0.8, e.g. in backlight or with small faces), lower `LIVENESS_THRESHOLD` a little; if a phone or photo ever gets through, raise it, or raise `LIVENESS_MIN_FRAMES`. Small faces (under about 100 px) give less reliable scores: get the camera closer.
+3. Watch the Live scores of real people at the real gate for a few days. If real people get refused (scores often below 0.7, e.g. in backlight or with small faces), lower `LIVENESS_THRESHOLD` a little; if a phone or photo ever gets through, raise it, or raise `LIVENESS_MIN_FRAMES`. Small faces (under about 100 px) give less reliable scores: get the camera closer.
 4. In the enrollment wizard, hold up a phone with a photo: Capture stays disabled with "Use a real face, not a photo or a screen".
 
 No software check stops every attack (a good mask, a high-resolution screen at the right distance). For stronger protection use an IR or depth camera.
