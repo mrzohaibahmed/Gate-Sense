@@ -142,7 +142,7 @@ def test_voided_events_do_not_seed_cooldown(setup):
     conn, pid, cam_in, _ = setup
     eid = db.add_event(conn, pid, cam_in, datetime(2026, 10, 20, 9, 0), 0.8, None)
     db.set_event_voided(conn, eid, True, "wrong person", "admin")
-    assert db.last_event_times(conn, date(2026, 10, 20)) == {}
+    assert db.last_event_times(conn, datetime(2026, 10, 20, 8, 55)) == {}
 
 
 def test_camera_passwords_never_stored(conn):
@@ -178,18 +178,19 @@ def test_events_to_day_summaries(conn):
     assert summaries["ali"].status == MISSING_EXIT
 
 
-def test_last_event_times_per_direction_of_one_day(conn):
+def test_last_event_times_per_direction_since_a_time(conn):
+    """Seeds a worker's cool-down: the latest event per direction from `since` on, across midnight."""
     db.sync_persons(conn, ["waqas"])
     pid = db.person_ids(conn)["waqas"]
     gate1, gate2 = db.upsert_camera(conn, "gate1", 0, "IN"), db.upsert_camera(conn, "gate2", 1, "IN")
     out = db.upsert_camera(conn, "exit", 2, "OUT")
-    db.add_event(conn, pid, gate1, datetime(2026, 10, 20, 9, 0), 0.8, None)
-    db.add_event(conn, pid, gate2, datetime(2026, 10, 20, 9, 7), 0.8, None)
-    db.add_event(conn, pid, out, datetime(2026, 10, 20, 17, 0), 0.8, None)
-    db.add_event(conn, pid, gate1, datetime(2026, 10, 19, 23, 59), 0.8, None)  # yesterday: not today's cool-down
-    assert db.last_event_times(conn, date(2026, 10, 20)) == {
-        ("waqas", "IN"): datetime(2026, 10, 20, 9, 7), ("waqas", "OUT"): datetime(2026, 10, 20, 17, 0)}
-    assert db.last_event_times(conn, date(2026, 10, 21)) == {}
+    db.add_event(conn, pid, gate1, datetime(2026, 10, 20, 23, 50), 0.8, None)
+    db.add_event(conn, pid, gate2, datetime(2026, 10, 20, 23, 57), 0.8, None)
+    db.add_event(conn, pid, out, datetime(2026, 10, 21, 0, 1), 0.8, None)
+    db.add_event(conn, pid, gate1, datetime(2026, 10, 20, 9, 0), 0.8, None)  # before `since`
+    assert db.last_event_times(conn, datetime(2026, 10, 20, 23, 55)) == {
+        ("waqas", "IN"): datetime(2026, 10, 20, 23, 57), ("waqas", "OUT"): datetime(2026, 10, 21, 0, 1)}
+    assert db.last_event_times(conn, datetime(2026, 10, 21, 0, 2)) == {}
 
 
 @pytest.fixture
@@ -212,12 +213,13 @@ def test_camera_event_cooldown_across_cameras_of_one_direction(conn, gates):
     assert conn.execute("SELECT count(*) FROM attendance_events").fetchone()[0] == 3
 
 
-def test_camera_event_cooldown_resets_at_midnight_and_ignores_voided(conn, gates):
+def test_camera_event_cooldown_runs_across_midnight_and_ignores_voided(conn, gates):
     pid, gate1, gate2, _ = gates
     late = datetime(2026, 10, 20, 23, 58)
-    voided = db.add_camera_event(conn, pid, gate1, late, 0.8, None, 300)[0]
-    assert db.add_camera_event(conn, pid, gate2, datetime(2026, 10, 21, 0, 2), 0.8, None, 300)[0]  # a new day
-    db.set_event_voided(conn, voided, True, "someone else", "admin")
+    first = db.add_camera_event(conn, pid, gate1, late, 0.8, None, 300)[0]
+    assert db.add_camera_event(conn, pid, gate2, datetime(2026, 10, 21, 0, 2), 0.8, None, 300) == (None, late)
+    assert db.add_camera_event(conn, pid, gate2, datetime(2026, 10, 21, 0, 3), 0.8, None, 300)[0]  # 5 min later
+    db.set_event_voided(conn, first, True, "someone else", "admin")
     assert db.add_camera_event(conn, pid, gate2, datetime(2026, 10, 20, 23, 59), 0.8, None, 300)[0]
 
 

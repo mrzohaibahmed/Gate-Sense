@@ -16,7 +16,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import config, live, workers  # noqa: E402
+from app import config, live, logfile, workers  # noqa: E402
 
 config.WORKER_STATUS_SECONDS = 0.2  # report quickly so tests run fast
 
@@ -32,7 +32,13 @@ parser.add_argument("--frames", action="store_true", help="read frames from a fa
 parser.add_argument("--live-dir")
 parser.add_argument("--error", help="last error the fake frame source reports")
 parser.add_argument("--decisions", action="store_true", help="with --frames: log a match and a skip now and then")
+parser.add_argument("--log-file", help="rotating log, like recognize.py (set by the manager)")
+parser.add_argument("--chatty", type=int, default=0, help="bytes of log lines per loop (rotation tests)")
 args = parser.parse_args()
+if args.log_file:
+    logfile.redirect_output(Path(args.log_file),
+                            int(os.environ.get("FAKE_WORKER_LOG_MAX_BYTES") or config.WORKER_LOG_MAX_BYTES),
+                            config.WORKER_LOG_BACKUPS)
 
 
 class FakeFrameSource:
@@ -75,6 +81,9 @@ try:
                 writer.decision("skip", seq + 1, detail="too small (60px < 80)", face_px=60)
             writer.full_frame(frame)
             writer.frame(frame, runtime.fps)
+        if args.chatty:
+            print("x" * (args.chatty - 1))
+            os.write(2, b"native" + bytes([10]))  # like FFmpeg writing to the stderr descriptor directly
         runtime.tick(processed=True)
         stop = runtime.should_stop()
         if stop and not args.ignore_stop:

@@ -50,14 +50,14 @@ import sys
 import time
 import traceback
 from collections import Counter, deque
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cv2  # noqa: E402
 
-from app import config, db, frame_source, sources, workers  # noqa: E402
+from app import config, db, frame_source, logfile, sources, workers  # noqa: E402
 from app.attendance import Cooldown  # noqa: E402
 from app.camera import is_live, mask_source, open_capture, parse_source  # noqa: E402
 from app.detector import (  # noqa: E402
@@ -68,7 +68,7 @@ from app.gallery import LOAD_ERRORS, Gallery, Match  # noqa: E402
 from app.images import crop_face, write_image  # noqa: E402
 from app.live import CameraHealth, LiveWriter  # noqa: E402
 from app.liveness import SOURCE as LIVENESS_SOURCE, Liveness, LivenessUnavailable, context_crop  # noqa: E402
-from app.models import providers_in_use  # noqa: E402
+from app.models import onnx_threads, providers_in_use  # noqa: E402
 from app.recognizer import Recognizer  # noqa: E402
 from app.tracker import FaceTracker, Sample, TrackState  # noqa: E402
 
@@ -76,6 +76,13 @@ GREEN, RED, GRAY, YELLOW, ORANGE = (0, 200, 0), (0, 0, 255), (160, 160, 160), (0
 FAILURES = {"no gallery", "could not open source", "video file not found", "lost the camera",
             "liveness model missing"}
 STATS_SECONDS = 60  # log a summary of what the pipeline saw this often
+
+
+def debug(line: str) -> None:
+    """A per-frame line (a skipped face): logged only with --debug or WORKER_DEBUG_LOG. Without it, these are
+    counted in the "stats:" line every STATS_SECONDS, so a person standing in view doesn't fill the log."""
+    if config.WORKER_DEBUG_LOG:
+        print(line)
 
 
 def fmt_score(name: str | None, score: float | None) -> str:
@@ -121,8 +128,9 @@ class Recorder:
     """Applies the cool-down, saves the snapshot and writes the event.
 
     Cool-down: one event per person per direction per COOLDOWN_SECONDS, whichever camera of that direction saw
-    them, reset at local midnight. This worker's own memory (Cooldown) skips the obvious repeats cheaply; the
-    database write (db.add_camera_event) checks again, in one transaction, against every camera's events.
+    them (no reset at midnight, so a night shift isn't split). This worker's own memory (Cooldown) skips the obvious
+    repeats cheaply; the database write (db.add_camera_event) checks again, in one transaction, against every
+    camera's events.
 
     A snapshot that can't be saved never costs the event (it is recorded without one). An event the database
     can't take right now (locked for too long, disk full) waits in `pending`, in order, and is written by the
@@ -135,7 +143,7 @@ class Recorder:
         last = {}
         if self.conn:
             self.camera_id = db.upsert_camera(self.conn, self.cam_name, source, self.direction)
-            last = db.last_event_times(self.conn, date.today())
+            last = db.last_event_times(self.conn, datetime.now() - timedelta(seconds=config.COOLDOWN_SECONDS))
         self.cooldown = Cooldown(config.COOLDOWN_SECONDS, last)
         self.pending: deque[dict] = deque()
         self.db_errors = ErrorLog(f"{self.cam_name}: writing an event to the database (kept, will retry)")
@@ -298,7 +306,7 @@ class Pipeline:
             full = scale_detection(det, scale)  # the same face in the camera's pixels
             skip = check_quality(frame, full)
             if skip:
-                print(f"{stamp}  track{tid:<4} {'skip':<12} {skip}")
+                debug(f"{stamp}  track{tid:<4} {'skip':<12} {skip}")
                 self.stats[f"skip: {skip.split(' (')[0]}"] += 1
                 self.live.decision("skip", tid, detail=skip, face_px=full.width)
                 mark(det, GRAY, f"#{tid} skip: {skip.split(' (')[0]}")
@@ -384,7 +392,7 @@ class Pipeline:
         tid = track.track_id
         track.spoof_frames += 1
         self.stats["skip: spoof"] += 1
-        print(f"{stamp}  track{tid:<4} {'skip':<12} spoof (live {score:.3f} < {config.LIVENESS_THRESHOLD})")
+        debug(f"{stamp}  track{tid:<4} {'skip':<12} spoof (live {score:.3f} < {config.LIVENESS_THRESHOLD})")
         if track.spoof_snapshot is None:
             track.spoof_snapshot = self.recorder.save_spoof(now, tid, score, context_crop(frame, full.bbox)) or ""
             print(f"{stamp}  WARNING: track{tid} looks like a phone screen or a printed photo (live score "
@@ -413,7 +421,13 @@ def main() -> int:
     parser.add_argument("--no-window", action="store_true", help="log only, don't show video")
     parser.add_argument("--no-db", action="store_true", help="don't write events or snapshots (for tuning)")
     parser.add_argument("--parent-pid", type=int, help="exit when this process ends (set by the dashboard)")
+    parser.add_argument("--log-file", type=Path, help="write the log here, rotated by size (set by the dashboard)")
+    parser.add_argument("--debug", action="store_true", help="also log every skipped frame (quality, spoof)")
     args = parser.parse_args()
+    if args.log_file:
+        logfile.redirect_output(args.log_file, config.WORKER_LOG_MAX_BYTES, config.WORKER_LOG_BACKUPS)
+    if args.debug:
+        config.WORKER_DEBUG_LOG = True
     try:
         config.check_cameras()
     except config.CamerasFileError as e:
@@ -470,7 +484,8 @@ def run(args, cam: dict, source, runtime: "workers.WorkerRuntime", live: LiveWri
         f"best {config.BEST_FRAMES_PER_TRACK} frames, vote {config.VOTE_MIN_AGREE}, cool-down {config.COOLDOWN_SECONDS}s"
     )
     detector, recognizer = Detector(), Recognizer()
-    print(f"Model {config.MODEL_PACK}, providers {providers_in_use()}")
+    print(f"Model {config.MODEL_PACK}, providers {providers_in_use()}, {onnx_threads()} ONNX threads "
+          f"({'ONNX_THREADS' if config.ONNX_THREADS else 'automatic: CPU cores / cameras'})")
     checker = None
     if config.LIVENESS_ENABLED:
         try:

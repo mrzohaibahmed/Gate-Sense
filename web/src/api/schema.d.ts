@@ -13,8 +13,9 @@ export interface paths {
         };
         /**
          * Health
-         * @description Public (no login), for monitoring: version, uptime and database status. 503 if the database can't be
-         *     read.
+         * @description Public (no login), for monitoring: version, uptime, database, each camera (state, Auto, age of its newest
+         *     frame), free disk space, the last nightly backup, and `problems` (plain words; status "degraded" when there
+         *     are any). HTTP 503 only if the database can't be read.
          */
         get: operations["health"];
         put?: never;
@@ -292,6 +293,70 @@ export interface paths {
         get: operations["get_overview"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/people/import/template": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Import Template
+         * @description An empty file with the headings (Employee code, Name, Department, Shift, Site) and one example row.
+         */
+        get: operations["import_template"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/people/import/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Import
+         * @description What importing the file would do, row by row: new people, changes to existing ones (only the columns the
+         *     file has), unchanged rows, and rows with errors. Nothing is changed.
+         */
+        post: operations["preview_import"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/people/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import People
+         * @description Add the new people and update the changed ones, all in one go: refused (422) while any row has an error.
+         *     People not in the file are left alone; inactive ones are updated but not reactivated. Each person added or changed
+         *     is audited (add_person, edit_person), plus one import_people row for the file. The people have no photos yet:
+         *     enroll their faces next.
+         */
+        post: operations["import_people"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1226,6 +1291,17 @@ export interface components {
              */
             copy_error?: string | null;
         };
+        /** BackupHealth */
+        BackupHealth: {
+            /** Last Run */
+            last_run: string | null;
+            /** Ok */
+            ok: boolean | null;
+            /** Error */
+            error: string | null;
+            /** Problem */
+            problem?: string | null;
+        };
         /** BackupIn */
         BackupIn: {
             /**
@@ -1371,6 +1447,33 @@ export interface components {
              * @enum {string}
              */
             feed: "camera" | "worker";
+        };
+        /** CameraHealth */
+        CameraHealth: {
+            /** Name */
+            name: string;
+            /**
+             * State
+             * @description running, starting, not responding or stopped
+             */
+            state: string;
+            /**
+             * Enabled
+             * @description Auto: started with GateSense and restarted when it stops
+             */
+            enabled: boolean;
+            /**
+             * Auto Paused
+             * @description Auto is on but it was stopped by hand
+             */
+            auto_paused: boolean;
+            /**
+             * Last Frame Age Seconds
+             * @description seconds since the camera's newest frame; None = none
+             */
+            last_frame_age_seconds: number | null;
+            /** Problem */
+            problem?: string | null;
         };
         /** CameraIn */
         CameraIn: {
@@ -1759,6 +1862,17 @@ export interface components {
             /** Detail */
             detail?: string | null;
         };
+        /** DiskHealth */
+        DiskHealth: {
+            /** Path */
+            path: string;
+            /** Free Bytes */
+            free_bytes: number;
+            /** Total Bytes */
+            total_bytes: number;
+            /** Problem */
+            problem?: string | null;
+        };
         /** EnabledIn */
         EnabledIn: {
             /**
@@ -1957,6 +2071,7 @@ export interface components {
         Health: {
             /**
              * Status
+             * @description degraded: see problems (HTTP 503 only when the database can't be read)
              * @enum {string}
              */
             status: "ok" | "degraded";
@@ -1970,6 +2085,15 @@ export interface components {
             /** Uptime Seconds */
             uptime_seconds: number;
             database: components["schemas"]["DatabaseStatus"];
+            /** Cameras */
+            cameras: components["schemas"]["CameraHealth"][];
+            disk: components["schemas"]["DiskHealth"];
+            backup: components["schemas"]["BackupHealth"];
+            /**
+             * Problems
+             * @description what someone should look at, in plain words; empty = all well
+             */
+            problems: string[];
         };
         /** HourCount */
         HourCount: {
@@ -1980,6 +2104,82 @@ export interface components {
              * @description people whose first IN was in this hour
              */
             arrivals: number;
+        };
+        /** ImportCounts */
+        ImportCounts: {
+            /** New */
+            new: number;
+            /** Update */
+            update: number;
+            /** Unchanged */
+            unchanged: number;
+            /** Error */
+            error: number;
+        };
+        /** ImportPreview */
+        ImportPreview: {
+            /** File */
+            file: string;
+            /**
+             * Columns
+             * @description the fields found: employee_code, name, department, shift, site
+             */
+            columns: string[];
+            /**
+             * Ignored Columns
+             * @description headings that aren't one of those (not imported)
+             */
+            ignored_columns: string[];
+            counts: components["schemas"]["ImportCounts"];
+            /** Rows */
+            rows: components["schemas"]["ImportRowOut"][];
+        };
+        /** ImportResult */
+        ImportResult: {
+            /** File */
+            file: string;
+            /** Added */
+            added: number;
+            /** Updated */
+            updated: number;
+            /** Unchanged */
+            unchanged: number;
+        };
+        /** ImportRowOut */
+        ImportRowOut: {
+            /**
+             * Line
+             * @description row number in the file (1 = the heading row)
+             */
+            line: number;
+            /** Employee Code */
+            employee_code: string;
+            /** Name */
+            name: string;
+            /** Department */
+            department: string | null;
+            /** Shift */
+            shift: string | null;
+            /** Site */
+            site: string | null;
+            /**
+             * Action
+             * @enum {string}
+             */
+            action: "new" | "update" | "unchanged" | "error";
+            /** Person Id */
+            person_id: number | null;
+            /**
+             * Changes
+             * @description for an update: {"department": [old, new], ...}
+             */
+            changes: {
+                [key: string]: (string | null)[];
+            };
+            /** Errors */
+            errors: string[];
+            /** Notes */
+            notes: string[];
         };
         /** LoginBody */
         LoginBody: {
@@ -3654,6 +3854,154 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    import_template: {
+        parameters: {
+            query?: {
+                format?: "xlsx" | "csv";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description a file to fill in */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
+                    "text/csv": unknown;
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_import: {
+        parameters: {
+            query?: {
+                /** @description the file's name, e.g. staff.xlsx */
+                filename?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
+                "text/csv": string;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportPreview"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_people: {
+        parameters: {
+            query: {
+                /** @description the file's name */
+                filename?: string;
+                /** @description why (goes to the audit log) */
+                reason: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
+                "text/csv": string;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportResult"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the file can't be read, or a row has an error: nothing imported */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

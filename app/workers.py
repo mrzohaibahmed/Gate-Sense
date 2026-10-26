@@ -9,7 +9,8 @@ Protocol (files under config.RUN_DIR, so CLI-started workers are visible too):
                  when two starts (say the app and the command line) happen at the same moment.
 A worker started by the app also gets --parent-pid, which it writes to its status
 file, and exits by itself if that process is gone, so stopping GateSense leaves no
-orphans. Worker output goes to config.LOG_DIR/<camera>.log.
+orphans. Worker output goes to config.LOG_DIR/<camera>.log, rotated by size while it runs
+(--log-file, app/logfile.py: WORKER_LOG_MAX_BYTES, WORKER_LOG_BACKUPS).
 """
 
 import json
@@ -25,6 +26,7 @@ from pathlib import Path
 from app import config, live, sources
 from app.camera import is_live, is_webcam, mask_source, parse_source
 from app.fileutil import ErrorLog, atomic_write_bytes
+from app.logfile import rotate_files
 
 STILL_ACTIVE = 259  # Windows GetExitCodeProcess value for a running process
 
@@ -410,13 +412,15 @@ class WorkerManager:
             self.log_dir.mkdir(parents=True, exist_ok=True)
             log = self.log_path(name)
             if log.exists() and log.stat().st_size > config.WORKER_LOG_MAX_BYTES:
-                os.replace(log, log.with_name(log.name + ".1"))
+                rotate_files(log, config.WORKER_LOG_BACKUPS)
             stop_path(name, self.run_dir).unlink(missing_ok=True)
 
             env = os.environ.copy()
             env.pop(config.DASHBOARD_PASSWORD_ENV, None)  # workers don't need the admin password
+            # The worker rotates its own log while it runs (app/logfile.py); the file is also its stdout until then,
+            # so a crash before it gets that far (an import error) lands in the same log.
             cmd = [python_command(self.python, env), "-u", str(self.script), "--camera", name, *self.extra_args,
-                   "--parent-pid", str(os.getpid())]
+                   "--parent-pid", str(os.getpid()), "--log-file", str(log)]
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
             with open(log, "a", encoding="utf-8") as f:
                 f.write(f"===== {datetime.now():%Y-%m-%d %H:%M:%S} started by GateSense =====\n")
@@ -445,6 +449,7 @@ class WorkerManager:
             if st.state == "stopped":
                 return "not running"
             proc = self._proc(name)
+            self.run_dir.mkdir(parents=True, exist_ok=True)  # a worker stopped while starting may not have made it
             stop_path(name, self.run_dir).touch()
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:

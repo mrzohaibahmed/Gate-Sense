@@ -6,11 +6,29 @@ share one ``FaceAnalysis`` instance. Providers are passed explicitly from
 provider or a GPU on its own.
 """
 
+import os
 from functools import cache
 
+import onnxruntime
 from insightface.app import FaceAnalysis
 
 from app import config
+
+
+def onnx_threads(cameras: int | None = None, cores: int | None = None) -> int:
+    """Threads per process for detection and recognition: ONNX_THREADS, or (0) the cores shared between the cameras."""
+    if config.ONNX_THREADS:
+        return config.ONNX_THREADS
+    cameras = max(1, len(config.CAMERAS) if cameras is None else cameras)
+    return max(1, (cores or os.cpu_count() or 1) // cameras)
+
+
+def session_options() -> onnxruntime.SessionOptions:
+    """onnxruntime options for the face models: onnx_threads() threads, no extra parallel operators."""
+    options = onnxruntime.SessionOptions()
+    options.intra_op_num_threads = onnx_threads()
+    options.inter_op_num_threads = 1
+    return options
 
 
 @cache
@@ -20,6 +38,7 @@ def face_analysis() -> FaceAnalysis:
         name=config.MODEL_PACK,
         providers=config.PROVIDERS,
         allowed_modules=config.MODEL_MODULES,
+        sess_options=session_options(),
     )
     fa.prepare(ctx_id=config.CTX_ID, det_size=config.DET_SIZE, det_thresh=config.DET_THRESHOLD)
     return fa
@@ -39,9 +58,15 @@ def pose_model():
     files = sorted(folder.glob("1k3d68*.onnx")) or sorted(folder.glob("*3d68*.onnx"))
     if not files:
         return None
-    model = model_zoo.get_model(str(files[0]), providers=config.PROVIDERS)
+    model = model_zoo.get_model(str(files[0]), providers=config.PROVIDERS, sess_options=session_options())
     model.prepare(ctx_id=config.CTX_ID)
     return model
+
+
+def threads_in_use() -> dict[str, int]:
+    """intra-op threads each loaded model's session actually uses."""
+    return {task: model.session.get_session_options().intra_op_num_threads
+            for task, model in face_analysis().models.items()}
 
 
 def providers_in_use() -> dict[str, list[str]]:

@@ -202,10 +202,12 @@ def test_f_in_only_today_reads_inside_everywhere():
     same_everywhere(out, ["missing exit"])
 
 
-def test_g_night_shift_is_still_two_days():
+def test_g_night_shift_is_still_two_days_on_the_calendar_screens():
+    """The screens and reports still use the calendar day; the roster rule (app/shifts.py) makes this one day dated
+    the day the shift starts (tests/test_shifts.py), and step 2 moves the screens to it."""
     out = case([("IN", at(D, "23:50:00")), ("OUT", at(D, "00:10:00", days=1))], D, D + timedelta(days=1))
     assert out["rows"] == [("23:50:00", None, None, "missing exit"), (None, "00:10:00", None, "missing entry")]
-    assert out["monthly"]["days"] == 2 and out["monthly"]["total_hours"] == 0.0  # shift windows: a later phase
+    assert out["monthly"]["days"] == 2 and out["monthly"]["total_hours"] == 0.0
     same_everywhere(out, ["missing exit", "missing entry"])
 
 
@@ -230,10 +232,10 @@ def test_x_last_out_before_first_in_is_check():
     same_everywhere(out, ["check"])
 
 
-def test_cool_down_resets_at_midnight():
+def test_cool_down_does_not_reset_at_midnight():
     out = case([("IN", at(D, "23:58:00")), ("IN", at(D, "00:02:00", days=1))], D, D + timedelta(days=1))
-    assert out["decisions"] == ["event", "event"]  # 4 minutes apart, but a new day
-    assert out["rows"] == [("23:58:00", None, None, "missing exit"), ("00:02:00", None, None, "missing exit")]
+    assert out["decisions"] == ["event", "cool-down"]  # 4 minutes apart: one pass, whatever the date
+    assert out["rows"] == [("23:58:00", None, None, "missing exit"), (None, None, None, "absent")]
 
 
 def test_correction_with_a_time_zone_is_refused_not_a_crash():

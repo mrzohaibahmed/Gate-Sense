@@ -12,7 +12,8 @@ py -3.11 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 ```
 
-No C++ Build Tools are needed; current insightface ships a prebuilt wheel.
+No C++ Build Tools are needed; current insightface ships a prebuilt wheel. `requirements.txt` pins every package,
+including the ones they need and the test tools, to an exact version, so every PC gets the same set.
 
 Then set the first admin password: copy `.env.example` to `.env` and fill in `GATESENSE_ADMIN_PASSWORD=`. `.env` is git-ignored. A real `GATESENSE_ADMIN_PASSWORD` environment variable, if set, takes priority over `.env`.
 
@@ -106,6 +107,21 @@ Or capture them from the webcam (SPACE saves when the face passes the quality ch
 
 It prints, per person, how many photos were accepted and why any were rejected, then saves `data/gallery.npz` and syncs the `persons` table in `data/attendance.db`.
 
+### Many people at once from a file
+
+**People > Import from file** (HR and admin) adds and updates people from an Excel (.xlsx) or CSV file with the
+columns **Employee code**, **Name** and **Department**; **Shift** and **Site** (a site's name) are optional. The
+headings may be in any order and capitals ("Emp No", "Full Name", "Dept" work too); other columns are ignored.
+"Template (Excel)" gives a file to fill in, with the code column formatted as text so Excel keeps leading zeros.
+
+The file is checked first and every row shown: **new** (an employee code GateSense doesn't have), **update** (the
+name, department, shift or site differ; only the columns in the file are compared, and a blank cell clears that
+field), **unchanged**, or **error** (no code or name, a code with characters a folder name can't have, the same code
+twice, a code that differs from an existing one only in capitals, an unknown site). Nothing is imported while any row
+has an error. Then **Import** with a reason adds and updates everyone in one go; each person added or changed is in
+the audit log. People not in the file are left alone, and someone who was deactivated is updated but not
+reactivated. The file only creates the people: enroll their faces next (Enrollment page or photo upload).
+
 ## IP cameras (Hikvision and other RTSP cameras)
 
 The easiest way is the dashboard's **Settings > Cameras**: **Add camera**, choose "Hikvision IP camera", fill in IP, user and password, press **Test connection**, then save. By hand instead: cameras live in `cameras.json` (written by that page) or, if it doesn't exist, in `DEFAULT_CAMERAS` in [app/config.py](app/config.py). Set the camera's `"source"` to its RTSP URL, with a `${VAR}` placeholder instead of the password (never write the password there). For Hikvision usually:
@@ -145,7 +161,7 @@ Run one worker per camera, either with the Start buttons on the dashboard's **Li
 .venv\Scripts\python scripts\recognize.py --camera exit --source data\clips\out.mp4  # clip as OUT
 ```
 
-Each face is tracked (ByteTrack); its best 5 frames are embedded, and when one person wins 3 of them an event is saved with a face snapshot in `data/snapshots/`. After an event, the same person in the same direction is ignored for the 5-minute cool-down, whichever camera of that direction sees them (two entrance cameras record one IN); the cool-down starts afresh at midnight. Add `--no-window` to log without video, or `--no-db` to tune without recording anything. Log lines look like:
+Each face is tracked (ByteTrack); its best 5 frames are embedded, and when one person wins 3 of them an event is saved with a face snapshot in `data/snapshots/`. After an event, the same person in the same direction is ignored for the 5-minute cool-down, whichever camera of that direction sees them (two entrance cameras record one IN). There is no reset at midnight, so a night shift's passes either side of it are one cool-down. Add `--no-window` to log without video, `--no-db` to tune without recording anything, or `--debug` to also log every skipped frame (too small, blurry, spoof; normally these are only counted in the `stats:` line once a minute, so someone standing in view doesn't fill the log). Log lines look like:
 
 ```
 13:28:34.814  track1    waqas        score=0.910 (waqas)          second=0.312 (ali)            ACCEPT
@@ -202,7 +218,9 @@ Prints name, first IN, last OUT, worked hours and the missing-exit and check fla
 | `check` | the last OUT is earlier than the first IN: someone should look | - |
 | `absent` | no events | - |
 
-"Present" means came in that day (complete, missing exit or check): the Overview's Present tile and the reports' Days present. A night shift (IN 23:50, OUT 00:10) is still two days; shift windows come later.
+"Present" means came in that day (complete, missing exit or check): the Overview's Present tile and the reports' Days present. On these screens a night shift (IN 23:50, OUT 00:10) is still two days.
+
+**Shifts and roster (rules ready, screens next):** the database has shifts (seeded: Morning 06:30-14:30, General 08:00-16:30, Night 22:00-06:00) and a roster (one row per person per date: a shift or OFF). Per roster date the day is the first IN in the shift's IN window (2 h before the start to the shift's midpoint) and the last OUT in its OUT window (midpoint to 4 h after the end); a night shift is dated the day it starts. Statuses: on time (IN up to start + 30 min grace), late, early leave (OUT before end - grace), missing IN, missing OUT, absent, check, off day, unscheduled (passes with no roster row; never guessed), plus late, early-leave and overtime minutes. Nothing is stored, so a roster change recalculates the days from the raw events. The dashboard, reports and today.py still use the calendar day above until the roster screens come.
 
 ## Dashboard
 
@@ -255,7 +273,7 @@ The dashboard runs on a JSON API under `/api`, served by the same app (a Vite de
 start-debug.bat                       (or: .venv\Scripts\python -m api.run)
 ```
 
-It listens on `http://127.0.0.1:8000` (this PC only; change it with `GATESENSE_HOST` / `GATESENSE_PORT` in the environment or `.env`). `GET /api/health` returns the version, uptime and database status; interactive docs are at `/docs`. Press Ctrl+C in its window to stop it: camera workers it started are stopped first. A camera can only run in one process at a time: the API refuses a camera that the command line or the API already runs (or the webcam while the enrollment wizard holds it), and the worker itself locks the camera so two starts at the same moment can't both open it.
+It listens on `http://127.0.0.1:8000` (this PC only; change it with `GATESENSE_HOST` / `GATESENSE_PORT` in the environment or `.env`). `GET /api/health` returns the version, uptime, database, cameras, free disk space, last backup and any problems (see "Logs, health and long runs"); interactive docs are at `/docs`. Press Ctrl+C in its window to stop it: camera workers it started are stopped first. A camera can only run in one process at a time: the API refuses a camera that the command line or the API already runs (or the webcam while the enrollment wizard holds it), and the worker itself locks the camera so two starts at the same moment can't both open it.
 
 **Users and login.** The API has its own user accounts with four roles: **admin** (everything, including user accounts), **hr**, **viewer** and **guard** (the permissions of each are in `api/permissions.py`). On its first start the API creates the user `admin` with the `GATESENSE_ADMIN_PASSWORD`; that password must be changed at the first login. To try it, open `http://127.0.0.1:8000/docs`, run `POST /api/auth/login` with `{"username": "admin", "password": "..."}` (the page keeps the session cookie), then `POST /api/auth/password`, then the other endpoints. Admins manage accounts under `/api/users` (create with a temporary password, change role, deactivate, reset password; each change needs a reason). Sessions end after 8 hours without activity; 5 wrong passwords in a row lock an account for 15 minutes. Logins, failed logins, logouts and refused requests go to the audit log. On the first start after this update the database gets new tables (users, sessions, sites); a copy of the old database is saved in `data/backups/` first.
 
@@ -269,6 +287,20 @@ It listens on `http://127.0.0.1:8000` (this PC only; change it with `GATESENSE_H
 .venv\Scripts\python -m pytest
 cd web && npm test
 ```
+
+## Logs, health and long runs
+
+- Each camera's log is `data\logs\<camera>.log`. It is rotated while the camera runs, at 10 MB, keeping 5 older
+  files (`<camera>.log.1` is the newest of them): `WORKER_LOG_MAX_BYTES`, `WORKER_LOG_BACKUPS` in `app/config.py`.
+  `GATESENSE_WORKER_DEBUG=1` logs every skipped frame for all cameras (like `--debug`).
+- The app doesn't log each request for live video, the snapshot tiles and face snapshots (only their errors). Run as a
+  service, its own log `data\logs\service.log` is rotated at 5 MB while it runs.
+- `GET /api/health` (no login, for monitoring) reports the database, each camera (state, Auto, how old its newest
+  frame is), free space on the data disk, the last nightly backup, and `problems` in plain words: a camera with Auto
+  on that isn't running or sends no picture for 30 s, less than 2 GB free, a nightly backup that failed or is overdue.
+  The Overview shows the same problems in a warning banner.
+- Face detection and recognition use `ONNX_THREADS` threads per camera (Settings > Recognition; 0 = the CPU's cores
+  shared out between the cameras in the list), so two cameras don't fight over every core.
 
 ## Configuration
 

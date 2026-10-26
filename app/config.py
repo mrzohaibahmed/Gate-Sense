@@ -96,13 +96,18 @@ ENROLL_GUIDE_ASPECT = 0.78  # guide oval width / height: face-shaped whatever th
 ENROLL_FACE_MAX_FRACTION = 0.95  # a face wider than this share of the guide box = "Move back a little"
 ENROLL_SELF_MATCH_MIN = 0.45  # the captured photos must match each other at least this well (cosine)
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+IMPORT_MAX_ROWS = 5000  # people per file in People > Import (app/people_import.py)
 ENROLL_MAX_PHOTO_PX = 1600  # dashboard uploads are shrunk to this longest side before saving
 
 # --- Camera workers (started from the dashboard) ----------------------------
 WORKER_STATUS_SECONDS = 2.0  # how often a worker writes data/run/<camera>.json
 WORKER_STALE_SECONDS = 20.0  # status older than this = "not responding"
 WORKER_STOP_TIMEOUT = 10.0  # seconds to wait for a clean stop before killing
-WORKER_LOG_MAX_BYTES = 5_000_000  # rotate data/logs/<camera>.log to .log.1 at start when bigger
+WORKER_LOG_MAX_BYTES = 10_000_000  # data/logs/<camera>.log is rotated at this size, also while the worker runs
+WORKER_LOG_BACKUPS = 5  # rotated logs kept: <camera>.log.1 (newest) ... .log.5; older ones are deleted
+# Per-frame lines (a face skipped for quality or as a spoof) only with this on (or recognize.py --debug); otherwise
+# they are counted in the once-a-minute "stats:" line. GATESENSE_WORKER_DEBUG=1 turns it on for every worker.
+WORKER_DEBUG_LOG = os.environ.get("GATESENSE_WORKER_DEBUG") == "1"
 WORKER_LOG_LINES = 50  # log lines shown per camera
 GALLERY_RELOAD_SECONDS = 5.0  # workers reload gallery.npz this often if it changed
 GALLERY_RETRY_SECONDS = 5.0  # a gallery.npz that can't be read at a worker's start is tried again this often
@@ -161,11 +166,32 @@ ENROLL_CAPTURE_QUALITY = 95  # JPEG quality of the frames a worker shares and of
 
 # --- Processing rate -------------------------------------------------------
 PROCESS_FPS = 8  # frames per second actually processed (5 to 10 on CPU)
+# onnxruntime threads for face detection and recognition in each camera worker (and the API's enrollment models).
+# 0 = automatic: the CPU's cores shared out between the cameras in the list (at least 1 each), so two workers don't
+# both try to use every core. A worker reads it when it starts.
+ONNX_THREADS = 0
 SNAPSHOT_RETENTION_DAYS = 30  # the nightly job deletes event snapshots older than this (the events stay)
 
 # --- Attendance --------------------------------------------------------------
-COOLDOWN_SECONDS = 5 * 60  # ignore the same person on the same camera for this long
+# Ignore the same person in the same direction (any camera of it) for this long after a recorded event. There is no
+# reset at midnight, so a night shift's passes either side of it are one cool-down; that is also why the editable
+# maximum is an hour (a longer one could swallow the next shift's pass).
+COOLDOWN_SECONDS = 5 * 60
 SNAPSHOT_SIZE = 160  # longest side of saved face snapshots, in pixels
+
+# --- Shifts and roster (app/shifts.py) ------------------------------------------------
+# Each shift in the shifts table has its own grace and windows; these are the defaults for a new one. The IN window
+# runs from in_window_before_min before the start to the shift's midpoint, the OUT window from the midpoint to
+# out_window_after_min after the end. A night shift belongs to the date it starts.
+SHIFT_GRACE_MIN = 30  # IN up to start + grace is on time; OUT before end - grace is an early leave
+SHIFT_IN_WINDOW_BEFORE_MIN = 120
+SHIFT_OUT_WINDOW_AFTER_MIN = 240
+SHIFT_MINUTES_MAX = 720  # the most a grace or a window can be (12 h)
+DEFAULT_SHIFTS = [  # put into the shifts table when it is created (schema step 5); edited in Settings later
+    {"name": "Morning", "start": "06:30", "end": "14:30", "crosses_midnight": False},
+    {"name": "General", "start": "08:00", "end": "16:30", "crosses_midnight": False},
+    {"name": "Night", "start": "22:00", "end": "06:00", "crosses_midnight": True},
+]
 
 # --- Admin password and .env ---------------------------------------------------
 DASHBOARD_PASSWORD_ENV = "GATESENSE_ADMIN_PASSWORD"  # admin password: environment variable, or .env
@@ -228,6 +254,10 @@ BACKUP_COPY_DIR = Path(_server_setting("GATESENSE_BACKUP_COPY_DIR")) if _server_
     "GATESENSE_BACKUP_COPY_DIR") else None
 MAINTENANCE_CHECK_SECONDS = 600  # how often the app checks whether the nightly job is due
 
+# --- Health (GET /api/health, the Overview's warning banner) ------------------------------------------
+HEALTH_FRAME_STALE_SECONDS = 30  # a running camera without a new frame for this long is a problem
+HEALTH_MIN_FREE_BYTES = 2_000_000_000  # less free space than this on the data disk is a problem
+
 # --- Cameras ---------------------------------------------------------------
 # Cameras are normally managed in the dashboard's Settings > Cameras, which saves them to
 # CAMERAS_FILE (cameras.json in the project folder; no passwords in it). When that file exists it
@@ -271,8 +301,11 @@ EDITABLE_SETTINGS = {
     "LIVENESS_ENABLED": (bool, 0, 1, "refuse phone screens and printed photos (anti-spoofing)"),
     "LIVENESS_THRESHOLD": (float, 0.1, 0.99, "minimum live score (0-1); a face below it is treated as a spoof"),
     "LIVENESS_MIN_FRAMES": (int, 1, 20, "frames of a tracked face that must pass the liveness check to be recorded"),
-    "COOLDOWN_SECONDS": (int, 0, 86400, "debounce: the same person on the same camera is ignored for this long"),
+    "COOLDOWN_SECONDS": (int, 0, 3600, "debounce: the same person in the same direction is ignored for this long "
+                                       "(no reset at midnight)"),
     "PROCESS_FPS": (int, 1, 30, "frames processed per second"),
+    "ONNX_THREADS": (int, 0, 64, "threads per camera worker for face detection and recognition; 0 = automatic "
+                                 "(CPU cores / cameras)"),
     "SNAPSHOT_RETENTION_DAYS": (int, 1, 3650, "face snapshots of events are deleted after this many days"),
 }
 SETTINGS_FILE = Path(os.environ.get("GATESENSE_SETTINGS_FILE") or ROOT_DIR / "settings.json")

@@ -23,18 +23,22 @@ event had before its first correction (edit_event_time keeps it). Step 3 adds
 user_preferences. Step 4 is the one step that removes: the daily_attendance table
 (a copy of the summaries that nothing read; they are computed from the events)
 and sites.timezone (stored but never applied: a day is local midnight to midnight).
-The usual backup copy is made first, so the old values are kept there.
+The usual backup copy is made first, so the old values are kept there. Step 5 adds
+shifts (seeded with config.DEFAULT_SHIFTS) and the roster (person, date, shift or
+NULL = OFF; one row per person per date). Roster days are computed from the raw
+events by app/shifts.py, like the calendar days, so nothing derived is stored.
 """
 
 import json
 import sqlite3
 from contextlib import closing
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from app import config
 from app.attendance import DaySummary, Event, repeat_ids, summarize_day, within_cooldown
 from app.camera import mask_source
+from app.shifts import OFF, ROSTER_PAD_DAYS, Shift, ShiftDay, roster_repeat_ids, summarize_roster
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS persons (
@@ -163,8 +167,39 @@ def _v4_drop_unused(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE sites DROP COLUMN timezone")
 
 
+def _v5_shifts_roster(conn: sqlite3.Connection) -> None:
+    """Shifts (seeded with config.DEFAULT_SHIFTS) and the roster: which shift a person works on a date, or OFF
+    (shift_id NULL). One row per person per date. `start_time`/`end_time` are "HH:MM" (END is an SQL keyword)."""
+    conn.execute("""CREATE TABLE IF NOT EXISTS shifts (
+        id                   INTEGER PRIMARY KEY,
+        name                 TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        start_time           TEXT NOT NULL,
+        end_time             TEXT NOT NULL,
+        crosses_midnight     INTEGER NOT NULL DEFAULT 0,
+        grace_min            INTEGER NOT NULL DEFAULT 30,
+        in_window_before_min INTEGER NOT NULL DEFAULT 120,
+        out_window_after_min INTEGER NOT NULL DEFAULT 240
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS roster (
+        id         INTEGER PRIMARY KEY,
+        person_id  INTEGER NOT NULL REFERENCES persons(id),
+        date       TEXT NOT NULL,
+        shift_id   INTEGER REFERENCES shifts(id),
+        updated    TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        UNIQUE (person_id, date)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_roster_date ON roster(date)")
+    if conn.execute("SELECT 1 FROM shifts LIMIT 1").fetchone() is None:
+        for s in config.DEFAULT_SHIFTS:
+            shift = Shift(s["name"], time.fromisoformat(s["start"]), time.fromisoformat(s["end"]),
+                          s["crosses_midnight"])
+            conn.execute(f"INSERT INTO shifts ({', '.join(SHIFT_COLUMNS)}) "
+                         f"VALUES ({', '.join('?' * len(SHIFT_COLUMNS))})", _shift_values(shift))
+
+
 VERSIONS = [_v1_users_sessions_sites, _v2_person_sites_original_times,
-            _v3_user_preferences, _v4_drop_unused]  # PRAGMA user_version = how many have run
+            _v3_user_preferences, _v4_drop_unused, _v5_shifts_roster]  # PRAGMA user_version = how many have run
 
 
 def _has_data(conn) -> bool:
@@ -347,13 +382,6 @@ def _site(conn, site_id: int) -> sqlite3.Row:
     return row
 
 
-def _site(conn, site_id: int) -> sqlite3.Row:
-    row = conn.execute("SELECT * FROM sites WHERE id = ?", (site_id,)).fetchone()
-    if row is None:
-        raise ValueError(f"no site with id {site_id}")
-    return row
-
-
 def _person(conn, person_id: int) -> sqlite3.Row:
     row = conn.execute("SELECT * FROM persons WHERE id = ?", (person_id,)).fetchone()
     if row is None:
@@ -439,16 +467,18 @@ def add_event(
 def add_camera_event(conn: sqlite3.Connection, person_id: int, camera_id: int, timestamp: datetime, score: float,
                      snapshot_path: str | None, cooldown_seconds: float) -> tuple[int | None, datetime | None]:
     """A camera's event, unless the person already has one in the same direction (from any camera, not voided)
-    earlier that day within `cooldown_seconds`: then nothing is written. Returns (new event id or None, the latest
-    earlier event's time). Checked and written in one transaction (BEGIN IMMEDIATE), so two cameras of the same
-    direction that see the person at the same moment, in different worker processes, record it once."""
+    within `cooldown_seconds` before it (no reset at midnight): then nothing is written. Returns (new event id or
+    None, the latest earlier event's time within that window). Checked and written in one transaction (BEGIN
+    IMMEDIATE), so two cameras of the same direction that see the person at the same moment, in different worker
+    processes, record it once."""
+    since = timestamp - timedelta(seconds=cooldown_seconds)
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
             "SELECT MAX(e.timestamp) AS ts FROM attendance_events e JOIN cameras c ON c.id = e.camera_id "
             "WHERE e.person_id = ? AND e.voided = 0 AND c.direction = (SELECT direction FROM cameras WHERE id = ?) "
             "AND e.timestamp >= ? AND e.timestamp <= ?",
-            (person_id, camera_id, timestamp.date().isoformat(), _ts(timestamp))).fetchone()
+            (person_id, camera_id, _ts(since), _ts(timestamp))).fetchone()
         previous = datetime.fromisoformat(row["ts"]) if row["ts"] else None
         if within_cooldown(previous, timestamp, cooldown_seconds):
             conn.rollback()
@@ -528,20 +558,27 @@ def audit_entries(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.Ro
     return conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
 
 
-def last_event_times(conn: sqlite3.Connection, day: date) -> dict[tuple[str, str], datetime]:
-    """Each person's latest event per direction on `day` (any camera, not voided), to seed a worker's cool-down."""
+def last_event_times(conn: sqlite3.Connection, since: datetime) -> dict[tuple[str, str], datetime]:
+    """Each person's latest event per direction at or after `since` (any camera, not voided), to seed a worker's
+    cool-down (since = now - the cool-down: there is no reset at midnight)."""
     rows = conn.execute(
         "SELECT p.employee_code, c.direction, MAX(e.timestamp) AS ts FROM attendance_events e "
         "JOIN persons p ON p.id = e.person_id JOIN cameras c ON c.id = e.camera_id "
-        "WHERE e.voided = 0 AND e.timestamp >= ? AND e.timestamp < ? GROUP BY p.employee_code, c.direction",
-        (day.isoformat(), (day + timedelta(days=1)).isoformat()),
+        "WHERE e.voided = 0 AND e.timestamp >= ? GROUP BY p.employee_code, c.direction",
+        (_ts(since),),
     )
     return {(r["employee_code"], r["direction"]): datetime.fromisoformat(r["ts"]) for r in rows}
 
 
 def events_for_day(conn: sqlite3.Connection, day: date, person_ids: list[int] | None = None) -> list[Event]:
     """A day's non-voided events (of `person_ids`, or everyone), for the daily summary."""
-    start, end = day.isoformat(), (day + timedelta(days=1)).isoformat()
+    return events_between(conn, day, day, person_ids)
+
+
+def events_between(conn: sqlite3.Connection, first: date, last: date,
+                   person_ids: list[int] | None = None) -> list[Event]:
+    """The non-voided events of the dates `first` to `last` inclusive (of `person_ids`, or everyone)."""
+    start, end = first.isoformat(), (last + timedelta(days=1)).isoformat()
     only = f" AND e.person_id IN ({','.join('?' * len(person_ids))})" if person_ids else ""
     rows = conn.execute(
         "SELECT e.id, p.employee_code, e.timestamp, c.direction FROM attendance_events e "
@@ -571,3 +608,147 @@ def day_summaries(conn: sqlite3.Connection, day: date) -> tuple[list[DaySummary]
     for code in {e.person for e in events} - ids.keys():
         ids[code] = conn.execute("SELECT id FROM persons WHERE employee_code = ?", (code,)).fetchone()["id"]
     return summarize_day(events, list(ids)), ids
+
+
+# --- Shifts and roster (the rules are in app/shifts.py) ------------------------------------------------------------
+
+SHIFT_COLUMNS = ("name", "start_time", "end_time", "crosses_midnight", "grace_min", "in_window_before_min",
+                 "out_window_after_min")
+
+
+def _shift_values(shift: Shift) -> tuple:
+    return (shift.name, f"{shift.start:%H:%M}", f"{shift.end:%H:%M}", int(shift.crosses_midnight), shift.grace_min,
+            shift.in_window_before_min, shift.out_window_after_min)
+
+
+def _shift_row(row: sqlite3.Row) -> Shift:
+    return Shift(row["name"], time.fromisoformat(row["start_time"]), time.fromisoformat(row["end_time"]),
+                 bool(row["crosses_midnight"]), row["grace_min"], row["in_window_before_min"],
+                 row["out_window_after_min"], row["id"])
+
+
+def list_shifts(conn: sqlite3.Connection) -> list[Shift]:
+    return [_shift_row(r) for r in conn.execute("SELECT * FROM shifts ORDER BY start_time, name")]
+
+
+def get_shift(conn: sqlite3.Connection, shift_id: int) -> Shift:
+    row = conn.execute("SELECT * FROM shifts WHERE id = ?", (shift_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"no shift with id {shift_id}")
+    return _shift_row(row)
+
+
+def save_shift(conn: sqlite3.Connection, shift: Shift, reason: str, user: str) -> int:
+    """Add a shift (shift.id None) or change one; returns its id. Audited: add_shift, or edit_shift with the old and
+    new values. A change applies to every day on that shift, past ones too: the days are computed, not stored."""
+    require_reason(reason)
+    new = dict(zip(SHIFT_COLUMNS, _shift_values(shift)))
+    with conn:
+        if conn.execute("SELECT 1 FROM shifts WHERE name = ? AND id IS NOT ?", (shift.name, shift.id)).fetchone():
+            raise ValueError(f"a shift named {shift.name!r} already exists")
+        if shift.id is None:
+            cur = conn.execute(f"INSERT INTO shifts ({', '.join(SHIFT_COLUMNS)}) "
+                               f"VALUES ({', '.join('?' * len(SHIFT_COLUMNS))})", tuple(new.values()))
+            _audit(conn, user, "add_shift", f"shift:{cur.lastrowid}", new, reason)
+            return cur.lastrowid
+        old = dict(zip(SHIFT_COLUMNS, _shift_values(get_shift(conn, shift.id))))
+        changes = {k: [old[k], v] for k, v in new.items() if old[k] != v}
+        if changes:
+            _audit(conn, user, "edit_shift", f"shift:{shift.id}", changes, reason)
+            conn.execute(f"UPDATE shifts SET {', '.join(f'{k} = ?' for k in SHIFT_COLUMNS)} WHERE id = ?",
+                         (*new.values(), shift.id))
+    return shift.id
+
+
+def delete_shift(conn: sqlite3.Connection, shift_id: int, reason: str, user: str) -> None:
+    """Remove a shift that no roster row uses (a used one stays: its days are computed from it). Audited."""
+    with conn:
+        shift = get_shift(conn, shift_id)
+        used = conn.execute("SELECT count(*) FROM roster WHERE shift_id = ?", (shift_id,)).fetchone()[0]
+        if used:
+            raise ValueError(f"shift {shift.name!r} is on {used} roster day(s); change those first")
+        _audit(conn, user, "delete_shift", f"shift:{shift_id}", dict(zip(SHIFT_COLUMNS, _shift_values(shift))),
+               reason)
+        conn.execute("DELETE FROM shifts WHERE id = ?", (shift_id,))
+
+
+def _roster_day(day) -> str:
+    if isinstance(day, datetime) or not isinstance(day, date):
+        raise ValueError(f"a roster date must be a date, not {day!r}")
+    return day.isoformat()
+
+
+def _roster_entry(conn, person_id: int, day: str) -> str | None:
+    """The person's roster entry on `day`: a shift's name, OFF, or None (no row)."""
+    row = conn.execute("SELECT r.shift_id, s.name FROM roster r LEFT JOIN shifts s ON s.id = r.shift_id "
+                       "WHERE r.person_id = ? AND r.date = ?", (person_id, day)).fetchone()
+    return None if row is None else OFF if row["shift_id"] is None else row["name"]
+
+
+def set_roster(conn: sqlite3.Connection, entries: list[tuple[int, date, int | None]], reason: str, user: str) -> int:
+    """Set roster rows: each (person id, date, shift id or None = OFF) adds or replaces that person's one row for that
+    date. All or nothing; one audit row per change (set_roster, the old and new entry: a shift's name, "OFF", or None
+    for no row). Returns how many rows changed. Nothing derived is stored: the days around a change are recalculated
+    from the raw events the next time they are read."""
+    require_reason(reason)
+    changed = 0
+    with conn:
+        for person_id, day, shift_id in entries:
+            person, day = _person(conn, person_id), _roster_day(day)
+            new = OFF if shift_id is None else get_shift(conn, shift_id).name
+            old = _roster_entry(conn, person_id, day)
+            if old == new:
+                continue
+            conn.execute(
+                "INSERT INTO roster (person_id, date, shift_id, updated, updated_by) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(person_id, date) DO UPDATE SET shift_id = excluded.shift_id, updated = excluded.updated, "
+                "updated_by = excluded.updated_by",
+                (person_id, day, shift_id, _ts(datetime.now()), user))
+            _audit(conn, user, "set_roster", f"roster:{person['employee_code']}:{day}",
+                   {"person": person["employee_code"], "date": day, "shift": [old, new]}, reason)
+            changed += 1
+    return changed
+
+
+def clear_roster(conn: sqlite3.Connection, person_id: int, day: date, reason: str, user: str) -> bool:
+    """Remove the person's roster row for `day` (the date becomes unscheduled); audited. False if there was none."""
+    require_reason(reason)
+    with conn:
+        person, day = _person(conn, person_id), _roster_day(day)
+        old = _roster_entry(conn, person_id, day)
+        if old is None:
+            return False
+        _audit(conn, user, "clear_roster", f"roster:{person['employee_code']}:{day}",
+               {"person": person["employee_code"], "date": day, "shift": [old, None]}, reason)
+        conn.execute("DELETE FROM roster WHERE person_id = ? AND date = ?", (person_id, day))
+    return True
+
+
+def roster_between(conn: sqlite3.Connection, first: date, last: date) -> dict[tuple[str, date], Shift | None]:
+    """(employee_code, date) -> the rostered Shift, or None for OFF, for the dates `first` to `last` inclusive."""
+    shifts = {s.id: s for s in list_shifts(conn)}
+    rows = conn.execute("SELECT p.employee_code, r.date, r.shift_id FROM roster r JOIN persons p ON p.id = r.person_id "
+                        "WHERE r.date >= ? AND r.date <= ?", (first.isoformat(), last.isoformat()))
+    return {(r["employee_code"], date.fromisoformat(r["date"])):
+            None if r["shift_id"] is None else shifts[r["shift_id"]] for r in rows}
+
+
+def _roster_inputs(conn, first: date, last: date) -> tuple[list[Event], dict[tuple[str, date], Shift | None]]:
+    """The events and roster rows a range needs, ROSTER_PAD_DAYS beyond it (a shift there can take passes in it)."""
+    pad = timedelta(days=ROSTER_PAD_DAYS)
+    return events_between(conn, first - pad, last + pad), roster_between(conn, first - pad, last + pad)
+
+
+def roster_days(conn: sqlite3.Connection, first: date, last: date, now: datetime | None = None) -> list[ShiftDay]:
+    """The roster days from `first` to `last` (app.shifts.summarize_roster), computed from the raw events: one per
+    roster row, plus an "unscheduled" one per person and date with passes but no row. `now` (default: the current
+    time) tells which days are still open. Read-only."""
+    events, roster = _roster_inputs(conn, first, last)
+    return summarize_roster(events, roster, first, last, datetime.now() if now is None else now)
+
+
+def roster_repeat_event_ids(conn: sqlite3.Connection, first: date, last: date) -> set[int]:
+    """Ids of the non-voided events dated `first` to `last` that no roster day uses (app.shifts.roster_repeat_ids)."""
+    events, roster = _roster_inputs(conn, first, last)
+    repeats = roster_repeat_ids(events, roster)
+    return {e.id for e in events if e.id in repeats and first <= e.timestamp.date() <= last}

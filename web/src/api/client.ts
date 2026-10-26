@@ -145,8 +145,8 @@ export const api = {
 };
 
 /**
- * POST a binary body (a camera frame as image/jpeg) to a JSON endpoint, with the same error and 401 handling.
- * Only /api/enrollment/check takes one.
+ * POST a binary body to a JSON endpoint, with the same error and 401 handling: a camera frame (image/jpeg) for
+ * /api/enrollment/check, a people file (Excel or CSV, with its own content type) for /api/people/import.
  */
 export async function postImage<P extends PathsWith<"post">>(
   path: P,

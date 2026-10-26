@@ -24,7 +24,6 @@ def main() -> int:
     import cv2
     import onnxruntime as ort
     import insightface
-    import pytest
 
     from app.models import face_analysis, providers_in_use
 
@@ -32,7 +31,12 @@ def main() -> int:
     print(f"opencv      {cv2.__version__}")
     print(f"onnxruntime {ort.__version__} providers={ort.get_available_providers()}")
     print(f"insightface {insightface.__version__}")
-    print(f"pytest      {pytest.__version__}")
+    try:
+        import pytest
+
+        print(f"pytest      {pytest.__version__}")
+    except ImportError:  # only needed to run the tests
+        print("pytest      not installed (only for the tests: pip install -r requirements.txt)")
 
     print(f"\nLoading {config.MODEL_PACK} on CPU (downloads on first run)...")
     t0 = time.perf_counter()

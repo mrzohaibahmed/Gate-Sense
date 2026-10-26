@@ -5,8 +5,8 @@
 .DESCRIPTION
   Optional. Runs "python -m api.run --no-build" from this folder as the service "GateSense" (the API and the web
   dashboard; build the dashboard first with start.bat or "npm run build" in web\). Output goes to
-  data\logs\service.log (rotated at 5 MB). Stopping the service sends Ctrl+C, so the camera workers are stopped
-  cleanly first.
+  data\logs\service.log (rotated at 5 MB, also while running). Stopping the service sends Ctrl+C, so the camera
+  workers are stopped cleanly first.
 
   Needs NSSM (https://nssm.cc, nssm.exe) and an administrator PowerShell.
 
@@ -69,6 +69,7 @@ Invoke-Nssm set $Name Start SERVICE_DELAYED_AUTO_START
 Invoke-Nssm set $Name AppStdout (Join-Path $LogDir "service.log")
 Invoke-Nssm set $Name AppStderr (Join-Path $LogDir "service.log")
 Invoke-Nssm set $Name AppRotateFiles 1
+Invoke-Nssm set $Name AppRotateOnline 1   # rotate while the service runs, not only when it starts
 Invoke-Nssm set $Name AppRotateBytes 5000000
 Invoke-Nssm set $Name AppStopMethodConsole 20000   # Ctrl+C, then up to 20 s to stop the cameras cleanly
 Invoke-Nssm set $Name AppExit Default Restart

@@ -268,7 +268,7 @@ def test_worker_run_on_a_1080p_clip(tmp_path, monkeypatch, capsys):
 # --- Liveness (anti-spoofing) ----------------------------------------------------------------------------------
 
 
-def test_spoof_frames_never_vote(capsys):
+def test_spoof_frames_never_vote(capsys, monkeypatch):
     """A phone or a photo: every frame is skipped as a spoof, nothing is embedded or recorded, one review snapshot
     and one warning for the track."""
     p, decisions = run(unit(0), frames=6, liveness=FakeLiveness(0.12))
@@ -279,8 +279,12 @@ def test_spoof_frames_never_vote(capsys):
     assert p.recorder.spoofs == [(track.track_id, 0.12, (320, 320, 3))]  # once per track, with the background
     out = capsys.readouterr().out
     assert out.count("WARNING: track") == 1 and "looks like a phone screen or a printed photo" in out
-    assert "snapshots/2026-10-20/spoof/" in out and out.count("spoof (live 0.120 < 0.7)") == 6
+    assert "snapshots/2026-10-20/spoof/" in out
+    assert "spoof (live" not in out  # one line per frame only with --debug: counted in the stats line instead
     assert p.stats["skip: spoof"] == 6
+    monkeypatch.setattr(config, "WORKER_DEBUG_LOG", True)
+    run(unit(0), frames=6, liveness=FakeLiveness(0.12))
+    assert capsys.readouterr().out.count("spoof (live 0.120 < 0.7)") == 6
 
 
 def test_an_event_needs_three_live_frames():

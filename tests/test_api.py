@@ -152,7 +152,7 @@ def test_database_url_from_config(tmp_path, monkeypatch):
     database = Database()
     assert database.path == path and database.status()["status"] == "missing"
     database.connect().close()  # creates the schema, like the dashboard and the workers
-    assert database.status() == {"status": "ok", "backend": "sqlite", "detail": "9 tables"}
+    assert database.status() == {"status": "ok", "backend": "sqlite", "detail": "10 tables"}  # step 5: shifts, roster
     assert not config.DB_PATH.exists()  # the default database was not touched
 
 

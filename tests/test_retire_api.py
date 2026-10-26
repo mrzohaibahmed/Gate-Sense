@@ -242,7 +242,9 @@ def test_daily_register(app):
     assert (r["first"], r["last"]) == (TODAY.isoformat(), TODAY.isoformat())
     rows = {x["name"]: x for x in r["rows"]}
     assert rows["Ayesha"]["worked_hours"] == 9.08 and not rows["Ayesha"]["missing_out"]
-    assert rows["Bilal"]["missing_out"] and rows["Bilal"]["last_out"] is None
+    # Bilal came in today and hasn't gone out: still inside, not "missing OUT" until the day is over
+    assert rows["Bilal"]["status"] == "missing exit" and not rows["Bilal"]["missing_out"]
+    assert rows["Bilal"]["last_out"] is None and not rows["Bilal"]["check"]
     assert rows["Dawood"]["status"] == "absent"
     stores = v.get("/api/reports/daily", params={"department": "Stores"}).json()["rows"]
     assert [x["name"] for x in stores] == ["Ayesha", "Chand"]
@@ -266,7 +268,8 @@ def test_monthly_totals_match_the_daily_rows(app):
         assert total["days_absent"] == sum(d["status"] == "absent" for d in mine)
         assert total["avg_hours"] == (round(total["total_hours"] / len(hours), 2) if hours else None)
     assert (people["1001"]["days_present"], people["1001"]["total_hours"]) == (2, 17.08)  # 8.00 + 9.08
-    assert people["1002"]["days_missing_exit"] == 1 and people["1004"]["days_absent"] == 7
+    assert people["1002"]["days_missing_exit"] == 0  # today's open day isn't counted while still inside
+    assert people["1002"]["days_present"] == 1 and people["1004"]["days_absent"] == 7
 
 
 def test_exports_and_their_audit(app):
@@ -278,10 +281,10 @@ def test_exports_and_their_audit(app):
     assert r.content.startswith(b"\xef\xbb\xbf")
     rows = list(csv.reader(io.StringIO(r.content.decode("utf-8-sig"))))
     assert rows[0] == ["Date", "Employee code", "Name", "Department", "First IN", "Last OUT", "Hours worked",
-                       "Missing OUT", "Status"]
+                       "Missing OUT", "Check", "Status"]
     assert len(rows) == 1 + 8  # 4 people, 2 days
     bilal = next(row for row in rows[1:] if row[2] == "Bilal" and row[0] == str(TODAY))
-    assert (bilal[4], bilal[5], bilal[7]) == ("09:20:00", "", "YES")
+    assert (bilal[4], bilal[5], bilal[7], bilal[9]) == ("09:20:00", "", "", "inside")  # today: like the screens
 
     x = hr.get("/api/reports/monthly/export", params={**params, "format": "xlsx", "department": "Stores"})
     assert x.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -292,7 +295,8 @@ def test_exports_and_their_audit(app):
     assert summary.freeze_panes == "A2" and summary["A1"].font.bold and summary["A1"].fill.fgColor.rgb.endswith("0E7C66")
     assert [c.value for c in summary[1]][:5] == ["Employee code", "Name", "Department", "Days", "Days present"]
     assert [r[1] for r in summary.iter_rows(min_row=2, values_only=True)] == ["Ayesha", "Chand"]
-    assert summary.cell(row=2, column=9).value == 17.08  # Ayesha's total hours, a number
+    hours_col = [c.value for c in summary[1]].index("Total hours") + 1
+    assert summary.cell(row=2, column=hours_col).value == 17.08  # Ayesha's total hours, a number
     first_in = detail.cell(row=2, column=5)
     assert first_in.number_format == "hh:mm" and str(first_in.value) == "08:00:00"
     exported = [e for e in app.state.db.audit_entries() if e["action"] == "export_report"]

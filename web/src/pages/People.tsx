@@ -9,6 +9,7 @@ import {
   ScanFace,
   Search,
   Trash2,
+  Upload,
   UserPlus,
   Users,
 } from "lucide-react";
@@ -31,6 +32,7 @@ import { Input, NativeSelect } from "@/components/ui/input";
 import { EmptyState, ErrorState, Td, Th } from "@/components/ui/misc";
 import { cn, duration, hhmm, today } from "@/lib/utils";
 
+import { ImportPeopleDialog } from "./ImportPeople";
 import { DeleteFaceDataDialog, DeletePhotoDialog, EditPersonDialog } from "./PersonDialogs";
 
 const PAGE_SIZE = 100;
@@ -104,6 +106,7 @@ export function PeoplePage() {
   const { data: me } = useMe();
   const { siteId } = useFilters();
   const navigate = useNavigate();
+  const [importing, setImporting] = useState(false);
   const [params, setParams] = useSearchParams();
   const q = params.get("q") ?? "";
   const active = params.get("active") ?? "true";
@@ -138,13 +141,19 @@ export function PeoplePage() {
     <>
       <PageHeader title="People">
         {can(me, "people:manage") && (
-          <Button asChild>
-            <Link to="/enrollment">
-              <UserPlus /> Enroll a person
-            </Link>
-          </Button>
+          <>
+            <Button variant="outline" onClick={() => setImporting(true)}>
+              <Upload /> Import from file
+            </Button>
+            <Button asChild>
+              <Link to="/enrollment">
+                <UserPlus /> Enroll a person
+              </Link>
+            </Button>
+          </>
         )}
       </PageHeader>
+      <ImportPeopleDialog open={importing} onOpenChange={setImporting} />
       <div className="px-4 pb-4">
         <DataTable
           columns={COLUMNS}

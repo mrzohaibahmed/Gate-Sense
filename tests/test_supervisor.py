@@ -164,6 +164,9 @@ def test_automatic_starts_are_audited():
         "system", "start_camera", "camera:gate", "enabled: started with GateSense")
 
 
+SLOW = 60  # seconds: worker processes start slowly on a busy PC (the full suite next to a web build)
+
+
 # --- End to end: the API with fake worker processes ------------------------------------------------------------
 
 
@@ -195,11 +198,11 @@ def test_enabled_camera_starts_restarts_and_obeys_stop(auto_app):
     cams = {c["name"]: c for c in items(a.get("/api/cameras"))}
     assert cams["c"]["enabled"] and not cams["d"]["enabled"]
     camera = lambda name: a.get(f"/api/cameras/{cams[name]['id']}").json()  # noqa: E731
-    first = wait_for(lambda: camera("c")["worker"]["state"] == "running" and camera("c")["worker"]["pid"])
+    first = wait_for(lambda: camera("c")["worker"]["state"] == "running" and camera("c")["worker"]["pid"], SLOW)
     assert camera("d")["worker"]["state"] == "stopped"  # Auto off: not started
 
     os.kill(first, signal.SIGTERM)  # the worker dies (a crash): restarted after the backoff
-    second = wait_for(lambda: (pid := camera("c")["worker"]["pid"]) and pid != first and pid)
+    second = wait_for(lambda: (pid := camera("c")["worker"]["pid"]) and pid != first and pid, SLOW)
     assert second != first
     audit = [e for e in app.state.db.audit_entries() if e["action"] == "start_camera"]
     assert [e["user"] for e in audit[:2]] == ["system", "system"]
@@ -212,7 +215,7 @@ def test_enabled_camera_starts_restarts_and_obeys_stop(auto_app):
     assert cam["worker"]["state"] == "stopped" and cam["auto_paused"]
 
     assert a.post(f"/api/cameras/{cams['c']['id']}/start").status_code == 200
-    wait_for(lambda: camera("c")["worker"]["state"] == "running")
+    wait_for(lambda: camera("c")["worker"]["state"] == "running", SLOW)
     assert not camera("c")["auto_paused"]
 
 
@@ -222,7 +225,7 @@ def test_auto_toggle_endpoint(auto_app):
     d = next(c for c in items(a.get("/api/cameras")) if c["name"] == "d")
     r = a.put(f"/api/cameras/{d['id']}/enabled", json={"enabled": True, "reason": "second gate goes live"})
     assert r.status_code == 200 and r.json()["enabled"] is True
-    wait_for(lambda: a.get(f"/api/cameras/{d['id']}").json()["worker"]["state"] == "running")
+    wait_for(lambda: a.get(f"/api/cameras/{d['id']}").json()["worker"]["state"] == "running", SLOW)
     assert config.CAMERAS[1]["enabled"] is True
     row = next(e for e in app.state.db.audit_entries() if e["action"] == "enable_camera")
     assert (row["user"], row["target"], row["reason"]) == ("admin", "camera:d", "second gate goes live")

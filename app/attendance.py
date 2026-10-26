@@ -1,7 +1,8 @@
-"""Attendance rules: the cool-down and the daily summary.
+"""Attendance rules: the cool-down and the calendar-day summary.
 
 Pure logic with no database or camera access, so it is easy to test.
-The day is the calendar date (local midnight to midnight) for now; shift windows come later.
+The day here is the calendar date (local midnight to midnight); the screens still use it. Shift windows and the
+roster (a night shift is one day, dated the day it starts) are in app/shifts.py.
 
 One attendance per person per day: the first IN and the last OUT (voided events are left out
 before this). Every other event of the day is a repeat: kept in the raw table and shown in
@@ -21,14 +22,14 @@ CAME_IN = (COMPLETE, MISSING_EXIT, CHECK)  # "present": has an IN that day
 
 
 def within_cooldown(previous: datetime | None, now: datetime, seconds: float) -> bool:
-    """Is `now` still inside the cool-down that started at `previous`? A new day always starts afresh."""
-    return (previous is not None and previous.date() == now.date()
-            and (now - previous).total_seconds() < seconds)
+    """Is `now` still inside the cool-down that started at `previous`? There is no reset at midnight: an IN at 23:58
+    and another at 00:02 are one pass, as they would be at noon, so a night shift is never split by it."""
+    return previous is not None and (now - previous).total_seconds() < seconds
 
 
 class Cooldown:
     """Allow one event per person per direction (IN or OUT, from any camera of that direction) per cool-down
-    window, reset at local midnight.
+    window (no reset at midnight).
 
     The window starts at the last *recorded* event; sightings that were blocked don't extend it. This is the
     worker's quick check; the database check in app.db.add_camera_event also sees the other cameras' events.

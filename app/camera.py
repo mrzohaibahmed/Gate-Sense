@@ -88,13 +88,19 @@ class LiveCapture:
         """Open the source and read until it fails; returns (frames read, why it ended)."""
         try:
             cap = self._opener(self.source)
-        except Exception as e:  # noqa: BLE001  RuntimeError from open_capture, or a driver error: try again later
+        except Exception as e:  # noqa: BLE001  RuntimeError from open_capture, or any driver error: try again later
             return 0, "could not open source" + ("" if isinstance(e, RuntimeError) else f" ({type(e).__name__})")
+        if cap is None or not _is_opened(cap):
+            _release(cap)
+            return 0, "could not open source"
         self.opened = True
         frames, failures, count, window = 0, 0, 0, time.monotonic()
         try:
             while not self._stop.is_set():
-                ok, frame = cap.read()
+                try:
+                    ok, frame = cap.read()
+                except Exception:  # noqa: BLE001  a driver error counts as a failed read, never ends the reader
+                    ok, frame = False, None
                 if not ok or frame is None:
                     failures += 1
                     if failures >= self._max_failures:
@@ -112,7 +118,7 @@ class LiveCapture:
                     self.fps, count, window = count / elapsed, 0, time.monotonic()
             return frames, None
         finally:
-            cap.release()
+            _release(cap)
 
     def latest(self, after: int = 0) -> tuple[int, np.ndarray] | None:
         """(sequence number, frame) if a frame newer than `after` arrived, else None."""
@@ -145,6 +151,23 @@ class LiveCapture:
         """Ask the reader to finish; a read stuck in the driver is left to die with the process."""
         self._stop.set()
         self._thread.join(timeout)
+
+
+def _is_opened(cap) -> bool:
+    try:
+        return bool(cap.isOpened()) if hasattr(cap, "isOpened") else True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _release(cap) -> None:
+    """Release a capture, ignoring a driver error (the camera is being given up anyway)."""
+    if cap is None:
+        return
+    try:
+        cap.release()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def mask_source(source: str | int) -> str:

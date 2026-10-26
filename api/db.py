@@ -309,6 +309,20 @@ class Database:
         with self.conn() as conn:
             return app_db.add_person(conn, code, name, department, shift, reason, actor, site_id)
 
+    def plan_import(self, data: bytes, filename: str):
+        """What importing a people file would do (app.people_import.plan); changes nothing."""
+        from app import people_import
+
+        with self.conn() as conn:
+            return people_import.plan(conn, data, filename)
+
+    def import_people(self, data: bytes, filename: str, actor: str, reason: str):
+        """Import a people file in one transaction, audited (app.people_import.import_people)."""
+        from app import people_import
+
+        with self.conn() as conn:
+            return people_import.import_people(conn, data, filename, actor, reason)
+
     def update_person(self, person_id: int, name: str, department: str | None, shift: str | None,
                       site_id: int | None, actor: str, reason: str) -> None:
         with self.conn() as conn:

@@ -16,6 +16,8 @@ lifespan (api/maintenance.py).
 """
 
 import asyncio
+import logging
+import re
 import time
 from contextlib import asynccontextmanager
 from functools import cache
@@ -25,16 +27,17 @@ from typing import Literal
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from api import __version__, auth, maintenance, security, web
+from api import health as health_checks
 from api.db import Database
 from api.enroll_camera import EnrollCameras
 from api.live import EventHub, FrameHub
 from api.supervisor import Supervisor
 from api.routes import (
-    attendance, audit, cameras, enrollment, live, people, reports, settings, sites, system, users,
+    attendance, audit, cameras, enrollment, live, people, people_import, reports, settings, sites, system, users,
 )
 from api.routes import auth as auth_routes
 from api.workers import WorkerManager
@@ -52,11 +55,40 @@ class DatabaseStatus(BaseModel):
 
 
 class Health(BaseModel):
-    status: Literal["ok", "degraded"]  # degraded: no database yet, or it can't be read (HTTP 503)
+    status: Literal["ok", "degraded"] = Field(description="degraded: see problems (HTTP 503 only when the database "
+                                                          "can't be read)")
     version: str
     started: datetime
     uptime_seconds: float
     database: DatabaseStatus
+    cameras: list[health_checks.CameraHealth]
+    disk: health_checks.DiskHealth
+    backup: health_checks.BackupHealth
+    problems: list[str] = Field(description="what someone should look at, in plain words; empty = all well")
+
+
+# Requests that come several times a second while a page is open: live video, the 2 fps snapshot tiles, face
+# snapshots in lists. Logging each one would fill the service log; their errors (status 400 and up) are still logged.
+QUIET_PATHS = re.compile(r"^/api/(cameras/\d+/(stream|snapshot\.jpg)|enrollment/sessions/[^/]+/stream|snapshots/\d+)"
+                         r"(\?|$)")
+
+
+class QuietAccessLog(logging.Filter):
+    """Drops uvicorn's access-log line for a successful request to one of QUIET_PATHS."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 5:
+            path, status = str(args[2]), args[4]
+            if QUIET_PATHS.match(path) and isinstance(status, int) and status < 400:
+                return False
+        return True
+
+
+def quiet_access_log() -> None:
+    logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, QuietAccessLog) for f in logger.filters):
+        logger.addFilter(QuietAccessLog())
 
 
 def startup_problems(database: Database | None = None) -> list[str]:
@@ -93,6 +125,7 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
     the enrollment wizard's liveness checker, app.liveness.shared) are injectable for tests."""
     manager = workers or WorkerManager()
     database = database or Database()
+    quiet_access_log()
     enroll_cameras = EnrollCameras(manager, enroll_opener)
 
     @asynccontextmanager
@@ -138,15 +171,22 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
 
     @app.get("/api/health", response_model=Health, tags=["system"])
     def health(response: Response) -> Health:
-        """Public (no login), for monitoring: version, uptime and database status. 503 if the database can't be
-        read."""
+        """Public (no login), for monitoring: version, uptime, database, each camera (state, Auto, age of its newest
+        frame), free disk space, the last nightly backup, and `problems` (plain words; status "degraded" when there
+        are any). HTTP 503 only if the database can't be read."""
         db = DatabaseStatus(**database.status())
         if db.status == "error":
             response.status_code = 503
         started = app.state.started
+        now, uptime = datetime.now(), round(time.time() - started, 1)
+        cams = health_checks.camera_health(manager, app.state.supervisor, now)
+        disk = health_checks.disk_health()
+        backup = health_checks.backup_health(uptime, now)
+        problems = [] if db.status == "ok" else [f"database: {db.detail or db.status}"]
+        problems += [c.problem for c in cams if c.problem] + [x.problem for x in (disk, backup) if x.problem]
         return Health(
-            status="ok" if db.status == "ok" else "degraded", version=__version__,
-            started=datetime.fromtimestamp(started), uptime_seconds=round(time.time() - started, 1), database=db,
+            status="degraded" if problems else "ok", version=__version__, started=datetime.fromtimestamp(started),
+            uptime_seconds=uptime, database=db, cameras=cams, disk=disk, backup=backup, problems=problems,
         )
 
     @app.exception_handler(config.CamerasFileError)
@@ -154,8 +194,9 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
         """cameras.json became unreadable while running: say so instead of guessing (never the defaults)."""
         return JSONResponse({"detail": str(exc)}, status_code=503)
 
-    for module in (auth_routes, users, attendance, people, enrollment, live, cameras, sites, audit, settings, system,
-                   reports):
+    # people_import before people: /api/people/import/... must not be taken for /api/people/{person_id}
+    for module in (auth_routes, users, attendance, people_import, people, enrollment, live, cameras, sites, audit,
+                   settings, system, reports):
         app.include_router(module.router)
     web.mount(app)  # last: its catch-all route sends every other path to the dashboard
     # Outermost last: the size limit and the headers apply to everything, CORS answers included.

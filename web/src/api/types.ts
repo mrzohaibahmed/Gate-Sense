@@ -31,3 +31,5 @@ export type DailyRow = S["DailyRow"];
 export type PersonTotal = S["PersonTotal"];
 export type PhotoResult = S["PhotoResult"];
 export type CameraLog = S["CameraLog"];
+export type ImportPreview = S["ImportPreview"];
+export type ImportRowOut = S["ImportRowOut"];

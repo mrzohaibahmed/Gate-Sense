@@ -39,6 +39,7 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "WEB_DIST", tmp_path / "no-web-dist")
     monkeypatch.setattr(config, "MAINTENANCE_CHECK_SECONDS", 3600)
     monkeypatch.setattr(config, "BACKUP_COPY_DIR", None)  # never a real second backup folder
+    monkeypatch.setattr(config, "HEALTH_MIN_FREE_BYTES", 0)  # the health checks don't depend on this PC's free space
     # Never the real liveness models, and never a download: tests inject a fake (tests/fakes.py FakeLiveness).
     from app import liveness
 

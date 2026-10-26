@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Activity, CameraOff, Inbox, UserCheck, UserRoundX } from "lucide-react";
+import { Activity, CameraOff, Inbox, TriangleAlert, UserCheck, UserRoundX } from "lucide-react";
 import { Link } from "react-router";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 
@@ -29,6 +29,7 @@ export function OverviewPage() {
     <>
       <PageHeader title={isToday ? "Today" : `Overview · ${date}`} />
       <div className="flex flex-col gap-4 px-4 pb-4">
+        <HealthBanner />
         <Kpis o={o} isToday={isToday} />
         <div className="grid gap-4 lg:grid-cols-3">
           <ArrivalsChart o={o} />
@@ -40,6 +41,34 @@ export function OverviewPage() {
         </div>
       </div>
     </>
+  );
+}
+
+/** What GET /api/health says someone should look at (a camera down, little disk space, a failed or overdue
+ * backup); nothing when all is well. */
+export function HealthBanner() {
+  const health = useQuery({
+    queryKey: ["health"],
+    queryFn: () => api.get("/api/health"),
+    refetchInterval: 30_000,
+  });
+  const problems = health.data?.problems ?? [];
+  if (problems.length === 0) return null;
+  return (
+    <div
+      role="alert"
+      className="flex gap-3 rounded-lg border border-status-missing/40 bg-status-missing/10 px-4 py-3 text-sm"
+    >
+      <TriangleAlert className="mt-0.5 size-4 shrink-0 text-status-missing" aria-hidden />
+      <div className="flex flex-col gap-1">
+        <span className="font-medium">{problems.length === 1 ? "Something needs a look" : "These need a look"}</span>
+        <ul className="list-disc pl-4 text-muted-foreground">
+          {problems.map((p) => (
+            <li key={p}>{p}</li>
+          ))}
+        </ul>
+      </div>
+    </div>
   );
 }
 

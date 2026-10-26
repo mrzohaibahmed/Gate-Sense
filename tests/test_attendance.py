@@ -19,7 +19,7 @@ def at(minutes: float) -> datetime:
     return T0 + timedelta(minutes=minutes)
 
 
-# --- Cool-down: per person per direction, reset at midnight --------------------------------------------------
+# --- Cool-down: per person per direction, no reset at midnight --------------------------------------------------
 
 
 def test_cooldown_blocks_repeat_within_window():
@@ -49,11 +49,13 @@ def test_cooldown_is_per_person_and_per_direction():
     assert cd.allow("waqas", "OUT", at(1))  # an OUT right after an IN is a different direction
 
 
-def test_cooldown_resets_at_midnight():
+def test_cooldown_does_not_reset_at_midnight():
+    """A night shift's passes either side of midnight are one cool-down, as they would be at noon."""
     cd = Cooldown(300)
     late = datetime(2026, 10, 20, 23, 58)
     assert cd.allow("waqas", "IN", late)
-    assert cd.allow("waqas", "IN", late + timedelta(minutes=4))  # 00:02 the next day: a new day starts afresh
+    assert not cd.allow("waqas", "IN", late + timedelta(minutes=4))  # 00:02 the next day: still the same pass
+    assert cd.allow("waqas", "IN", late + timedelta(minutes=5))
 
 
 def test_cooldown_seeded_from_previous_run():
