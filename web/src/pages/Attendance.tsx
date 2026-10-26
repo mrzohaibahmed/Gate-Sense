@@ -18,7 +18,8 @@ import { Badge, Separator } from "@/components/ui/card";
 import { Dialog, DialogDescription, DialogTitle, SheetContent } from "@/components/ui/dialog";
 import { Input, NativeSelect } from "@/components/ui/input";
 import { EmptyState, ErrorState, Switch } from "@/components/ui/misc";
-import { shiftLabel, STATUSES, timeOn } from "@/lib/days";
+import { useShiftsEnabled } from "@/app/shiftMode";
+import { CALENDAR_STATUSES, shiftLabel, STATUSES, timeOn } from "@/lib/days";
 import { cn, duration, hhmm, today } from "@/lib/utils";
 
 import { CorrectionForm } from "./CorrectionForm";
@@ -34,10 +35,19 @@ const STATUS_OPTION: Record<Status, string> = {
   check: "Check (passes, but none where they count)",
   "off day": "Off (OFF on the roster)",
   unscheduled: "Unscheduled (no roster entry)",
+  complete: "Complete (in and out)",
 };
+/** Columns that only mean something with shifts on. */
+const SHIFT_COLUMNS = new Set(["shift", "minutes"]);
 const PAGE_SIZE = 100;
 
-function columns(): ColumnDef<AttendanceRow>[] {
+function columns(shifts: boolean): ColumnDef<AttendanceRow>[] {
+  return allColumns().filter(
+    (c) => shifts || !SHIFT_COLUMNS.has(c.id ?? (c as { accessorKey?: string }).accessorKey ?? ""),
+  );
+}
+
+function allColumns(): ColumnDef<AttendanceRow>[] {
   const meta = (m: ColumnMeta) => m;
   return [
     { accessorKey: "date", header: "Date", meta: meta({ label: "Date", sortKey: "date" }) },
@@ -156,7 +166,8 @@ export function AttendancePage() {
     for (const r of rows.data?.items ?? []) if (r.department) names.add(r.department);
     return [...names].sort();
   }, [people.data, rows.data]);
-  const cols = useMemo(() => columns(), []);
+  const shifts = useShiftsEnabled();
+  const cols = useMemo(() => columns(shifts), [shifts]);
 
   return (
     <>
@@ -225,7 +236,7 @@ export function AttendancePage() {
                 onChange={(e) => update({ status: e.target.value })}
               >
                 <option value="">All statuses</option>
-                {STATUSES.map((s) => (
+                {(shifts ? STATUSES : CALENDAR_STATUSES).map((s) => (
                   <option key={s} value={s}>
                     {STATUS_OPTION[s]}
                   </option>
@@ -312,7 +323,7 @@ export function DayPanel({ row }: { row: AttendanceRow }) {
         </DialogDescription>
         <div className="flex flex-wrap items-center gap-2 pt-1 text-sm">
           <StatusBadge status={row.status} inside={row.open && row.inside} />
-          <span className="text-muted-foreground">{shiftLabel(row)}</span>
+          {(row.shift || row.status === "off day") && <span className="text-muted-foreground">{shiftLabel(row)}</span>}
           <span>
             IN {timeOn(row.first_in, row.date) || "—"} · OUT {timeOn(row.last_out, row.date) || "—"}
             {row.worked_minutes != null && ` · ${duration(row.worked_minutes)}`}

@@ -8,6 +8,7 @@ import { api } from "@/api/client";
 import type { RosterEntry, RosterRow, Shift } from "@/api/types";
 import { PageHeader } from "@/app/AppShell";
 import { useFilters } from "@/app/filters";
+import { useShiftModeKnown, useShiftsEnabled } from "@/app/shiftMode";
 import { can, useMe } from "@/auth/auth";
 import { ReasonDialog } from "@/components/ReasonDialog";
 import { TableSkeleton } from "@/components/states";
@@ -46,6 +47,23 @@ function dayLabel(date: string): string {
  * save them together with one reason; every change is audited. Attendance is recalculated from the camera passes.
  */
 export function RosterPage() {
+  const shifts = useShiftsEnabled();
+  const known = useShiftModeKnown();
+  if (shifts) return <RosterWeek />;
+  if (!known) return <TableSkeleton rows={6} />;
+  return (
+    <>
+      <PageHeader title="Roster" />
+      <div className="px-4 pb-4">
+        <EmptyState icon={<CalendarDays />} title="Shifts are switched off">
+          Attendance is by calendar day. The roster is kept; an admin can switch shifts on in Settings &gt; System.
+        </EmptyState>
+      </div>
+    </>
+  );
+}
+
+function RosterWeek() {
   const { siteId } = useFilters();
   const { data: me } = useMe();
   const queryClient = useQueryClient();

@@ -1,10 +1,11 @@
 """Reports: the daily register and the per-person totals (monthly summary) for a date range, as JSON for the
 preview and as CSV or Excel downloads. Every export is written to the audit log.
 
-A working day is a roster day (app/reports.py range_rows -> app.db.roster_days, the same rule as /api/attendance,
-the overview and scripts/today.py): one per roster row (a shift or OFF) plus unscheduled dates with passes, the first
-IN in the shift's IN window to the last OUT in its OUT window, with late / early leave / overtime minutes. A night
-shift is dated the day it starts.
+A working day is a roster day with shifts on (app/reports.py range_rows -> app.db.attendance_days, the same rule as
+/api/attendance, the overview and scripts/today.py): one per roster row (a shift or OFF) plus unscheduled dates with
+passes, the first IN in the shift's IN window to the last OUT in its OUT window, with late / early leave / overtime
+minutes; a night shift is dated the day it starts. With shifts off it is the calendar day (first IN, last OUT) and the
+exports leave the shift columns out.
 """
 
 from datetime import date, datetime
@@ -62,6 +63,7 @@ class PersonTotal(BaseModel):
     days_not_in_yet: int = Field(description="today's shifts whose IN window is still open")
     days_off: int
     days_unscheduled: int
+    days_complete: int = Field(description="shifts off: an IN and a later last OUT that date")
     total_hours: float
     avg_hours: float | None = Field(description="total hours / days with hours worked")
 
@@ -121,8 +123,9 @@ def monthly_report(request: Request, date_from: date | None = FILTERS["date_from
     """Per person over the range: scheduled and present days, days per status, late / early leave / overtime
     minutes, total hours (added up from the daily register)."""
     first, last = resolve("monthly", date_from, date_to)
+    shifts = auth.db_of(request).shift_mode()["enabled"]
     return {"first": first, "last": last,
-            "people": reports.person_totals(rows_for(request, first, last, department, site_id))}
+            "people": reports.person_totals(rows_for(request, first, last, department, site_id), shifts)}
 
 
 @router.get("/{kind}/export", response_class=Response, responses={200: {"content": {
@@ -138,11 +141,13 @@ def export_report(kind: Kind, request: Request, format: Literal["csv", "xlsx"] =
     rows = rows_for(request, first, last, department, site_id)
     label = "Daily register" if kind == "daily" else "Monthly summary"
     title = f"GateSense {label.lower()} {first} to {last}" + (f", {department}" if department else "")
+    shifts = auth.db_of(request).shift_mode()["enabled"]
+    daily_columns, total_columns = reports.columns(shifts)
     if kind == "daily":
-        sheets = [(label, reports.DAILY_COLUMNS_RANGE, rows)]
+        sheets = [(label, daily_columns, rows)]
     else:
-        sheets = [("Summary", reports.TOTAL_COLUMNS, reports.person_totals(rows)),
-                  ("Daily detail", reports.DAILY_COLUMNS_RANGE, rows)]
+        sheets = [("Summary", total_columns, reports.person_totals(rows, shifts)),
+                  ("Daily detail", daily_columns, rows)]
     if format == "csv":
         body, media = reports.rows_csv(sheets[0][1], sheets[0][2]), "text/csv; charset=utf-8"
     else:

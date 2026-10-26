@@ -46,9 +46,9 @@ def test_existing_database_keeps_its_data(tmp_path, capsys):
     before = dump(path)
 
     conn = db.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.VERSIONS) == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.VERSIONS) == 7
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-    assert {"users", "sessions", "sites", "user_preferences", "shifts", "roster"} <= tables
+    assert {"users", "sessions", "sites", "user_preferences", "shifts", "roster", "app_settings"} <= tables
     assert "daily_attendance" not in tables
     sites = [tuple(r) for r in conn.execute("SELECT * FROM sites")]
     assert sites == [(1, config.DEFAULT_SITE_NAME)]  # no timezone column any more
@@ -64,7 +64,7 @@ def test_existing_database_keeps_its_data(tmp_path, capsys):
 
     backups = list((tmp_path / "backups").glob("attendance-v0-*.db"))
     assert len(backups) == 1 and dump(backups[0]) == before  # the untouched copy
-    assert "upgraded from version 0 to 6" in capsys.readouterr().out
+    assert "upgraded from version 0 to 7" in capsys.readouterr().out
 
     db.connect(path).close()  # already upgraded: nothing runs, no second copy
     assert len(list((tmp_path / "backups").iterdir())) == 1 and dump(path, KEPT_TABLES) == after
@@ -94,13 +94,13 @@ def test_step_4_from_version_3_backs_up_then_drops_the_unused_parts(tmp_path, ca
     after = dump(path, KEPT_TABLES + ("sites",))
     assert {t: after[t] for t in KEPT_TABLES} == {t: before[t] for t in KEPT_TABLES}
     assert after["sites"] == [(1, config.DEFAULT_SITE_NAME), (2, "Yard")]
-    assert "upgraded from version 3 to 6" in capsys.readouterr().out
+    assert "upgraded from version 3 to 7" in capsys.readouterr().out
 
 
 def test_new_database_gets_everything_without_a_backup(tmp_path):
     path = tmp_path / "new.db"
     conn = db.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
     cam = db.upsert_camera(conn, "gate", 0, "IN")
     db.ensure_cameras(conn, [{"name": "gate2", "source": 1, "direction": "OUT"}])
     assert [r["site_id"] for r in conn.execute("SELECT site_id FROM cameras ORDER BY id")] == [1, 1] and cam == 1
@@ -151,7 +151,7 @@ def test_step_5_adds_shifts_and_an_empty_roster(tmp_path, capsys):
     conn.close()
     assert dump(path, KEPT_TABLES) == before
     assert next((tmp_path / "backups").glob("attendance-v4-*.db"))
-    assert "upgraded from version 4 to 6" in capsys.readouterr().out
+    assert "upgraded from version 4 to 7" in capsys.readouterr().out
 
 
 def test_step_6_moves_shift_times_into_versions(tmp_path):

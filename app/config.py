@@ -192,6 +192,7 @@ DEFAULT_SHIFTS = [  # put into the shifts table when it is created (schema step 
     {"name": "General", "start": "08:00", "end": "16:30", "crosses_midnight": False},
     {"name": "Night", "start": "22:00", "end": "06:00", "crosses_midnight": True},
 ]
+SHIFTS_ENABLED_DEFAULT = False  # Settings > System > Shifts (kept in the database, app_settings): off = calendar days
 ROSTER_MAX_DAYS = 62  # dates per roster request or roster file (the Roster screen shows a week)
 ROSTER_MAX_ENTRIES = 10000  # cells per roster save
 

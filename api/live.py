@@ -35,7 +35,8 @@ from app import config, live
 # Audit actions that change attendance days (sent as attendance_changed, so screens refetch): event corrections,
 # roster changes and shift changes (the days are computed from the roster and the shifts in force).
 CORRECTIONS = ("add_event", "edit_event", "void_event", "restore_event", "set_roster", "clear_roster",
-               "import_roster", "add_shift", "edit_shift", "delete_shift", "delete_shift_version")
+               "import_roster", "add_shift", "edit_shift", "delete_shift", "delete_shift_version", "enable_shifts",
+               "disable_shifts")
 DECISIONS = "live:decisions"
 SESSION_ENDED = 4401  # WebSocket close code: log in again
 

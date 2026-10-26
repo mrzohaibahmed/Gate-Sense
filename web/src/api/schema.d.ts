@@ -1097,6 +1097,31 @@ export interface paths {
         patch: operations["update_settings"];
         trace?: never;
     };
+    "/api/settings/shifts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Shift Mode
+         * @description Are shifts on? Read from the database on every request.
+         */
+        get: operations["get_shift_mode"];
+        /**
+         * Set Shift Mode
+         * @description Switch shifts on or off (admin only, with a reason; audited enable_shifts / disable_shifts). Nothing stored
+         *     changes: shifts, roster rows and raw events stay, and every screen recalculates from the raw events at once.
+         */
+        put: operations["set_shift_mode"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/system": {
         parameters: {
             query?: never;
@@ -1432,7 +1457,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "on time" | "late" | "early leave" | "missing IN" | "missing OUT" | "absent" | "not in yet" | "check" | "off day" | "unscheduled";
+            status: "on time" | "late" | "early leave" | "missing IN" | "missing OUT" | "absent" | "not in yet" | "check" | "off day" | "unscheduled" | "complete";
             /**
              * Inside
              * @description the day's last pass is an IN (while open: in the building now)
@@ -2057,7 +2082,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "on time" | "late" | "early leave" | "missing IN" | "missing OUT" | "absent" | "not in yet" | "check" | "off day" | "unscheduled";
+            status: "on time" | "late" | "early leave" | "missing IN" | "missing OUT" | "absent" | "not in yet" | "check" | "off day" | "unscheduled" | "complete";
             /**
              * Open
              * @description the day is still running (its OUT window hasn't closed)
@@ -2494,6 +2519,11 @@ export interface components {
              */
             date: string;
             /**
+             * Shifts
+             * @description shifts on (roster days) or off (calendar days: complete, missing IN/OUT, check)
+             */
+            shifts: boolean;
+            /**
              * People
              * @description roster days that date: every roster row (a shift or OFF), plus unscheduled people with passes
              */
@@ -2513,6 +2543,11 @@ export interface components {
              * @description people whose open day (a shift still running, from yesterday or today) ends with an IN: in the building now; only for today
              */
             inside_now: number | null;
+            /**
+             * Complete
+             * @description shifts off: an IN and a later last OUT that date
+             */
+            complete: number;
             /** On Time */
             on_time: number;
             /** Late */
@@ -2531,7 +2566,7 @@ export interface components {
             missing_in: number;
             /**
              * Missing Out
-             * @description an IN, no OUT after it, and the OUT window has closed
+             * @description an IN, no OUT after it, and the OUT window (shifts off: the date) is over
              */
             missing_out: number;
             /**
@@ -2861,6 +2896,11 @@ export interface components {
             days_off: number;
             /** Days Unscheduled */
             days_unscheduled: number;
+            /**
+             * Days Complete
+             * @description shifts off: an IN and a later last OUT that date
+             */
+            days_complete: number;
             /** Total Hours */
             total_hours: number;
             /**
@@ -3355,6 +3395,31 @@ export interface components {
              * @default 240
              */
             out_window_after_min?: number;
+        };
+        /** ShiftMode */
+        ShiftMode: {
+            /**
+             * Enabled
+             * @description on: attendance by roster day; off: by calendar day (first IN, last OUT)
+             */
+            enabled: boolean;
+            /**
+             * Updated
+             * @description when it was last switched (None: never, the default)
+             */
+            updated: string | null;
+            /** Updated By */
+            updated_by: string | null;
+        };
+        /** ShiftModeIn */
+        ShiftModeIn: {
+            /**
+             * Reason
+             * @description why (goes to the audit log)
+             */
+            reason: string;
+            /** Enabled */
+            enabled: boolean;
         };
         /** ShiftOut */
         ShiftOut: {
@@ -4218,7 +4283,7 @@ export interface operations {
                 to?: string | null;
                 /** @description person id */
                 person?: number | null;
-                status?: ("on time" | "late" | "early leave" | "missing IN" | "missing OUT" | "absent" | "not in yet" | "check" | "off day" | "unscheduled") | null;
+                status?: ("on time" | "late" | "early leave" | "missing IN" | "missing OUT" | "absent" | "not in yet" | "check" | "off day" | "unscheduled" | "complete") | null;
                 /** @description exact department name */
                 department?: string | null;
                 page?: number;
@@ -6784,6 +6849,87 @@ export interface operations {
             };
         };
     };
+    get_shift_mode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShiftMode"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_shift_mode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShiftModeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShiftMode"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     system_info: {
         parameters: {
             query?: never;
@@ -7066,6 +7212,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description shifts are switched off */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -7108,6 +7261,13 @@ export interface operations {
             };
             /** @description Your role lacks the permission, or you must change your password first */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description shifts are switched off */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7156,6 +7316,13 @@ export interface operations {
             };
             /** @description Your role lacks the permission, or you must change your password first */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description shifts are switched off */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7384,6 +7551,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description shifts are switched off */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -7433,6 +7607,13 @@ export interface operations {
             };
             /** @description no such person */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description shifts are switched off */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7490,6 +7671,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description shifts are switched off */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -7536,6 +7724,13 @@ export interface operations {
             };
             /** @description Your role lacks the permission, or you must change your password first */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description shifts are switched off */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7589,6 +7784,13 @@ export interface operations {
             };
             /** @description Your role lacks the permission, or you must change your password first */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description shifts are switched off */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

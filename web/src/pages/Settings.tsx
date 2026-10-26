@@ -17,6 +17,7 @@ import { toast } from "sonner";
 import { ApiError, api, resourceUrl } from "@/api/client";
 import type { Camera, Roi, Setting, Site, TestResult, UserOut } from "@/api/types";
 import { PageHeader } from "@/app/AppShell";
+import { shiftModeKey, useShiftsEnabled } from "@/app/shiftMode";
 import { can, type Permission, useMe } from "@/auth/auth";
 import { CameraStateDot, DirectionBadge } from "@/components/badges";
 import { ReasonDialog } from "@/components/ReasonDialog";
@@ -45,12 +46,16 @@ function errorText(e: unknown): string {
 
 export function SettingsPage() {
   const { data: me } = useMe();
-  const tabs = TABS.filter((t) => can(me, t.permission));
+  const shifts = useShiftsEnabled();
+  const tabs = TABS.filter((t) => can(me, t.permission) && (shifts || t.key !== "shifts"));
+  // Controlled: the tab picked stays picked when the list changes (the Shifts tab arrives with the Shifts setting).
+  const [tab, setTab] = useState<string | undefined>();
+  const current = tabs.some((t) => t.key === tab) ? tab : tabs[0]?.key;
   return (
     <>
       <PageHeader title="Settings" />
       <div className="px-4 pb-4">
-        <Tabs defaultValue={tabs[0]?.key}>
+        <Tabs value={current} onValueChange={setTab}>
           <TabsList>
             {tabs.map((t) => (
               <TabsTrigger key={t.key} value={t.key}>
@@ -1116,6 +1121,7 @@ function SystemTab() {
           </dl>
         </CardContent>
       </Card>
+      <ShiftsSwitch />
       <Card>
         <CardHeader>
           <CardTitle>Backups</CardTitle>
@@ -1143,5 +1149,63 @@ function SystemTab() {
         )}
       </Card>
     </div>
+  );
+}
+
+/**
+ * Shifts on or off (admin, with a reason; audited). Off: attendance by calendar day as before the shift module, and
+ * the Roster page and Settings > Shifts are hidden. Nothing is deleted: switching back shows the shift results again.
+ */
+function ShiftsSwitch() {
+  const queryClient = useQueryClient();
+  const mode = useQuery({ queryKey: shiftModeKey, queryFn: () => api.get("/api/settings/shifts") });
+  const [asking, setAsking] = useState<boolean | null>(null);
+  if (!mode.data) return null;
+  const on = mode.data.enabled;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Shifts</CardTitle>
+        <label className="flex items-center gap-2 text-sm">
+          <Switch checked={on} onCheckedChange={(v) => setAsking(v)} aria-label="Shifts" />
+          {on ? "On" : "Off"}
+        </label>
+      </CardHeader>
+      <CardContent className="text-sm text-muted-foreground">
+        {on
+          ? "On: attendance by roster day (shift windows, late, early leave, overtime, absent, off and unscheduled days); the Roster page and Settings > Shifts are in use."
+          : "Off: attendance by calendar day, as before shifts (first IN and last OUT of the day, worked time, missing IN / OUT); the Roster page and Settings > Shifts are hidden. The shifts and the roster are kept."}
+        {mode.data.updated_by && (
+          <span className="block pt-1 text-xs">
+            Last switched by {mode.data.updated_by}, {mode.data.updated?.replace("T", " ").slice(0, 16)}
+          </span>
+        )}
+      </CardContent>
+      <ReasonDialog
+        open={asking !== null}
+        onOpenChange={(o) => !o && setAsking(null)}
+        title={asking ? "Switch shifts on?" : "Switch shifts off?"}
+        description={
+          asking
+            ? "Attendance is worked out by roster day again, from the same camera passes."
+            : "Attendance is worked out by calendar day (first IN, last OUT). The shifts and the roster are kept; switch back any time."
+        }
+        confirmLabel={asking ? "Switch on" : "Switch off"}
+        onConfirm={async (reason) => {
+          await api.put("/api/settings/shifts", { body: { enabled: !!asking, reason } });
+          for (const k of [
+            ["features"],
+            ["attendance"],
+            ["overview"],
+            ["reports"],
+            ["events"],
+            ["person"],
+            ["roster"],
+          ]) {
+            void queryClient.invalidateQueries({ queryKey: k });
+          }
+        }}
+      />
+    </Card>
   );
 }

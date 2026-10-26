@@ -17,7 +17,8 @@ from api.schemas import (
 from api.workers import WorkerInfo
 from app import config
 from app.shifts import (
-    ABSENT, CAME_IN, CHECK, EARLY_LEAVE, LATE, MISSING_IN, MISSING_OUT, NOT_IN_YET, OFF_DAY, ON_TIME, UNSCHEDULED,
+    ABSENT, CALENDAR_CAME_IN, CAME_IN, CHECK, COMPLETE, EARLY_LEAVE, LATE, MISSING_IN, MISSING_OUT, NOT_IN_YET, OFF_DAY,
+    ON_TIME, UNSCHEDULED,
 )
 
 router = APIRouter(tags=["attendance"], responses=auth.PROTECTED_RESPONSES)
@@ -181,6 +182,7 @@ class CameraStatus(WorkerInfo):
 
 class Overview(BaseModel):
     date: date
+    shifts: bool = Field(description="shifts on (roster days) or off (calendar days: complete, missing IN/OUT, check)")
     people: int = Field(description="roster days that date: every roster row (a shift or OFF), plus unscheduled "
                                     "people with passes")
     scheduled: int = Field(description="rostered on a shift (not OFF)")
@@ -188,12 +190,14 @@ class Overview(BaseModel):
                                      "missing OUT)")
     inside_now: int | None = Field(description="people whose open day (a shift still running, from yesterday or "
                                                "today) ends with an IN: in the building now; only for today")
+    complete: int = Field(description="shifts off: an IN and a later last OUT that date")
     on_time: int
     late: int
     early_leave: int
     overtime: int = Field(description="days with an OUT after the shift's end")
     missing_in: int = Field(description="an OUT for the shift but no IN in its IN window")
-    missing_out: int = Field(description="an IN, no OUT after it, and the OUT window has closed")
+    missing_out: int = Field(description="an IN, no OUT after it, and the OUT window (shifts off: the date) is "
+                                         "over")
     check: int = Field(description="passes in the shift's time, but none where they count: needs a look")
     absent: int = Field(description="rostered, the IN window has closed, no pass at all")
     not_in_yet: int = Field(description="rostered, no IN yet, the IN window still open")
@@ -215,8 +219,10 @@ def get_overview(request: Request, day: date | None = Query(None, alias="date", 
     both = [r for r in attendance_rows(db, day - timedelta(days=1) if today else day, day)
             if site_id is None or r["site_id"] == site_id]
     rows = [r for r in both if r["date"] == day]
+    shifts = db.shift_mode()["enabled"]
     count = {s: sum(r["status"] == s for r in rows) for s in (
-        ON_TIME, LATE, EARLY_LEAVE, MISSING_IN, MISSING_OUT, CHECK, ABSENT, NOT_IN_YET, OFF_DAY, UNSCHEDULED)}
+        ON_TIME, LATE, EARLY_LEAVE, MISSING_IN, CHECK, ABSENT, NOT_IN_YET, OFF_DAY, UNSCHEDULED, COMPLETE)}
+    count[MISSING_OUT] = sum(r["status"] == MISSING_OUT and not r["open"] for r in rows)  # open: still inside
     hours = [0] * 24
     for r in rows:
         if r["first_in"]:
@@ -232,9 +238,10 @@ def get_overview(request: Request, day: date | None = Query(None, alias="date", 
                                         site_id=row["site_id"], events=events.get(row["id"], 0)))
     inside = {r["person_id"] for r in both if r["open"] and r["inside"]}  # a night shift from yesterday counts
     return Overview(
-        date=day, people=len(rows), scheduled=sum(r["shift"] is not None for r in rows),
-        present=sum(r["status"] in CAME_IN for r in rows), inside_now=len(inside) if today else None,
-        on_time=count[ON_TIME], late=count[LATE], early_leave=count[EARLY_LEAVE],
+        date=day, shifts=shifts, people=len(rows), scheduled=sum(r["shift"] is not None for r in rows),
+        present=sum(r["status"] in (CAME_IN if shifts else CALENDAR_CAME_IN) for r in rows),
+        inside_now=len(inside) if today else None, complete=count[COMPLETE], on_time=count[ON_TIME],
+        late=count[LATE], early_leave=count[EARLY_LEAVE],
         overtime=sum((r["overtime_minutes"] or 0) > 0 for r in rows), missing_in=count[MISSING_IN],
         missing_out=count[MISSING_OUT], check=count[CHECK], absent=count[ABSENT], not_in_yet=count[NOT_IN_YET],
         off_day=count[OFF_DAY], unscheduled=count[UNSCHEDULED],

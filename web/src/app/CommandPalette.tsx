@@ -9,10 +9,12 @@ import { can, canAny, useMe } from "@/auth/auth";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 import { NAV } from "./nav";
+import { useShiftsEnabled } from "./shiftMode";
 
 /** Ctrl+K / ⌘K: jump to a page, or find a person by name or code. */
 export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const { data: me } = useMe();
+  const shifts = useShiftsEnabled();
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
@@ -81,7 +83,7 @@ export function CommandPalette({ open, onOpenChange }: { open: boolean; onOpenCh
               heading="Pages"
               className="text-xs text-muted-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1"
             >
-              {NAV.filter((n) => canAny(me, n.permissions))
+              {NAV.filter((n) => canAny(me, n.permissions) && (shifts || !n.shifts))
                 .filter((n) => !search || n.label.toLowerCase().includes(search.toLowerCase()))
                 .map((n) => (
                   <Command.Item

@@ -27,7 +27,8 @@ from api.schemas import Reason
 from app import config
 from app.people_import import ImportFileError
 
-router = APIRouter(prefix="/api/roster", tags=["roster"], responses=auth.PROTECTED_RESPONSES)
+router = APIRouter(prefix="/api/roster", tags=["roster"], dependencies=[Depends(auth.shifts_on)],
+                   responses={**auth.PROTECTED_RESPONSES, 409: {"description": "shifts are switched off"}})
 read = require_permission("roster:read")
 manage = require_permission("roster:manage")
 PREVIEW_LIMIT = 1000  # changes and errors listed in a preview (the counts are always complete)

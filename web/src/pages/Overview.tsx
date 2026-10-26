@@ -106,6 +106,29 @@ function Tile({
 }
 
 function Kpis({ o, isToday }: { o: Overview; isToday: boolean }) {
+  if (!o.shifts) {
+    // Shifts off: calendar days, as before the shift module.
+    return (
+      <section aria-label="Key figures" className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
+        <Tile label="Present" value={`${o.present} / ${o.people}`} sub="came in, of everyone seen" tone="accent" />
+        <Tile
+          label="Inside now"
+          value={o.inside_now ?? "—"}
+          sub={isToday ? "in, not out yet" : "only for today"}
+          tone="inside"
+        />
+        <Tile label="Complete" value={o.complete} sub="in and out" tone="left" />
+        <Tile label="Missing IN" value={o.missing_in} sub="OUT without an IN" tone="missing" />
+        <Tile
+          label="Missing OUT"
+          value={o.missing_out}
+          sub={isToday ? "days already over" : "no OUT that day"}
+          tone="missing"
+        />
+        <Tile label="Check" value={o.check} sub="last OUT before first IN" tone="missing" />
+      </section>
+    );
+  }
   return (
     <section aria-label="Key figures" className="grid grid-cols-2 gap-4 sm:grid-cols-4 xl:grid-cols-7">
       <Tile
@@ -288,8 +311,10 @@ function NeedsAttention({ date, siteId, isToday }: { date: string; siteId: numbe
     queryFn: () =>
       api.get("/api/attendance", { query: { from: date, to: date, site_id: siteId, page_size: 500, sort: "name" } }),
   });
-  // Missing OUT is only given once the shift's OUT window has closed, so it is never just "still at work".
-  const items = (rows.data?.items ?? []).filter((r) => NEEDS_ATTENTION.includes(r.status));
+  // Missing OUT with shifts on comes only once the OUT window has closed; with shifts off, today's is still inside.
+  const items = (rows.data?.items ?? []).filter(
+    (r) => NEEDS_ATTENTION.includes(r.status) && !(r.status === "missing OUT" && r.open), // open: still inside
+  );
   return (
     <Card>
       <CardHeader>

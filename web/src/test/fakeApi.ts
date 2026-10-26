@@ -4,8 +4,13 @@ type Handler = (url: URL, body: unknown) => unknown;
 
 /**
  * A fake API for fetch: handlers keyed by "METHOD /path" (the path without the query). Unknown calls answer an
- * empty page. Every call is recorded with its parsed URL and JSON body.
+ * empty page, except GET /api/settings/shifts: shifts on, like the Python tests (pass a handler to change it).
+ * Every call is recorded with its parsed URL and JSON body.
  */
+const DEFAULTS: Record<string, Handler> = {
+  "GET /api/settings/shifts": () => ({ enabled: true, updated: null, updated_by: null }),
+};
+
 export function fakeApi(handlers: Record<string, Handler>) {
   const calls: { method: string; url: URL; body: unknown }[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -15,7 +20,7 @@ export function fakeApi(handlers: Record<string, Handler>) {
     if (typeof init?.body === "string") body = JSON.parse(init.body);
     else if (init?.body) body = init.body;
     calls.push({ method, url, body });
-    const handler = handlers[`${method} ${url.pathname}`];
+    const handler = handlers[`${method} ${url.pathname}`] ?? DEFAULTS[`${method} ${url.pathname}`];
     const result = handler ? handler(url, body) : { items: [], total: 0, page: 1, page_size: 50 };
     if (result instanceof Response) return result;
     return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });

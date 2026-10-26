@@ -19,6 +19,8 @@ export type NavItem = {
   icon: LucideIcon;
   /** Shown when the role has any of these (the API enforces the same). */
   permissions: readonly Permission[];
+  /** Only while shifts are on (Settings > System > Shifts). */
+  shifts?: boolean;
 };
 
 export const SETTINGS_PERMISSIONS = [
@@ -33,7 +35,7 @@ export const NAV: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, permissions: ["attendance:read"] },
   { to: "/live", label: "Live cameras", icon: Video, permissions: ["live:view"] },
   { to: "/attendance", label: "Attendance", icon: ClipboardList, permissions: ["attendance:read"] },
-  { to: "/roster", label: "Roster", icon: CalendarDays, permissions: ["roster:read"] },
+  { to: "/roster", label: "Roster", icon: CalendarDays, permissions: ["roster:read"], shifts: true },
   { to: "/people", label: "People", icon: Users, permissions: ["people:read"] },
   { to: "/enrollment", label: "Enrollment", icon: ScanFace, permissions: ["people:manage"] },
   { to: "/reports", label: "Reports", icon: BarChart3, permissions: ["reports:read"] },

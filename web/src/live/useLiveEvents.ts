@@ -58,6 +58,7 @@ export const ATTENDANCE_QUERIES: QueryKey[] = [
   ["roster"],
   ["shifts"],
   ["reports"],
+  ["features"],
 ];
 
 export function liveUrl(): string {

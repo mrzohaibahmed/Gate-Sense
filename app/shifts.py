@@ -56,6 +56,11 @@ OFF_DAY = "off day"
 UNSCHEDULED = "unscheduled"
 STATUSES = (ON_TIME, LATE, EARLY_LEAVE, MISSING_IN, MISSING_OUT, ABSENT, NOT_IN_YET, CHECK, OFF_DAY, UNSCHEDULED)
 CAME_IN = (ON_TIME, LATE, EARLY_LEAVE, MISSING_OUT)  # "present": an IN in the shift's IN window
+# With shifts switched off (summarize_calendar): the calendar day, as before the shift module.
+COMPLETE = "complete"
+CALENDAR_STATUSES = (COMPLETE, MISSING_IN, MISSING_OUT, CHECK)
+CALENDAR_CAME_IN = (COMPLETE, MISSING_OUT, CHECK)  # "present": an IN that day
+ALL_STATUSES = STATUSES + (COMPLETE,)
 NEEDS_ATTENTION = (MISSING_IN, MISSING_OUT, CHECK)  # someone should look at the events
 
 OFF = "OFF"  # the roster's day off; never a shift's name
@@ -278,4 +283,54 @@ def roster_repeat_ids(events: Iterable[Event], roster: Mapping[tuple[str, date],
     date shows): kept and listed, but never counted."""
     events = list(events)
     _, used = _evaluate(events, roster, now)
+    return {e.id for e in events if e.id is not None and e.id not in used}
+
+
+# --- Shifts switched off: the calendar day ------------------------------------------------------------------------
+#
+# Settings > System > Shifts off: a person's day is the calendar date (local midnight to midnight), the first IN and
+# the last OUT of the date, every other pass a repeat; no shift, no late / early leave / overtime minutes, no absent,
+# off or unscheduled days (people without passes that date get no day). Status: complete (an IN, then a later last
+# OUT), missing OUT (an IN and no OUT; `open` while the date is today: still inside), missing IN (OUTs only), check
+# (the last OUT is before the first IN; no hours). Nothing is stored either: switching back to shifts recalculates.
+
+
+def _calendar_day(person: str, day: date, events: list[Event], now: datetime | None, used: set) -> ShiftDay:
+    first = next((e for e in events if e.direction == "IN"), None)
+    last = next((e for e in reversed(events) if e.direction == "OUT"), None)
+    worked = None
+    if first is None:
+        status = MISSING_IN
+    elif last is None:
+        status = MISSING_OUT
+    elif last.timestamp < first.timestamp:
+        status = CHECK
+    else:
+        status = COMPLETE
+        worked = _minutes(last.timestamp - first.timestamp)
+    used.update(e.id for e in (first, last) if e is not None and e.id is not None)
+    return ShiftDay(person, day, None, status, first.timestamp if first else None, last.timestamp if last else None,
+                    worked_minutes=worked, inside=events[-1].direction == "IN",
+                    open=now is not None and now < datetime.combine(day + timedelta(days=1), time()))
+
+
+def _calendar(events: Iterable[Event], now: datetime | None) -> tuple[dict[tuple[str, date], ShiftDay], set[int]]:
+    by_day: dict[tuple[str, date], list[Event]] = {}
+    for e in sorted(events, key=_order):
+        by_day.setdefault((e.person, e.timestamp.date()), []).append(e)
+    used: set[int] = set()
+    return {k: _calendar_day(k[0], k[1], evs, now, used) for k, evs in by_day.items()}, used
+
+
+def summarize_calendar(events: Iterable[Event], first: date, last: date,
+                       now: datetime | None = None) -> list[ShiftDay]:
+    """With shifts off: one day per person per calendar date with passes, from `first` to `last` (see above)."""
+    days, _ = _calendar(events, now)
+    return sorted((d for d in days.values() if first <= d.day <= last), key=lambda d: (d.day, d.person))
+
+
+def calendar_repeat_ids(events: Iterable[Event]) -> set[int]:
+    """With shifts off: the passes that aren't their date's first IN or last OUT."""
+    events = list(events)
+    _, used = _calendar(events, None)
     return {e.id for e in events if e.id is not None and e.id not in used}

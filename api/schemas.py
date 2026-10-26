@@ -10,15 +10,15 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from api.db import Database, parse_ts
-from app.shifts import STATUSES
+from app.shifts import ALL_STATUSES
 
-# A roster day's status (app/shifts.py): on time, late, early leave, missing IN, missing OUT, absent, not in yet (the IN
-# window is still open), check (passes, but none where they count), off day (OFF on the roster), unscheduled (passes
-# on a date with no roster row).
+# A day's status (app/shifts.py). Shifts on: on time, late, early leave, missing IN, missing OUT, absent, not in yet
+# (the IN window is still open), check (passes, but none where they count), off day (OFF on the roster), unscheduled
+# (passes on a date with no roster row). Shifts off (calendar days): complete, missing IN, missing OUT, check.
 Status = Literal["on time", "late", "early leave", "missing IN", "missing OUT", "absent", "not in yet", "check",
-                 "off day", "unscheduled"]
+                 "off day", "unscheduled", "complete"]
 Direction = Literal["IN", "OUT"]
-assert set(Status.__args__) == set(STATUSES)
+assert set(Status.__args__) == set(ALL_STATUSES)
 
 
 class OptionalReason(BaseModel):
@@ -75,11 +75,11 @@ class AttendanceRow(BaseModel):
 
 
 def attendance_rows(db: Database, first: date, last: date, now: datetime | None = None) -> list[dict]:
-    """Roster days from `first` to `last` (inclusive), the same as every screen, report and scripts/today.py
-    (app.db.roster_days: one per roster row, plus unscheduled dates with passes)."""
+    """The days from `first` to `last` (inclusive), the same as every screen, report and scripts/today.py
+    (app.db.attendance_days: roster days with shifts on, calendar days with them off)."""
     people = {p["employee_code"]: p for p in db.people()}
     rows = []
-    for d in db.roster_days(first, last, now):
+    for d in db.attendance_days(first, last, now):
         p = people[d.person]
         rows.append({
             "date": d.day, "person_id": p["id"], "employee_code": d.person, "name": p["name"],

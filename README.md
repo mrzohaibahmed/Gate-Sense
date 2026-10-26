@@ -223,6 +223,8 @@ Prints name, shift, first IN, last OUT, worked hours, late / early leave / overt
 | `off day` | OFF on the roster: never absent; passes that day are shown, not counted |
 | `unscheduled` | passes on a date with no roster entry: shown, nothing guessed |
 
+**Shifts are off until an admin switches them on** (Settings > System > Shifts, with a reason). While off, attendance is by calendar day as before shifts (first IN and last OUT of the day, worked time; complete, missing IN, missing OUT, check; today without an OUT reads inside), and the Roster page and Settings > Shifts are hidden. Nothing is deleted: switching back on shows the shift results again.
+
 Overtime minutes are the OUT's minutes after the shift's end. "Present" means came in for the shift (on time, late, early leave, missing OUT). Changing a shift's times applies from a date you pick (default today); earlier days keep the times they had. Nothing is stored: a roster change recalculates the days from the raw camera passes, which never change.
 
 ## Dashboard

@@ -273,6 +273,14 @@ def websocket_user(websocket, permission: str) -> tuple[CurrentUser, int] | str:
     return user, s["id"]
 
 
+def shifts_on(request: Request, user: CurrentUser = Depends(session_user)) -> None:
+    """Router dependency of the shift and roster endpoints: they answer 409 while shifts are switched off (Settings >
+    System). Nothing is lost meanwhile: switching shifts back on brings the shifts and the roster back as they were."""
+    if not db_of(request).shift_mode()["enabled"]:
+        raise HTTPException(409, "Shifts are switched off (Settings > System > Shifts). The shifts and the roster are "
+                                 "kept; switch shifts on to use them.")
+
+
 def require_permission(permission: str, allow_password_change: bool = False):
     """Dependency for an endpoint: the user must be logged in and their role must have `permission`.
 

@@ -2,6 +2,8 @@ import pytest
 
 from app import config
 
+SHIPPED_SHIFTS_DEFAULT = config.SHIFTS_ENABLED_DEFAULT  # before any test changes it
+
 
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
@@ -40,6 +42,9 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "MAINTENANCE_CHECK_SECONDS", 3600)
     monkeypatch.setattr(config, "BACKUP_COPY_DIR", None)  # never a real second backup folder
     monkeypatch.setattr(config, "HEALTH_MIN_FREE_BYTES", 0)  # the health checks don't depend on this PC's free space
+    # Shifts are off by default (SHIPPED_SHIFTS_DEFAULT); most tests exercise the shift rules, so they start with shifts
+    # on. tests/test_shift_mode.py checks the shipped default and the calendar days.
+    monkeypatch.setattr(config, "SHIFTS_ENABLED_DEFAULT", True)
     # Never the real liveness models, and never a download: tests inject a fake (tests/fakes.py FakeLiveness).
     from app import liveness
 

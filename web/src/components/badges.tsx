@@ -15,7 +15,7 @@ export function DirectionBadge({ direction, className }: { direction: Direction 
   );
 }
 
-type Tone = "ok" | "warn" | "missing" | "absent" | "error" | "neutral" | "accent";
+type Tone = "ok" | "warn" | "missing" | "absent" | "error" | "neutral" | "accent" | "left";
 
 const STATUS: Record<Status, { tone: Tone; label: string }> = {
   "on time": { tone: "ok", label: "On time" },
@@ -28,14 +28,18 @@ const STATUS: Record<Status, { tone: Tone; label: string }> = {
   check: { tone: "error", label: "Check" },
   "off day": { tone: "neutral", label: "Off" },
   unscheduled: { tone: "accent", label: "Unscheduled" },
+  complete: { tone: "left", label: "Complete" },
 };
 
 /**
  * A roster day's status: on time, late, early leave, missing IN/OUT, absent, not in yet (the IN window is still
  * open), check (passes, but none where they count), off (OFF on the roster), unscheduled (passes, no roster entry).
- * Pass inside when the day is still running and its last pass is an IN: it shows as a second badge.
+ * Shifts off: complete, missing IN/OUT, check. Pass inside when the day is still running and its last pass is an IN:
+ * it shows as a second badge (or alone, for a calendar day without an OUT yet).
  */
 export function StatusBadge({ status, inside }: { status: Status; inside?: boolean }) {
+  // Shifts off, today: an IN and no OUT yet is not missing anything yet.
+  if (inside && status === "missing OUT") return <Badge tone="inside">Inside</Badge>;
   const s = STATUS[status];
   return (
     <span className="inline-flex items-center gap-1">

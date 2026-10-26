@@ -1,9 +1,10 @@
 """Print a day's attendance: name, shift, first IN, last OUT, worked hours, late / early leave / overtime minutes and
 the status.
 
-Computed from the raw events with the same rule as the dashboard and the reports (app.db.roster_days): one line per
-roster day (a shift or OFF), plus people with passes but no roster row (unscheduled). A night shift is the day it
-starts, so its OUT the next morning is on that line.
+Computed from the raw events with the same rule as the dashboard and the reports (app.db.attendance_days). Shifts on:
+one line per roster day (a shift or OFF), plus people with passes but no roster row (unscheduled); a night shift is the
+day it starts, so its OUT the next morning is on that line. Shifts off (Settings > System): one line per person with
+passes that calendar day: first IN, last OUT, hours, status (today without an OUT yet: inside).
 
 Run from the project root:
     .venv\\Scripts\\python scripts\\today.py
@@ -18,7 +19,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import db  # noqa: E402
-from app.shifts import OFF, OFF_DAY  # noqa: E402
+from app.reports import INSIDE  # noqa: E402
+from app.shifts import MISSING_OUT, OFF, OFF_DAY  # noqa: E402
 
 
 def hhmm(dt) -> str:
@@ -35,13 +37,24 @@ def main() -> int:
     args = parser.parse_args()
 
     conn = db.connect()
-    days = db.roster_days(conn, args.date, args.date)
+    days = db.attendance_days(conn, args.date, args.date)
+    shifts = db.shifts_enabled(conn)
     names = {r["employee_code"]: r["name"] for r in conn.execute("SELECT employee_code, name FROM persons")}
     conn.close()
 
     print(f"GateSense attendance for {args.date.isoformat()}\n")
     if not days:
-        print("Nobody is on the roster that day and nobody passed a camera. Plan shifts on the Roster page.")
+        print("Nobody is on the roster that day and nobody passed a camera. Plan shifts on the Roster page."
+              if shifts else "Nobody passed a camera that day.")
+        return 0
+    if not shifts:
+        print(f"{'Name':<20} {'First IN':<9} {'Last OUT':<9} {'Hours':>6}  Status")
+        print("-" * 60)
+        for d in sorted(days, key=lambda d: names.get(d.person, d.person).lower()):
+            hours = f"{d.worked_minutes / 60:.2f}" if d.worked_minutes is not None else "-"
+            status = INSIDE if d.status == MISSING_OUT and d.open else d.status
+            print(f"{names.get(d.person, d.person):<20} {hhmm(d.first_in):<9} {hhmm(d.last_out):<9} {hours:>6}  "
+                  f"{status}")
         return 0
     print(f"{'Name':<20} {'Shift':<10} {'First IN':<9} {'Last OUT':<9} {'Hours':>6} {'Late':>5} {'Early':>5} "
           f"{'Over':>5}  Status")

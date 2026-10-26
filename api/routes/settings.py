@@ -1,11 +1,17 @@
 """Recognition thresholds, the liveness check and the debounce (cool-down): see and change them. Admin only; every change audited.
 
+Also the Shifts switch (/api/settings/shifts): on = attendance by roster day (shifts, roster), off = by calendar day as
+before the shift module. It is kept in the database (app_settings) and read on every request: no restart needed.
+Everyone logged in can read it (the dashboard hides the roster when off); only admins change it, with a reason.
+
 The values live in app/config.py; changes are saved to settings.json and applied over them
 (config.EDITABLE_SETTINGS lists what can be changed). Camera workers read them when they start.
 """
 
 import json
 from typing import Literal
+
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -88,3 +94,31 @@ def update_settings(body: SettingsPatch, request: Request, admin: CurrentUser = 
         config.load_settings()
         auth.db_of(request).log_change(admin.username, "change_settings", "settings", changes, body.reason)
     return current(request)
+
+
+# --- Shifts on / off ----------------------------------------------------------------------------------------------
+
+
+class ShiftMode(BaseModel):
+    enabled: bool = Field(description="on: attendance by roster day; off: by calendar day (first IN, last OUT)")
+    updated: datetime | None = Field(description="when it was last switched (None: never, the default)")
+    updated_by: str | None
+
+
+class ShiftModeIn(Reason):
+    enabled: bool
+
+
+@router.get("/shifts", response_model=ShiftMode)
+def get_shift_mode(request: Request, _: CurrentUser = Depends(require_permission("account:self"))) -> dict:
+    """Are shifts on? Read from the database on every request."""
+    return auth.db_of(request).shift_mode()
+
+
+@router.put("/shifts", response_model=ShiftMode)
+def set_shift_mode(body: ShiftModeIn, request: Request, admin: CurrentUser = Depends(manage)) -> dict:
+    """Switch shifts on or off (admin only, with a reason; audited enable_shifts / disable_shifts). Nothing stored
+    changes: shifts, roster rows and raw events stay, and every screen recalculates from the raw events at once."""
+    db = auth.db_of(request)
+    db.set_shifts_enabled(body.enabled, admin.username, body.reason)
+    return db.shift_mode()

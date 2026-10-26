@@ -28,7 +28,9 @@ shifts (seeded with config.DEFAULT_SHIFTS) and the roster (person, date, shift o
 NULL = OFF; one row per person per date). Roster days are computed from the raw
 events by app/shifts.py, so nothing derived is stored. Step 6 moves a shift's times,
 grace and windows into shift_versions (effective_from: NULL = from the start), so a
-change applies from a date and never rewrites the days before it.
+change applies from a date and never rewrites the days before it. Step 7 adds
+app_settings (key, value, updated, updated_by): settings kept in the database, read
+on every request; the first is "shifts" (on/off, see attendance_days).
 """
 
 import json
@@ -40,7 +42,10 @@ from pathlib import Path
 from app import config
 from app.attendance import Event, within_cooldown
 from app.camera import mask_source
-from app.shifts import OFF, ROSTER_PAD_DAYS, Shift, ShiftDay, roster_repeat_ids, summarize_roster, version_on
+from app.shifts import (
+    OFF, ROSTER_PAD_DAYS, Shift, ShiftDay, calendar_repeat_ids, roster_repeat_ids, summarize_calendar, summarize_roster,
+    version_on,
+)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS persons (
@@ -228,8 +233,19 @@ def _v6_shift_versions(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE shifts DROP COLUMN {column}")
 
 
+def _v7_app_settings(conn: sqlite3.Connection) -> None:
+    """Settings kept in the database (changed on the dashboard, read on every request): one row per key. A key with
+    no row has its default (config.SHIFTS_ENABLED_DEFAULT for "shifts")."""
+    conn.execute("""CREATE TABLE IF NOT EXISTS app_settings (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated    TEXT NOT NULL,
+        updated_by TEXT NOT NULL
+    )""")
+
+
 VERSIONS = [_v1_users_sessions_sites, _v2_person_sites_original_times, _v3_user_preferences, _v4_drop_unused,
-            _v5_shifts_roster, _v6_shift_versions]  # PRAGMA user_version = how many have run
+            _v5_shifts_roster, _v6_shift_versions, _v7_app_settings]  # PRAGMA user_version = how many have run
 
 
 def _has_data(conn) -> bool:
@@ -895,3 +911,51 @@ def roster_repeat_event_ids(conn: sqlite3.Connection, first: date, last: date,
     events, roster = _roster_inputs(conn, first, last)
     repeats = roster_repeat_ids(events, roster, clock() if now is None else now)
     return {e.id for e in events if e.id in repeats and first <= e.timestamp.date() <= last}
+
+
+# --- Shifts on or off (app_settings "shifts") ------------------------------------------------------------------------
+#
+# On (the default): a day is a roster day (summarize_roster). Off: the calendar day as before the shift module
+# (summarize_calendar). Switching changes nothing stored (shifts, roster rows and raw events stay as they are), so
+# switching back shows the shift results again, recalculated from the raw events.
+
+
+def shift_mode(conn: sqlite3.Connection) -> dict:
+    """{"enabled": bool, "updated": text or None, "updated_by": text or None}, read from the database each time."""
+    row = conn.execute("SELECT value, updated, updated_by FROM app_settings WHERE key = 'shifts'").fetchone()
+    if row is None:
+        return {"enabled": config.SHIFTS_ENABLED_DEFAULT, "updated": None, "updated_by": None}
+    return {"enabled": row["value"] == "on", "updated": row["updated"], "updated_by": row["updated_by"]}
+
+
+def shifts_enabled(conn: sqlite3.Connection) -> bool:
+    return shift_mode(conn)["enabled"]
+
+
+def set_shifts_enabled(conn: sqlite3.Connection, enabled: bool, reason: str, user: str) -> bool:
+    """Switch shifts on or off; audited (enable_shifts / disable_shifts). False if it already was."""
+    require_reason(reason)
+    with conn:
+        if shifts_enabled(conn) == enabled:
+            return False
+        conn.execute("INSERT INTO app_settings (key, value, updated, updated_by) VALUES ('shifts', ?, ?, ?) "
+                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated = excluded.updated, "
+                     "updated_by = excluded.updated_by", ("on" if enabled else "off", _ts(datetime.now()), user))
+        _audit(conn, user, "enable_shifts" if enabled else "disable_shifts", "settings:shifts",
+               {"shifts": ["off" if enabled else "on", "on" if enabled else "off"]}, reason)
+    return True
+
+
+def attendance_days(conn: sqlite3.Connection, first: date, last: date, now: datetime | None = None) -> list[ShiftDay]:
+    """The days every screen, report and scripts/today.py show: roster days with shifts on, calendar days with them
+    off (shift_mode). Read-only."""
+    if shifts_enabled(conn):
+        return roster_days(conn, first, last, now)
+    return summarize_calendar(events_between(conn, first, last), first, last, clock() if now is None else now)
+
+
+def attendance_repeat_event_ids(conn: sqlite3.Connection, first: date, last: date) -> set[int]:
+    """The repeat events dated `first` to `last` under the rule in use (shifts on: roster days; off: calendar days)."""
+    if shifts_enabled(conn):
+        return roster_repeat_event_ids(conn, first, last)
+    return calendar_repeat_ids(events_between(conn, first, last))

@@ -18,7 +18,8 @@ from api.schemas import Reason
 from app import config
 from app.shifts import Shift
 
-router = APIRouter(prefix="/api/shifts", tags=["shifts"], responses=auth.PROTECTED_RESPONSES)
+router = APIRouter(prefix="/api/shifts", tags=["shifts"], dependencies=[Depends(auth.shifts_on)],
+                   responses={**auth.PROTECTED_RESPONSES, 409: {"description": "shifts are switched off"}})
 read = require_permission("roster:read")
 manage = require_permission("shifts:manage")
 

@@ -66,6 +66,7 @@ const totals: PersonTotal[] = [
     days_not_in_yet: 0,
     days_off: 2,
     days_unscheduled: 0,
+    days_complete: 0,
     total_hours: 172.5,
     avg_hours: 9.08,
   },

@@ -363,21 +363,30 @@ class Database:
                 "SELECT camera_id, count(*) FROM attendance_events WHERE timestamp >= ? AND timestamp < ? "
                 "AND voided = 0 GROUP BY camera_id", (start, end))}
 
-    # --- Daily attendance: roster days (app.shifts), the same for every screen, report and today.py ---------------
+    # --- Daily attendance: roster days, or calendar days with shifts off; the same for every screen and report ------
 
-    def roster_days(self, first: date, last: date, now: datetime | None = None) -> list:
-        """app.db.roster_days: one per roster row, plus unscheduled dates with passes."""
+    def attendance_days(self, first: date, last: date, now: datetime | None = None) -> list:
+        """app.db.attendance_days: roster days (shifts on) or calendar days (shifts off)."""
         with self.conn() as conn:
-            return app_db.roster_days(conn, first, last, now)
+            return app_db.attendance_days(conn, first, last, now)
 
     def repeat_ids(self, rows: list[dict]) -> set[int]:
-        """Which of these event rows no roster day uses (app.shifts.roster_repeat_ids)."""
+        """Which of these event rows no day uses, under the rule in use (app.db.attendance_repeat_event_ids)."""
         days = [parse_ts(r["timestamp"]).date() for r in rows if not r["voided"]]
         if not days:
             return set()
         with self.conn() as conn:
-            repeats = app_db.roster_repeat_event_ids(conn, min(days), max(days))
+            repeats = app_db.attendance_repeat_event_ids(conn, min(days), max(days))
         return {r["id"] for r in rows if r["id"] in repeats}
+
+    def shift_mode(self) -> dict:
+        """Shifts on or off (app_settings, read on every call): {"enabled", "updated", "updated_by"}."""
+        with self.conn() as conn:
+            return app_db.shift_mode(conn)
+
+    def set_shifts_enabled(self, enabled: bool, actor: str, reason: str) -> bool:
+        with self.conn() as conn:
+            return app_db.set_shifts_enabled(conn, enabled, reason, actor)
 
     # --- Shifts (effective-dated versions) and the roster ---------------------------------------------------------
 

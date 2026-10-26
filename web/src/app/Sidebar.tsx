@@ -6,6 +6,7 @@ import { Tooltip } from "@/components/ui/misc";
 import { cn } from "@/lib/utils";
 
 import { NAV } from "./nav";
+import { useShiftsEnabled } from "./shiftMode";
 
 /** Left navigation: only the items the role may open. Collapses to icons on a desktop; a drawer on a phone. */
 export function Sidebar({
@@ -20,7 +21,8 @@ export function Sidebar({
   onNavigate: () => void;
 }) {
   const { data: me } = useMe();
-  const items = NAV.filter((item) => canAny(me, item.permissions));
+  const shifts = useShiftsEnabled();
+  const items = NAV.filter((item) => canAny(me, item.permissions) && (shifts || !item.shifts));
   return (
     <>
       {mobileOpen && <div className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={onNavigate} aria-hidden />}

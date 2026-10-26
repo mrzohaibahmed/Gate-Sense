@@ -573,7 +573,7 @@ def test_camera_passwords_never_appear_in_responses(app, monkeypatch, tmp_path):
 def test_openapi_lists_every_endpoint_with_a_response_model(app):
     spec = TestClient(app).get("/openapi.json").json()
     ops = [(m, p, o) for p, ms in spec["paths"].items() for m, o in ms.items()]
-    assert len(ops) == 80 and len({o["operationId"] for _, _, o in ops}) == 80  # ... people import, shifts, roster
+    assert len(ops) == 82 and len({o["operationId"] for _, _, o in ops}) == 82  # ... people import, shifts, roster
     expected = {("get", "/api/overview"), ("get", "/api/attendance"), ("get", "/api/events"),
                 ("get", "/api/snapshots/{event_id}"), ("post", "/api/attendance/corrections"), ("get", "/api/people"),
                 ("post", "/api/people"), ("get", "/api/people/{person_id}"), ("patch", "/api/people/{person_id}"),

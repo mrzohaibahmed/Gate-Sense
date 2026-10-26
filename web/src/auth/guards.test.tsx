@@ -33,7 +33,11 @@ beforeEach(() => {
       async (url: string) =>
         new Response(
           JSON.stringify(
-            url.startsWith("/api/overview") ? EMPTY_OVERVIEW : { items: [], total: 0, page: 1, page_size: 50 },
+            url.startsWith("/api/overview")
+              ? EMPTY_OVERVIEW
+              : url.startsWith("/api/settings/shifts")
+                ? { enabled: true, updated: null, updated_by: null }
+                : { items: [], total: 0, page: 1, page_size: 50 },
           ),
           { headers: { "content-type": "application/json" } },
         ),
@@ -65,6 +69,7 @@ describe("route guards", () => {
   it("shows the menu items of the role only", async () => {
     renderRoutes(routes, "/", makeMe("viewer", PERMISSIONS.viewer!));
     await screen.findByRole("complementary", { name: "Main menu" });
+    await menu().findByRole("link", { name: "Roster" }); // once the Shifts setting has arrived (on)
     const labels = menu()
       .getAllByRole("link")
       .map((a) => a.textContent);
@@ -74,6 +79,7 @@ describe("route guards", () => {
   it("an admin sees every item", async () => {
     renderRoutes(routes, "/", makeMe("admin", PERMISSIONS.admin!));
     await screen.findByRole("complementary", { name: "Main menu" });
+    await menu().findByRole("link", { name: "Roster" });
     expect(menu().getAllByRole("link")).toHaveLength(9);
   });
 

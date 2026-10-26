@@ -7,13 +7,16 @@ from datetime import date
 
 from app import db
 from app.shifts import (
-    ABSENT, CAME_IN, CHECK, EARLY_LEAVE, LATE, MISSING_IN, MISSING_OUT, NOT_IN_YET, OFF_DAY, ON_TIME, UNSCHEDULED,
+    ABSENT, CALENDAR_CAME_IN, CAME_IN, CHECK, COMPLETE, EARLY_LEAVE, LATE, MISSING_IN, MISSING_OUT, NOT_IN_YET, OFF_DAY,
+    ON_TIME, UNSCHEDULED,
 )
 
-# Both build on db.roster_days (app/shifts.py: one day per roster row, plus unscheduled dates with passes; a night
-# shift is dated the day it starts), the same rule as /api/attendance, the overview and scripts/today.py.
-# "Present" = came in for the shift (on time, late, early leave, missing OUT). A day still running is "not in yet",
-# or on time / late while at work: never missing OUT before its OUT window has closed.
+# Both build on db.attendance_days, the same rule as /api/attendance, the overview and scripts/today.py: with shifts on,
+# roster days (app/shifts.py: one day per roster row, plus unscheduled dates with passes; a night shift is dated the day
+# it starts; "present" = on time, late, early leave, missing OUT); with shifts off, calendar days (first IN, last OUT;
+# complete, missing IN, missing OUT, check; "present" = an IN that day), and the shift columns are left out.
+# The Status column says "inside" for a day still running without an OUT (shifts off: today), like the screens.
+INSIDE = "inside"
 
 DAILY_COLUMNS_RANGE = [  # (header, key, kind) for exports
     ("Date", "date", "date"), ("Employee code", "employee_code", "text"), ("Name", "name", "text"),
@@ -21,7 +24,19 @@ DAILY_COLUMNS_RANGE = [  # (header, key, kind) for exports
     ("Shift end", "shift_end", "time"), ("First IN", "first_in", "time"), ("Last OUT", "last_out", "time"),
     ("Hours worked", "worked_hours", "hours"), ("Late (min)", "late_minutes", "int"),
     ("Early leave (min)", "early_leave_minutes", "int"), ("Overtime (min)", "overtime_minutes", "int"),
-    ("Status", "status", "text"),
+    ("Status", "status_label", "text"),
+]
+CALENDAR_DAILY_COLUMNS = [
+    ("Date", "date", "date"), ("Employee code", "employee_code", "text"), ("Name", "name", "text"),
+    ("Department", "department", "text"), ("First IN", "first_in", "time"), ("Last OUT", "last_out", "time"),
+    ("Hours worked", "worked_hours", "hours"), ("Status", "status_label", "text"),
+]
+CALENDAR_TOTAL_COLUMNS = [
+    ("Employee code", "employee_code", "text"), ("Name", "name", "text"), ("Department", "department", "text"),
+    ("Days", "days", "int"), ("Present", "days_present", "int"), ("Complete", "days_complete", "int"),
+    ("Missing IN", "days_missing_in", "int"), ("Missing OUT", "days_missing_out", "int"),
+    ("Days to check", "days_check", "int"), ("Total hours", "total_hours", "hours"),
+    ("Average hours per worked day", "avg_hours", "hours"),
 ]
 TOTAL_COLUMNS = [
     ("Employee code", "employee_code", "text"), ("Name", "name", "text"), ("Department", "department", "text"),
@@ -37,17 +52,22 @@ TOTAL_COLUMNS = [
 COUNTED = {  # PersonTotal field -> the status it counts
     "days_on_time": ON_TIME, "days_late": LATE, "days_early_leave": EARLY_LEAVE, "days_missing_in": MISSING_IN,
     "days_missing_out": MISSING_OUT, "days_check": CHECK, "days_absent": ABSENT, "days_not_in_yet": NOT_IN_YET,
-    "days_off": OFF_DAY, "days_unscheduled": UNSCHEDULED,
+    "days_off": OFF_DAY, "days_unscheduled": UNSCHEDULED, "days_complete": COMPLETE,
 }
 MINUTES = ("late_minutes", "early_leave_minutes", "overtime_minutes")
 
 
+def columns(shifts: bool) -> tuple[list, list]:
+    """(daily register columns, per-person total columns) for exports: with shifts on or off."""
+    return (DAILY_COLUMNS_RANGE, TOTAL_COLUMNS) if shifts else (CALENDAR_DAILY_COLUMNS, CALENDAR_TOTAL_COLUMNS)
+
+
 def range_rows(conn: sqlite3.Connection, first: date, last: date, department: str | None = None,
                site_id: int | None = None) -> list[dict]:
-    """One row per roster day from `first` to `last` (db.roster_days), by date then name. Read-only."""
+    """One row per day from `first` to `last` (db.attendance_days), by date then name. Read-only."""
     people = {r["employee_code"]: dict(r) for r in db.list_persons(conn)}
     rows = []
-    for d in db.roster_days(conn, first, last):
+    for d in db.attendance_days(conn, first, last):
         p = people[d.person]
         if department and (p["department"] or "") != department:
             continue
@@ -58,11 +78,12 @@ def range_rows(conn: sqlite3.Connection, first: date, last: date, department: st
                      "shift_start": d.start, "shift_end": d.end, "first_in": d.first_in, "last_out": d.last_out,
                      "worked_hours": None if d.worked_minutes is None else round(d.worked_minutes / 60, 2),
                      "late_minutes": d.late_minutes, "early_leave_minutes": d.early_leave_minutes,
-                     "overtime_minutes": d.overtime_minutes, "status": d.status, "open": d.open})
+                     "overtime_minutes": d.overtime_minutes, "status": d.status, "open": d.open,
+                     "status_label": INSIDE if d.status == MISSING_OUT and d.open else d.status})
     return sorted(rows, key=lambda r: (r["date"], r["name"].lower(), r["employee_code"]))
 
 
-def person_totals(rows: list[dict]) -> list[dict]:
+def person_totals(rows: list[dict], shifts: bool = True) -> list[dict]:
     """Per person, from the daily rows only (so the totals always add up to them): days in the register, scheduled
     days (a shift, not OFF), days present (came in for the shift), days per status, late / early leave / overtime
     minutes, total hours and the average over the days with hours."""
@@ -74,9 +95,9 @@ def person_totals(rows: list[dict]) -> list[dict]:
             "total_hours": 0.0, "avg_hours": None, "_worked_days": 0})
         t["days"] += 1
         t["days_scheduled"] += r["shift"] is not None
-        t["days_present"] += r["status"] in CAME_IN
+        t["days_present"] += r["status"] in (CAME_IN if shifts else CALENDAR_CAME_IN)
         for key, status in COUNTED.items():
-            t[key] += r["status"] == status
+            t[key] += r["status"] == status and not (status == MISSING_OUT and r["open"])  # open: still inside
         for key in MINUTES:
             t[key] += r[key] or 0
         if r["worked_hours"] is not None:

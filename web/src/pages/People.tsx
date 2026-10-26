@@ -21,6 +21,7 @@ import { api, resourceUrl } from "@/api/client";
 import type { AttendanceRow, Person, Status } from "@/api/types";
 import { PageHeader } from "@/app/AppShell";
 import { useFilters } from "@/app/filters";
+import { useShiftsEnabled } from "@/app/shiftMode";
 import { can, useMe } from "@/auth/auth";
 import { DirectionBadge, StatusBadge, statusLabel } from "@/components/badges";
 import { type ColumnMeta, DataTable } from "@/components/DataTable";
@@ -236,6 +237,7 @@ const CELL: Record<Status, string> = {
   "not in yet": "bg-muted text-muted-foreground",
   "off day": "bg-muted/60 text-muted-foreground",
   unscheduled: "bg-primary/10 text-primary",
+  complete: "bg-status-left/15 text-status-left",
 };
 
 /** A month of days coloured by status; hover shows the times. */
@@ -285,6 +287,7 @@ export function AttendanceCalendar({ rows, month }: { rows: AttendanceRow[]; mon
 export function PersonProfilePage() {
   const { id } = useParams();
   const personId = Number(id);
+  const shifts = useShiftsEnabled();
   const { data: me } = useMe();
   const queryClient = useQueryClient();
   const [month, setMonth] = useState(today().slice(0, 7));
@@ -473,7 +476,7 @@ export function PersonProfilePage() {
               <thead>
                 <tr>
                   <Th>Date</Th>
-                  <Th>Shift</Th>
+                  {shifts && <Th>Shift</Th>}
                   <Th>Status</Th>
                   <Th>First IN</Th>
                   <Th>Last OUT</Th>
@@ -487,7 +490,7 @@ export function PersonProfilePage() {
                   return (
                     <tr key={r.date}>
                       <Td>{r.date}</Td>
-                      <Td className="whitespace-nowrap">{shiftLabel(r)}</Td>
+                      {shifts && <Td className="whitespace-nowrap">{shiftLabel(r)}</Td>}
                       <Td>
                         <StatusBadge status={r.status} inside={r.open && r.inside} />
                       </Td>

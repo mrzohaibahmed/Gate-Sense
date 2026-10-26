@@ -15,6 +15,9 @@ export const STATUSES: Status[] = [
   "unscheduled",
 ];
 
+/** With shifts off (calendar days): the statuses there are. */
+export const CALENDAR_STATUSES: Status[] = ["complete", "missing IN", "missing OUT", "check"];
+
 /** "General 08:00–16:30", "Off" for an OFF day, "—" when there is no roster entry (unscheduled). */
 export function shiftLabel(r: {
   shift: string | null;
