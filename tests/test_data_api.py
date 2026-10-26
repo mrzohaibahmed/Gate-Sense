@@ -36,8 +36,21 @@ def at(day: date, hhmm: str) -> datetime:
     return datetime.combine(day, time.fromisoformat(hhmm))
 
 
+def plan(conn, codes, days, shift: str = "General") -> None:
+    """Roster rows written directly (no audit rows: some tests count those)."""
+    shift_id = next(s.id for s in db.list_shifts(conn) if s.name == shift)
+    ids = db.person_ids(conn)
+    for code in codes:
+        for day in days:
+            conn.execute("INSERT INTO roster (person_id, date, shift_id, updated, updated_by) VALUES (?, ?, ?, '', "
+                         "'test') ON CONFLICT(person_id, date) DO UPDATE SET shift_id = excluded.shift_id",
+                         (ids[code], day.isoformat(), shift_id))
+    conn.commit()
+
+
 def seed() -> dict:
-    """Four people, the two default cameras, a day of events today and one yesterday."""
+    """Four people on the General shift (08:00-16:30) today and yesterday, the two default cameras, a day of events
+    today and one yesterday. The clock says 18:00 today (fixed_clock): today's OUT window is still open."""
     conn = db.connect()
     db.sync_persons(conn, ["1001", "1002", "1003", "1004"])
     for code, name, dept in (("1001", "Ayesha", "Stores"), ("1002", "Bilal", "Office"), ("1003", "Chand", "Stores"),
@@ -50,12 +63,19 @@ def seed() -> dict:
         "a_in": db.add_event(conn, ids["1001"], cin, at(TODAY, "08:05"), 0.71, None),
         "a_out": db.add_event(conn, ids["1001"], cout, at(TODAY, "17:10"), 0.66, None),
         "b_in": db.add_event(conn, ids["1002"], cin, at(TODAY, "09:20"), 0.58, None),
-        "c_out": db.add_event(conn, ids["1003"], cout, at(TODAY, "12:00"), 0.62, None),
+        "c_out": db.add_event(conn, ids["1003"], cout, at(TODAY, "13:00"), 0.62, None),
         "a_in_y": db.add_event(conn, ids["1001"], cin, at(YESTERDAY, "08:00"), 0.70, None),
         "a_out_y": db.add_event(conn, ids["1001"], cout, at(YESTERDAY, "16:00"), 0.69, None),
     }
+    plan(conn, ids, (YESTERDAY, TODAY))
     conn.close()
     return {"people": ids, "cameras": {"entrance": cin, "exit": cout}, "events": events}
+
+
+@pytest.fixture(autouse=True)
+def fixed_clock(monkeypatch):
+    """18:00 today for the days still running, whatever the time the tests run."""
+    monkeypatch.setattr(db, "clock", lambda: at(TODAY, "18:00"))
 
 
 @pytest.fixture
@@ -105,12 +125,15 @@ def test_attendance_matches_the_daily_register(app):
     register = viewer.get("/api/reports/daily", params={"from": TODAY.isoformat(), "to": TODAY.isoformat()})
 
     def shape(r):
-        return (r["employee_code"], r["name"], r["department"], r["first_in"], r["last_out"], r["worked_hours"],
-                r["status"])
+        return (r["employee_code"], r["name"], r["department"], r["shift"], r["first_in"], r["last_out"],
+                r["worked_hours"], r["late_minutes"], r["early_leave_minutes"], r["overtime_minutes"], r["status"])
 
     assert sorted(map(shape, rows)) == sorted(map(shape, register.json()["rows"]))
-    assert [r["status"] for r in rows] == ["complete", "missing exit", "missing entry", "absent"]
-    assert rows[0]["worked_minutes"] == 545 and rows[0]["worked_hours"] == 9.08
+    # Bilal came at 09:20 and the OUT window is still open: late, at work (not missing OUT yet).
+    assert [r["status"] for r in rows] == ["on time", "late", "missing IN", "absent"]
+    assert rows[0]["worked_minutes"] == 545 and rows[0]["worked_hours"] == 9.08 and rows[0]["overtime_minutes"] == 40
+    assert (rows[1]["late_minutes"], rows[1]["inside"], rows[1]["open"]) == (80, True, True)
+    assert rows[0]["shift"] == "General" and rows[0]["shift_start"] == f"{TODAY}T08:00:00"
 
 
 def test_attendance_filters_paging_and_sort(app):
@@ -123,7 +146,7 @@ def test_attendance_filters_paging_and_sort(app):
     assert items(v.get("/api/attendance", params={"from": YESTERDAY.isoformat(), "person": ids["1001"]})) and all(
         x["employee_code"] == "1001" for x in items(v.get("/api/attendance", params={
             "from": YESTERDAY.isoformat(), "person": ids["1001"]})))
-    assert [x["name"] for x in items(v.get("/api/attendance", params={"status": "missing exit"}))] == ["Bilal"]
+    assert [x["name"] for x in items(v.get("/api/attendance", params={"status": "late"}))] == ["Bilal"]
     assert [x["name"] for x in items(v.get("/api/attendance", params={"q": "stor", "sort": "-name"}))] == [
         "Chand", "Ayesha"]
     page2 = v.get("/api/attendance", params={"sort": "name", "page": 2, "page_size": 3}).json()
@@ -140,14 +163,14 @@ def test_attendance_filters_paging_and_sort(app):
 
 def test_overview(app):
     o = as_role(app, "guard").get("/api/overview").json()
-    assert (o["people"], o["present"], o["inside_now"], o["complete"], o["absent"], o["missing_exit"],
-            o["missing_entry"], o["check"]) == (4, 2, 1, 1, 1, 1, 1, 0)
+    assert (o["people"], o["scheduled"], o["present"], o["inside_now"], o["on_time"], o["late"], o["missing_in"],
+            o["absent"], o["check"], o["overtime"]) == (4, 4, 2, 1, 1, 1, 1, 1, 0, 1)
     hours = {h["hour"]: h["arrivals"] for h in o["arrivals_by_hour"]}
     assert len(hours) == 24 and hours[8] == 1 and hours[9] == 1 and sum(hours.values()) == 2
     cams = {c["camera"]: c for c in o["cameras"]}
     assert cams["entrance"]["events"] == 2 and cams["exit"]["events"] == 2 and cams["entrance"]["state"] == "stopped"
     past = as_role(app, "viewer").get("/api/overview", params={"date": YESTERDAY.isoformat()}).json()
-    assert past["inside_now"] is None and past["complete"] == 1 and past["absent"] == 3
+    assert past["inside_now"] is None and past["on_time"] == 1 and past["absent"] == 3
 
 
 # --- Events and snapshots ------------------------------------------------------------------------
@@ -220,7 +243,7 @@ def test_corrections_add_change_void_restore(app):
 
     day = items(hr.get("/api/attendance", params={"from": YESTERDAY.isoformat(), "to": YESTERDAY.isoformat(),
                                                   "sort": "name"}))
-    assert day[0]["first_in"].endswith("07:45:00") and day[0]["status"] == "complete"
+    assert day[0]["first_in"].endswith("07:45:00") and day[0]["status"] == "on time"
     entries = items(as_role(app, "admin").get("/api/audit", params={"user": "hr"}))[:4]  # then hr's login
     assert [e["action"] for e in entries] == ["restore_event", "void_event", "edit_event", "add_event"]
     assert entries[2]["details"]["timestamp"] == [f"{YESTERDAY} 08:00:00", f"{YESTERDAY} 07:45:00"]
@@ -266,7 +289,7 @@ def test_people_list_and_profile(app):
     detail = v.get(f"/api/people/{people[0]['id']}").json()
     assert [ph["file"] for ph in detail["photo_list"]] == ["1.jpg", "2.jpg", "3.jpg"]
     assert detail["photo_list"][0]["accepted"] is None  # not checked yet
-    assert [d["status"] for d in detail["recent_attendance"][:2]] == ["complete", "complete"]
+    assert [d["status"] for d in detail["recent_attendance"][:2]] == ["on time", "on time"]
     assert len(detail["recent_events"]) == 4
     img = v.get(detail["photo_list"][0]["url"])
     assert img.status_code == 200 and img.content == (config.KNOWN_DIR / "1001" / "1.jpg").read_bytes()
@@ -550,7 +573,7 @@ def test_camera_passwords_never_appear_in_responses(app, monkeypatch, tmp_path):
 def test_openapi_lists_every_endpoint_with_a_response_model(app):
     spec = TestClient(app).get("/openapi.json").json()
     ops = [(m, p, o) for p, ms in spec["paths"].items() for m, o in ms.items()]
-    assert len(ops) == 69 and len({o["operationId"] for _, _, o in ops}) == 69  # + live, enrollment (IP cameras), system, Auto, people import
+    assert len(ops) == 80 and len({o["operationId"] for _, _, o in ops}) == 80  # ... people import, shifts, roster
     expected = {("get", "/api/overview"), ("get", "/api/attendance"), ("get", "/api/events"),
                 ("get", "/api/snapshots/{event_id}"), ("post", "/api/attendance/corrections"), ("get", "/api/people"),
                 ("post", "/api/people"), ("get", "/api/people/{person_id}"), ("patch", "/api/people/{person_id}"),

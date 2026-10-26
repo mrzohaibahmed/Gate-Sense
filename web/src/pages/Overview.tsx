@@ -4,7 +4,7 @@ import { Link } from "react-router";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 
 import { api, resourceUrl } from "@/api/client";
-import type { AttendanceEvent, CameraStatus, Overview } from "@/api/types";
+import type { AttendanceEvent, CameraStatus, Overview, Status } from "@/api/types";
 import { PageHeader } from "@/app/AppShell";
 import { useFilters } from "@/app/filters";
 import { CameraStateDot, DirectionBadge, StatusBadge } from "@/components/badges";
@@ -12,7 +12,10 @@ import { PageSkeleton } from "@/components/states";
 import { Badge, Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState, ErrorState, Td, Th } from "@/components/ui/misc";
 import { useLive } from "@/live/LiveProvider";
+import { timeOn } from "@/lib/days";
 import { cn, hhmm, today } from "@/lib/utils";
+
+const NEEDS_ATTENTION: Status[] = ["missing IN", "missing OUT", "check"];
 
 export function OverviewPage() {
   const { date, siteId } = useFilters();
@@ -105,23 +108,29 @@ function Tile({
 function Kpis({ o, isToday }: { o: Overview; isToday: boolean }) {
   return (
     <section aria-label="Key figures" className="grid grid-cols-2 gap-4 sm:grid-cols-4 xl:grid-cols-7">
-      <Tile label="Present / enrolled" value={`${o.present} / ${o.people}`} sub="came in" tone="accent" />
+      <Tile
+        label="Present / scheduled"
+        value={`${o.present} / ${o.scheduled}`}
+        sub="came in for their shift"
+        tone="accent"
+      />
       <Tile
         label="Inside now"
         value={o.inside_now ?? "—"}
-        sub={isToday ? "in, not out yet" : "only for today"}
+        sub={isToday ? "shift running, last pass IN" : "only for today"}
         tone="inside"
       />
-      <Tile label="Complete" value={o.complete} sub="in and out" tone="left" />
-      <Tile
-        label="Missing exit"
-        value={o.missing_exit}
-        sub={isToday ? "no OUT yet" : "no OUT that day"}
-        tone="missing"
-      />
-      <Tile label="Missing entry" value={o.missing_entry} sub="OUT without an IN" tone="missing" />
-      <Tile label="Check" value={o.check} sub="last OUT before first IN" tone="missing" />
+      <Tile label="On time" value={o.on_time} tone="left" />
+      <Tile label="Late" value={o.late} sub="IN after start + grace" tone="missing" />
+      <Tile label="Early leave" value={o.early_leave} sub="OUT before end − grace" tone="missing" />
+      <Tile label="Overtime" value={o.overtime} sub="OUT after the end" tone="accent" />
+      <Tile label="Not in yet" value={o.not_in_yet} sub="IN window still open" tone="left" />
+      <Tile label="Missing IN" value={o.missing_in} sub="OUT without an IN" tone="missing" />
+      <Tile label="Missing OUT" value={o.missing_out} sub="no OUT after the IN" tone="missing" />
+      <Tile label="Check" value={o.check} sub="passes outside their windows" tone="missing" />
       <Tile label="Absent" value={o.absent} tone="absent" />
+      <Tile label="Off" value={o.off_day} sub="OFF on the roster" tone="left" />
+      <Tile label="Unscheduled" value={o.unscheduled} sub="passes, no roster entry" tone="left" />
     </section>
   );
 }
@@ -279,10 +288,8 @@ function NeedsAttention({ date, siteId, isToday }: { date: string; siteId: numbe
     queryFn: () =>
       api.get("/api/attendance", { query: { from: date, to: date, site_id: siteId, page_size: 500, sort: "name" } }),
   });
-  // Today a missing exit only means "still inside"; it needs attention once the day is over.
-  const items = (rows.data?.items ?? []).filter(
-    (r) => r.status === "missing entry" || r.status === "check" || (!isToday && r.status === "missing exit"),
-  );
+  // Missing OUT is only given once the shift's OUT window has closed, so it is never just "still at work".
+  const items = (rows.data?.items ?? []).filter((r) => NEEDS_ATTENTION.includes(r.status));
   return (
     <Card>
       <CardHeader>
@@ -298,8 +305,8 @@ function NeedsAttention({ date, siteId, isToday }: { date: string; siteId: numbe
       ) : items.length === 0 ? (
         <EmptyState icon={<UserCheck />} title="Nothing to fix">
           {isToday
-            ? "Missing entries and days to check show here; missing exits once the day is over."
-            : "Every IN has its OUT."}
+            ? "Missing INs, days to check, and missing OUTs once a shift's OUT window has closed show here."
+            : "Every shift's IN has its OUT."}
         </EmptyState>
       ) : (
         <div className="max-h-96 overflow-auto">
@@ -325,10 +332,10 @@ function NeedsAttention({ date, siteId, isToday }: { date: string; siteId: numbe
                     </Link>
                   </Td>
                   <Td>
-                    <StatusBadge status={r.status} today={isToday} />
+                    <StatusBadge status={r.status} />
                   </Td>
-                  <Td>{hhmm(r.first_in)}</Td>
-                  <Td>{hhmm(r.last_out)}</Td>
+                  <Td>{timeOn(r.first_in, r.date)}</Td>
+                  <Td>{timeOn(r.last_out, r.date)}</Td>
                 </tr>
               ))}
             </tbody>

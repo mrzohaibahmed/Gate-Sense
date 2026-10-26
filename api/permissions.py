@@ -28,16 +28,19 @@ PERMISSIONS = {
     "people:manage": "add and edit people, their photos and face data",
     "reports:read": "see and export daily and monthly reports",
     "audit:read": "see the audit log",
+    "roster:read": "see the shifts and the roster",
+    "roster:manage": "assign shifts and days off on the roster, copy weeks, import a roster file",
+    "shifts:manage": "add shifts and change their times (from a date on; earlier days keep theirs)",
 }
 
 ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     "admin": frozenset(PERMISSIONS),
     "hr": frozenset({
         "account:self", "sites:read", "cameras:read", "live:view", "attendance:read", "attendance:correct",
-        "people:read", "people:manage", "reports:read", "audit:read",
+        "people:read", "people:manage", "reports:read", "audit:read", "roster:read", "roster:manage", "shifts:manage",
     }),
     "viewer": frozenset({"account:self", "sites:read", "cameras:read", "attendance:read", "people:read",
-                         "reports:read"}),
+                         "reports:read", "roster:read"}),
     "guard": frozenset({"account:self", "sites:read", "cameras:read", "cameras:control", "live:view",
                         "attendance:read"}),
 }

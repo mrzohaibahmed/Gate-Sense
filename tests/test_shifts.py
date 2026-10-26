@@ -22,6 +22,7 @@ from app.shifts import (
     LATE,
     MISSING_IN,
     MISSING_OUT,
+    NOT_IN_YET,
     OFF_DAY,
     ON_TIME,
     UNSCHEDULED,
@@ -132,10 +133,26 @@ def test_missing_in_missing_out_and_absent():
     assert in_only.inside and in_only.worked_minutes is None
     nothing = one_day([], MORNING)
     assert (nothing.status, nothing.first_in, nothing.last_out) == (ABSENT, None, None)
-    # An OUT before the midpoint isn't the shift's OUT: the day still misses one (the pass is a repeat).
-    left_early = passes((MON, "06:25", "IN"), (MON, "09:00", "OUT"))
-    assert one_day(left_early, MORNING).status == MISSING_OUT
-    assert roster_repeat_ids(left_early, {(CODE, MON): MORNING}) == {2}
+    # An OUT before the IN isn't one after it: still missing OUT (the 05:00 pass is a repeat).
+    out_first = passes((MON, "05:00", "OUT"), (MON, "06:35", "IN"))
+    assert one_day(out_first, MORNING).status == MISSING_OUT
+    assert roster_repeat_ids(out_first, {(CODE, MON): MORNING}) == {1}
+
+
+def test_early_leave_before_the_midpoint_uses_the_last_out_after_the_in():
+    """Morning, IN 06:35, OUT 09:00 (before the 10:30 midpoint, no OUT in the OUT window): an early leave, 330 min."""
+    left = passes((MON, "06:35", "IN"), (MON, "09:00", "OUT"))
+    d = one_day(left, MORNING)
+    assert (d.status, d.first_in, d.last_out) == (EARLY_LEAVE, at(MON, "06:35"), at(MON, "09:00"))
+    assert (d.early_leave_minutes, d.late_minutes, d.overtime_minutes, d.worked_minutes) == (330, 0, 0, 145)
+    assert roster_repeat_ids(left, {(CODE, MON): MORNING}) == set()
+    # Out and back in, then out again for good, all before the midpoint: the last OUT after the IN.
+    twice = passes((MON, "06:35", "IN"), (MON, "08:00", "OUT"), (MON, "08:20", "IN"), (MON, "09:30", "OUT"))
+    assert (one_day(twice, MORNING).last_out, one_day(twice, MORNING).early_leave_minutes) == (at(MON, "09:30"), 300)
+    assert roster_repeat_ids(twice, {(CODE, MON): MORNING}) == {2, 3}
+    # A late arrival who also left early: late is the status, the early minutes are still there.
+    both = one_day(passes((MON, "08:00", "IN"), (MON, "09:00", "OUT")), MORNING)
+    assert (both.status, both.late_minutes, both.early_leave_minutes) == (LATE, 90, 330)
 
 
 def test_check_when_the_out_comes_before_the_in():
@@ -185,12 +202,24 @@ def test_back_to_back_shifts_keep_their_own_passes():
         ("Morning", ON_TIME, at(TUE, "06:25"), at(TUE, "14:40"))]
 
 
-def test_open_until_the_out_window_closes():
+def test_open_days_are_not_in_yet_or_still_at_work():
+    # No IN while the IN window [04:30, 10:30) is open: not in yet; once it closes: absent.
+    waiting = one_day([], MORNING, now=at(MON, "05:00"))
+    assert (waiting.status, waiting.open) == (NOT_IN_YET, True)
+    assert one_day([], MORNING, now=at(MON, "10:29")).status == NOT_IN_YET
+    gone = one_day([], MORNING, now=at(MON, "10:30"))
+    assert (gone.status, gone.open) == (ABSENT, True)  # still open: an OUT could make it missing IN
+    # An IN and no OUT yet while the OUT window [12:15, 20:30) is open: at work, on time or late; never missing OUT.
     events = passes((MON, "08:10", "IN"))
-    assert one_day(events, GENERAL, now=at(MON, "12:00")).open  # still at work: may yet get an OUT
-    assert one_day([], MORNING, now=at(MON, "05:00")).open  # "absent" before the shift starts
-    assert not one_day(events, GENERAL, now=at(MON, "20:30")).open  # OUT window [12:15, 20:30) closed
-    assert not one_day(events, GENERAL).open  # now None: every day is over
+    at_work = one_day(events, GENERAL, now=at(MON, "12:00"))
+    assert (at_work.status, at_work.open, at_work.inside, at_work.late_minutes) == (ON_TIME, True, True, 0)
+    assert one_day(passes((MON, "09:00", "IN")), GENERAL, now=at(MON, "15:00")).status == LATE
+    closed = one_day(events, GENERAL, now=at(MON, "20:30"))
+    assert (closed.status, closed.open) == (MISSING_OUT, False)
+    assert one_day(events, GENERAL).status == MISSING_OUT  # now None: every day is over
+    # A night shift is open into the next morning.
+    night = one_day(passes((MON, "21:55", "IN")), NIGHT, now=at(TUE, "03:00"))
+    assert (night.status, night.open, night.inside) == (ON_TIME, True, True)
 
 
 # --- Database and workers ------------------------------------------------------------------------------------------
@@ -332,18 +361,66 @@ def test_repeat_passes_and_voided_ones(conn):
     assert db.roster_repeat_event_ids(conn, MON, MON) == {ids["10:45"], ids["11:15"]}
 
 
-def test_shifts_are_edited_with_a_reason_and_kept_while_rostered(conn):
-    night = db.get_shift(conn, shift_id(conn, "Night"))
-    db.save_shift(conn, Shift(night.name, night.start, night.end, True, grace_min=15, id=night.id), "policy", "admin")
-    assert db.get_shift(conn, night.id).grace_min == 15
-    entry = db.audit_entries(conn)[0]
-    assert (entry["action"], entry["details"]) == ("edit_shift", '{"grace_min": [30, 15]}')
+def test_shifts_are_added_renamed_and_kept_while_rostered(conn):
     with pytest.raises(ValueError, match="already exists"):
-        db.save_shift(conn, Shift("morning", time(7, 0), time(15, 0), False), "dup", "admin")
-    late = db.save_shift(conn, Shift("Late", time(14, 0), time(22, 0), False), "new shift", "admin")
+        db.add_shift(conn, Shift("morning", time(7, 0), time(15, 0), False), "dup", "admin")
+    late = db.add_shift(conn, Shift("Late", time(14, 0), time(22, 0), False), "new shift", "admin")
+    assert db.audit_entries(conn)[0]["action"] == "add_shift"
+    assert db.rename_shift(conn, late, "Evening", "clearer name", "admin")
+    assert not db.rename_shift(conn, late, "Evening", "again", "admin")
+    with pytest.raises(ValueError, match="already exists"):
+        db.rename_shift(conn, late, "NIGHT", "clash", "admin")
     db.set_roster(conn, [(db.person_ids(conn)[CODE], MON, late)], "plan", "hr1")
     with pytest.raises(ValueError, match="roster"):
         db.delete_shift(conn, late, "not needed", "admin")
     db.set_roster(conn, [(db.person_ids(conn)[CODE], MON, None)], "plan changed", "hr1")
     db.delete_shift(conn, late, "not needed", "admin")
     assert [s.name for s in db.list_shifts(conn)] == ["Morning", "General", "Night"]
+    assert conn.execute("SELECT count(*) FROM shift_versions WHERE shift_id = ?", (late,)).fetchone()[0] == 0
+
+
+def test_a_shift_edit_applies_from_its_date_and_never_rewrites_history(conn):
+    """Morning moves to 07:00-15:00 from Wednesday: Monday keeps 06:30-14:30, Wednesday uses the new times."""
+    pid, morning = db.person_ids(conn)[CODE], shift_id(conn, "Morning")
+    wed = MON + timedelta(days=2)
+    db.set_roster(conn, [(pid, MON, morning), (pid, wed, morning)], "plan", "hr1")
+    camera_passes([("IN", at(MON, "06:50")), ("OUT", at(MON, "14:40")),
+                   ("IN", at(wed, "06:50")), ("OUT", at(wed, "14:20"))])
+    before = summary(conn, MON, wed)
+    assert before == [(MON, "Morning", ON_TIME, "Mon 06:50", "Mon 14:40", 0, 10),
+                      (wed, "Morning", ON_TIME, "Wed 06:50", "Wed 14:20", 0, 0)]
+
+    new = Shift("Morning", time(7, 0), time(15, 0), False)
+    assert db.change_shift(conn, morning, new, wed, "new hours from Wednesday", "admin")
+    assert summary(conn, MON, wed) == [before[0], (wed, "Morning", EARLY_LEAVE, "Wed 06:50", "Wed 14:20", 0, 0)]
+    assert db.get_shift(conn, morning, MON).start == time(6, 30) and db.get_shift(conn, morning, wed).start == time(7)
+    entry = db.audit_entries(conn)[0]
+    assert (entry["action"], entry["reason"]) == ("edit_shift", "new hours from Wednesday")
+    assert entry["details"] == ('{"name": "Morning", "effective_from": "2026-10-21", "start_time": ["06:30", '
+                                '"07:00"], "end_time": ["14:30", "15:00"]}')
+
+    # The same date again replaces that version; the same rules change nothing.
+    assert db.change_shift(conn, morning, Shift("Morning", time(7, 0), time(15, 0), False, grace_min=15), wed,
+                           "grace too", "admin")
+    assert not db.change_shift(conn, morning, Shift("x", time(7, 0), time(15, 0), False, grace_min=15), wed,
+                               "no change", "admin")
+    rows = db.shift_version_rows(conn, morning)
+    assert [(r["effective_from"], r["start_time"], r["grace_min"]) for r in rows] == [
+        (None, "06:30", 30), ("2026-10-21", "07:00", 15)]
+    with pytest.raises(ValueError, match="hasn't started"):  # Wednesday the 21st is in the past
+        db.delete_shift_version(conn, morning, rows[1]["id"], "oops", "admin")
+
+
+def test_a_planned_shift_change_can_be_withdrawn(conn):
+    morning = shift_id(conn, "Morning")
+    later = date.today() + timedelta(days=7)
+    db.change_shift(conn, morning, Shift("Morning", time(7, 0), time(15, 0), False), later, "next week", "admin")
+    assert db.get_shift(conn, morning).start == time(6, 30)  # not in force yet
+    assert db.get_shift(conn, morning, later).start == time(7, 0)
+    planned = db.shift_version_rows(conn, morning)[-1]
+    db.delete_shift_version(conn, morning, planned["id"], "plan dropped", "admin")
+    assert db.get_shift(conn, morning, later).start == time(6, 30)
+    assert db.audit_entries(conn)[0]["action"] == "delete_shift_version"
+    first = db.shift_version_rows(conn, morning)[0]
+    with pytest.raises(ValueError, match="hasn't started"):
+        db.delete_shift_version(conn, morning, first["id"], "the first one", "admin")

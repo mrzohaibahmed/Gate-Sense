@@ -15,26 +15,57 @@ export function DirectionBadge({ direction, className }: { direction: Direction 
   );
 }
 
-const STATUS: Record<Status, { tone: "inside" | "left" | "missing" | "absent" | "error"; label: string }> = {
-  complete: { tone: "left", label: "Complete" },
-  "missing exit": { tone: "missing", label: "Missing exit" },
-  "missing entry": { tone: "missing", label: "Missing entry" },
-  check: { tone: "error", label: "Check" },
+type Tone = "ok" | "warn" | "missing" | "absent" | "error" | "neutral" | "accent";
+
+const STATUS: Record<Status, { tone: Tone; label: string }> = {
+  "on time": { tone: "ok", label: "On time" },
+  late: { tone: "warn", label: "Late" },
+  "early leave": { tone: "warn", label: "Early leave" },
+  "missing IN": { tone: "missing", label: "Missing IN" },
+  "missing OUT": { tone: "missing", label: "Missing OUT" },
   absent: { tone: "absent", label: "Absent" },
+  "not in yet": { tone: "neutral", label: "Not in yet" },
+  check: { tone: "error", label: "Check" },
+  "off day": { tone: "neutral", label: "Off" },
+  unscheduled: { tone: "accent", label: "Unscheduled" },
 };
 
 /**
- * A day's status: complete (first IN, a later last OUT), missing exit, missing entry, check (the last OUT is earlier
- * than the first IN), absent. For today, "missing exit" means still inside, so pass `today` to show "Inside".
+ * A roster day's status: on time, late, early leave, missing IN/OUT, absent, not in yet (the IN window is still
+ * open), check (passes, but none where they count), off (OFF on the roster), unscheduled (passes, no roster entry).
+ * Pass inside when the day is still running and its last pass is an IN: it shows as a second badge.
  */
-export function StatusBadge({ status, today }: { status: Status; today?: boolean }) {
-  if (today && status === "missing exit") return <Badge tone="inside">Inside</Badge>;
+export function StatusBadge({ status, inside }: { status: Status; inside?: boolean }) {
   const s = STATUS[status];
-  return <Badge tone={s.tone}>{s.label}</Badge>;
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Badge tone={s.tone}>{s.label}</Badge>
+      {inside && <Badge tone="inside">Inside</Badge>}
+    </span>
+  );
 }
 
-export function statusLabel(status: Status, today?: boolean): string {
-  return today && status === "missing exit" ? "Inside" : STATUS[status].label;
+export function statusLabel(status: Status): string {
+  return STATUS[status].label;
+}
+
+/** Late / early leave / overtime minutes of a day as short badges (nothing when all are 0 or unknown). */
+export function MinutesBadges({
+  late,
+  early,
+  overtime,
+}: {
+  late?: number | null;
+  early?: number | null;
+  overtime?: number | null;
+}) {
+  return (
+    <span className="inline-flex flex-wrap gap-1">
+      {!!late && <Badge tone="warn">late {late} min</Badge>}
+      {!!early && <Badge tone="warn">early {early} min</Badge>}
+      {!!overtime && <Badge tone="accent">+{overtime} min</Badge>}
+    </span>
+  );
 }
 
 const CAMERA_STATE: Record<string, string> = {

@@ -35,7 +35,10 @@ export type Permission =
   | "people:manage"
   | "reports:read"
   | "audit:read"
-  | "live:decisions";
+  | "live:decisions"
+  | "roster:read"
+  | "roster:manage"
+  | "shifts:manage";
 
 /** Does the user's role have this permission? (The API decides; this only hides what would be refused.) */
 export function can(me: Me | null | undefined, permission: Permission): boolean {

@@ -28,9 +28,12 @@ import { Field, Input, NativeSelect } from "@/components/ui/input";
 import { ErrorState, Switch, Tabs, TabsContent, TabsList, TabsTrigger, Td, Th } from "@/components/ui/misc";
 import { cn } from "@/lib/utils";
 
+import { ShiftsTab } from "./SettingsShifts";
+
 const TABS: { key: string; label: string; permission: Permission }[] = [
   { key: "cameras", label: "Cameras", permission: "cameras:manage" },
   { key: "sites", label: "Sites", permission: "sites:manage" },
+  { key: "shifts", label: "Shifts", permission: "shifts:manage" },
   { key: "users", label: "Users and roles", permission: "users:manage" },
   { key: "recognition", label: "Recognition", permission: "settings:manage" },
   { key: "system", label: "System", permission: "settings:manage" },
@@ -60,6 +63,9 @@ export function SettingsPage() {
           </TabsContent>
           <TabsContent value="sites" className="mt-4">
             <SitesTab />
+          </TabsContent>
+          <TabsContent value="shifts" className="mt-4">
+            <ShiftsTab />
           </TabsContent>
           <TabsContent value="users" className="mt-4">
             <UsersTab />

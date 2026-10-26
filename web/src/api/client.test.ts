@@ -33,8 +33,8 @@ describe("typed API client", () => {
     expect(init.method).toBe("GET");
 
     fetchMock.mockResolvedValue(jsonResponse(200, { items: [], total: 0, page: 1, page_size: 50 }));
-    await api.get("/api/attendance", { query: { from: "2026-10-22", status: "missing exit", site_id: null } });
-    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/attendance?from=2026-10-22&status=missing+exit");
+    await api.get("/api/attendance", { query: { from: "2026-10-22", status: "missing OUT", site_id: null } });
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("/api/attendance?from=2026-10-22&status=missing+OUT");
   });
 
   it("sends a JSON body", async () => {

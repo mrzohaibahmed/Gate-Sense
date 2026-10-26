@@ -38,6 +38,9 @@ export const PERMISSIONS: Record<string, string[]> = {
     "reports:read",
     "audit:read",
     "live:decisions",
+    "roster:read",
+    "roster:manage",
+    "shifts:manage",
   ],
   hr: [
     "account:self",
@@ -50,8 +53,19 @@ export const PERMISSIONS: Record<string, string[]> = {
     "people:manage",
     "reports:read",
     "audit:read",
+    "roster:read",
+    "roster:manage",
+    "shifts:manage",
   ],
-  viewer: ["account:self", "sites:read", "cameras:read", "attendance:read", "people:read", "reports:read"],
+  viewer: [
+    "account:self",
+    "sites:read",
+    "cameras:read",
+    "attendance:read",
+    "people:read",
+    "reports:read",
+    "roster:read",
+  ],
   guard: ["account:self", "sites:read", "cameras:read", "cameras:control", "live:view", "attendance:read"],
 };
 

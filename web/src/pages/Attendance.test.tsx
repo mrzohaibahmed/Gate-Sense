@@ -14,12 +14,20 @@ const row = (over: Partial<AttendanceRow>): AttendanceRow => ({
   name: "Ayesha",
   department: "Stores",
   site_id: 1,
+  shift_id: 2,
+  shift: "General",
+  shift_start: "2026-10-21T08:00:00",
+  shift_end: "2026-10-21T16:30:00",
   first_in: "2026-10-21T08:05:00",
   last_out: "2026-10-21T17:10:00",
   worked_hours: 9.08,
   worked_minutes: 545,
-  status: "complete",
+  late_minutes: 0,
+  early_leave_minutes: 0,
+  overtime_minutes: 40,
+  status: "on time",
   inside: false,
+  open: false,
   ...over,
 });
 
@@ -33,7 +41,9 @@ const ROWS = [
     last_out: null,
     worked_hours: null,
     worked_minutes: null,
-    status: "missing exit",
+    early_leave_minutes: null,
+    overtime_minutes: null,
+    status: "missing OUT",
   }),
 ];
 
@@ -111,11 +121,11 @@ describe("attendance table", () => {
     expect(lastQuery().get("from")).toBe("2026-10-21");
     expect(lastQuery().get("sort")).toBe("-date");
 
-    await user.selectOptions(screen.getByLabelText("Status"), "missing exit");
-    await waitFor(() => expect(lastQuery().get("status")).toBe("missing exit"));
+    await user.selectOptions(screen.getByLabelText("Status"), "missing OUT");
+    await waitFor(() => expect(lastQuery().get("status")).toBe("missing OUT"));
     await waitFor(() => expect(screen.queryByText("Ayesha")).not.toBeInTheDocument());
     expect(screen.getByText("Bilal")).toBeInTheDocument();
-    expect(router.state.location.search).toContain("status=missing+exit");
+    expect(router.state.location.search).toContain("status=missing+OUT");
 
     await user.selectOptions(screen.getByLabelText("Status"), "");
     await user.selectOptions(screen.getByLabelText("Department"), "Stores");

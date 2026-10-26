@@ -1,13 +1,14 @@
 """Reports: the daily register and the per-person totals (monthly summary) for a date range, as JSON for the
 preview and as CSV or Excel downloads. Every export is written to the audit log.
 
-A working day is the calendar date, first IN to last OUT (app/reports.py range_rows -> app.db.day_summaries, the
-same rule as /api/attendance and the overview); there are no shifts or late rules yet. The exports' Status column
-says "inside" for today's days without an OUT yet, like the screens.
+A working day is a roster day (app/reports.py range_rows -> app.db.roster_days, the same rule as /api/attendance,
+the overview and scripts/today.py): one per roster row (a shift or OFF) plus unscheduled dates with passes, the first
+IN in the shift's IN window to the last OUT in its OUT window, with late / early leave / overtime minutes. A night
+shift is dated the day it starts.
 """
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
@@ -24,28 +25,43 @@ Kind = Literal["daily", "monthly"]
 
 
 class DailyRow(BaseModel):
-    date: date
+    date: Annotated[date, Field(description="the roster date (a night shift: the day it starts)")]
     employee_code: str
     name: str
     department: str | None
+    shift: str | None = Field(description="the shift's name; None for an off day or unscheduled")
+    shift_start: datetime | None
+    shift_end: datetime | None
     first_in: datetime | None
     last_out: datetime | None
-    worked_hours: float | None = Field(description="last OUT minus first IN, in hours (complete days only)")
-    missing_out: bool = Field(description="came in but no OUT that day (not for today: still inside)")
-    check: bool = Field(description="the last OUT is earlier than the first IN: needs a look")
+    worked_hours: float | None = Field(description="last OUT minus first IN, in hours, when both count")
+    late_minutes: int | None
+    early_leave_minutes: int | None
+    overtime_minutes: int | None
     status: Status
+    open: bool = Field(description="the day is still running (its OUT window hasn't closed)")
 
 
 class PersonTotal(BaseModel):
     employee_code: str
     name: str
     department: str | None
-    days: int = Field(description="days in the range")
-    days_present: int = Field(description="days with an IN (complete, missing exit or check)")
-    days_missing_exit: int = Field(description="days with an IN but no OUT (today not counted while still inside)")
-    days_missing_entry: int
-    days_check: int = Field(description="days whose last OUT is earlier than the first IN")
+    days: int = Field(description="roster days in the range (shifts, OFF days and unscheduled dates with passes)")
+    days_scheduled: int = Field(description="days rostered on a shift")
+    days_present: int = Field(description="came in for the shift (on time, late, early leave, missing OUT)")
+    days_on_time: int
+    days_late: int
+    late_minutes: int = Field(description="minutes late, added up")
+    days_early_leave: int
+    early_leave_minutes: int
+    overtime_minutes: int
+    days_missing_in: int
+    days_missing_out: int
+    days_check: int = Field(description="days with passes but none where they count")
     days_absent: int
+    days_not_in_yet: int = Field(description="today's shifts whose IN window is still open")
+    days_off: int
+    days_unscheduled: int
     total_hours: float
     avg_hours: float | None = Field(description="total hours / days with hours worked")
 
@@ -92,7 +108,8 @@ FILTERS = {
 def daily_report(request: Request, date_from: date | None = FILTERS["date_from"],
                  date_to: date | None = FILTERS["date_to"], department: str | None = FILTERS["department"],
                  site_id: int | None = FILTERS["site_id"], _: CurrentUser = Depends(read)) -> dict:
-    """The daily register: each person each day, first IN, last OUT, hours worked, missing OUT, check."""
+    """The daily register: each roster day, the shift, first IN, last OUT, hours worked, late / early leave /
+    overtime minutes and the status."""
     first, last = resolve("daily", date_from, date_to)
     return {"first": first, "last": last, "rows": rows_for(request, first, last, department, site_id)}
 
@@ -101,8 +118,8 @@ def daily_report(request: Request, date_from: date | None = FILTERS["date_from"]
 def monthly_report(request: Request, date_from: date | None = FILTERS["date_from"],
                    date_to: date | None = FILTERS["date_to"], department: str | None = FILTERS["department"],
                    site_id: int | None = FILTERS["site_id"], _: CurrentUser = Depends(read)) -> dict:
-    """Per person over the range: days present, missing exits, days to check, total hours (added up from the daily
-    register)."""
+    """Per person over the range: scheduled and present days, days per status, late / early leave / overtime
+    minutes, total hours (added up from the daily register)."""
     first, last = resolve("monthly", date_from, date_to)
     return {"first": first, "last": last,
             "people": reports.person_totals(rows_for(request, first, last, department, site_id))}

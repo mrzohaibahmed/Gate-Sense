@@ -199,6 +199,13 @@ def test_websocket_messages(app):
 
         db.set_event_voided(conn, eid, True, "test from a script", "admin")  # straight to the database, not the API
         assert next_of(ws, "attendance_changed")["action"] == "void_event"
+
+        # A roster change recalculates the days too: screens refetch on it like on a correction.
+        r = hr.put("/api/roster", json={"entries": [{"person_id": pid, "date": TODAY.isoformat(), "shift_id": None}],
+                                        "reason": "day off"})
+        assert r.status_code == 200
+        roster = next_of(ws, "attendance_changed")
+        assert (roster["action"], roster["target"], roster["user"]) == ("set_roster", f"roster:1001:{TODAY}", "hr")
     conn.close()
 
 

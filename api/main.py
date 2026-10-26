@@ -37,7 +37,8 @@ from api.enroll_camera import EnrollCameras
 from api.live import EventHub, FrameHub
 from api.supervisor import Supervisor
 from api.routes import (
-    attendance, audit, cameras, enrollment, live, people, people_import, reports, settings, sites, system, users,
+    attendance, audit, cameras, enrollment, live, people, people_import, reports, roster, settings, shifts, sites,
+    system, users,
 )
 from api.routes import auth as auth_routes
 from api.workers import WorkerManager
@@ -196,7 +197,7 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
 
     # people_import before people: /api/people/import/... must not be taken for /api/people/{person_id}
     for module in (auth_routes, users, attendance, people_import, people, enrollment, live, cameras, sites, audit,
-                   settings, system, reports):
+                   settings, system, reports, shifts, roster):
         app.include_router(module.router)
     web.mount(app)  # last: its catch-all route sends every other path to the dashboard
     # Outermost last: the size limit and the headers apply to everything, CORS answers included.

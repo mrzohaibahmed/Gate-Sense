@@ -49,7 +49,16 @@ export const SESSION_ENDED = 4401;
 const KEEP_EVENTS = 50;
 
 /** Queries that show attendance: refetched after a new event or a correction (and after a reconnect). */
-export const ATTENDANCE_QUERIES: QueryKey[] = [["overview"], ["attendance"], ["events"], ["person"], ["notifications"]];
+export const ATTENDANCE_QUERIES: QueryKey[] = [
+  ["overview"],
+  ["attendance"],
+  ["events"],
+  ["person"],
+  ["notifications"],
+  ["roster"],
+  ["shifts"],
+  ["reports"],
+];
 
 export function liveUrl(): string {
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";

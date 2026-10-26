@@ -202,10 +202,11 @@ export interface paths {
         };
         /**
          * List Attendance
-         * @description One row per person per day: first IN, last OUT, worked time and status, computed from the events (voided ones
-         *     ignored; any other event is a repeat). Status: complete, missing exit (today: still inside), missing entry, check
-         *     (the last OUT is earlier than the first IN; no hours), absent. site_id = the person's site. Default sort: -date,
-         *     then name.
+         * @description One row per roster day: every roster row (a shift or OFF) plus unscheduled dates with passes, computed from
+         *     the events (voided ones ignored) with the shift's times in force that day. The first IN in the shift's IN window,
+         *     the last OUT in its OUT window, worked time, late / early leave / overtime minutes and the status: on time, late,
+         *     early leave, missing IN, missing OUT, absent, not in yet, check, off day, unscheduled. A night shift is dated the
+         *     day it starts. Any other event is a repeat. site_id = the person's site. Default sort: -date, then name.
          */
         get: operations["list_attendance"];
         put?: never;
@@ -225,9 +226,8 @@ export interface paths {
         };
         /**
          * List Events
-         * @description Raw IN/OUT events with score and snapshot URL, manual and voided ones included; `repeat` marks the events the
-         *     person's day doesn't use (not the first IN or the last OUT). site_id = the camera's site. Default sort:
-         *     -timestamp.
+         * @description Raw IN/OUT events with score and snapshot URL, manual and voided ones included; `repeat` marks the events no
+         *     roster day uses (not the shift's first IN or last OUT). site_id = the camera's site. Default sort: -timestamp.
          */
         get: operations["list_events"];
         put?: never;
@@ -288,7 +288,8 @@ export interface paths {
         };
         /**
          * Get Overview
-         * @description The day at a glance: counts like the Today page, arrivals per hour and every camera's status.
+         * @description The day at a glance: the roster days' statuses (like the Attendance page), arrivals per hour and every
+         *     camera's status.
          */
         get: operations["get_overview"];
         put?: never;
@@ -1145,7 +1146,8 @@ export interface paths {
         };
         /**
          * Daily Report
-         * @description The daily register: each person each day, first IN, last OUT, hours worked, missing OUT, check.
+         * @description The daily register: each roster day, the shift, first IN, last OUT, hours worked, late / early leave /
+         *     overtime minutes and the status.
          */
         get: operations["daily_report"];
         put?: never;
@@ -1165,8 +1167,8 @@ export interface paths {
         };
         /**
          * Monthly Report
-         * @description Per person over the range: days present, missing exits, days to check, total hours (added up from the daily
-         *     register).
+         * @description Per person over the range: scheduled and present days, days per status, late / early leave / overtime
+         *     minutes, total hours (added up from the daily register).
          */
         get: operations["monthly_report"];
         put?: never;
@@ -1198,6 +1200,166 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/shifts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Shifts
+         * @description Every shift with the times in force on `on`, its versions and how many roster days use it. Default sort:
+         *     start time.
+         */
+        get: operations["list_shifts"];
+        put?: never;
+        /**
+         * Create Shift
+         * @description A new shift; its times apply from the start (there are no earlier days on it).
+         */
+        post: operations["create_shift"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/shifts/{shift_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Shift */
+        get: operations["get_shift"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete Shift
+         * @description Only a shift no roster entry uses can be deleted (its days are computed from it).
+         */
+        delete: operations["delete_shift"];
+        options?: never;
+        head?: never;
+        /**
+         * Update Shift
+         * @description Rename the shift and/or change its times from `effective_from` (default today) on: a new version, or the one
+         *     that already starts that day is replaced. The days before keep their times. Audited (edit_shift).
+         */
+        patch: operations["update_shift"];
+        trace?: never;
+    };
+    "/api/shifts/{shift_id}/versions/{version_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Withdraw Shift Change
+         * @description Withdraw a planned change (one that starts after today). Changes in force stay: add a new one instead.
+         */
+        delete: operations["withdraw_shift_change"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/roster": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Roster
+         * @description The roster grid: every active person (and inactive ones with entries in the range), each with their entries
+         *     from `from` to `to` (at most ROSTER_MAX_DAYS). site_id = the person's site. Default sort: name.
+         */
+        get: operations["get_roster"];
+        /**
+         * Save Roster
+         * @description Set cells: each entry a shift, OFF (shift_id null), or removed (clear). All in one transaction; each change is
+         *     audited with the reason. Entries that are already so change nothing.
+         */
+        put: operations["save_roster"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/roster/import/template": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Roster Template
+         * @description The roster of the dates as a file to fill in and import: Employee code, Name, one column per date (each cell a
+         *     shift's name, OFF or blank). The Excel file also lists the shifts.
+         */
+        get: operations["roster_template"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/roster/import/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Roster Import
+         * @description What importing the file would do: the cells that add or change an entry, the unchanged ones, and every error
+         *     (with its line and column). Nothing is changed.
+         */
+        post: operations["preview_roster_import"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/roster/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Roster
+         * @description Write every change in the file, all in one go: refused (422) while any cell has an error. Blank cells leave
+         *     their day as it is. Each change is audited (set_roster), plus one import_roster row for the file.
+         */
+        post: operations["import_roster"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1207,6 +1369,7 @@ export interface components {
             /**
              * Date
              * Format: date
+             * @description the roster date (a night shift: the day it starts); unscheduled: the calendar date of the passes
              */
             date: string;
             /** Person Id */
@@ -1219,27 +1382,67 @@ export interface components {
             department: string | null;
             /** Site Id */
             site_id: number | null;
-            /** First In */
+            /** Shift Id */
+            shift_id: number | null;
+            /**
+             * Shift
+             * @description the rostered shift's name; None for an off day or unscheduled
+             */
+            shift: string | null;
+            /**
+             * Shift Start
+             * @description the shift's planned start (its times in force that day)
+             */
+            shift_start: string | null;
+            /** Shift End */
+            shift_end: string | null;
+            /**
+             * First In
+             * @description the first IN in the shift's IN window (off day, unscheduled: the first IN that date)
+             */
             first_in: string | null;
-            /** Last Out */
+            /**
+             * Last Out
+             * @description the last OUT in the OUT window, or for an early leave before the midpoint the last OUT after the IN
+             */
             last_out: string | null;
             /**
              * Worked Hours
-             * @description last OUT minus first IN, in hours (2 decimals); only for complete
+             * @description last OUT minus first IN, in hours (2 decimals), when both count
              */
             worked_hours: number | null;
             /** Worked Minutes */
             worked_minutes: number | null;
             /**
+             * Late Minutes
+             * @description minutes after the start (0 = within the grace); None = no IN
+             */
+            late_minutes: number | null;
+            /**
+             * Early Leave Minutes
+             * @description minutes before the end (0 = not early); None = no OUT
+             */
+            early_leave_minutes: number | null;
+            /**
+             * Overtime Minutes
+             * @description minutes after the end (0 = none); None = no OUT
+             */
+            overtime_minutes: number | null;
+            /**
              * Status
              * @enum {string}
              */
-            status: "complete" | "missing exit" | "missing entry" | "check" | "absent";
+            status: "on time" | "late" | "early leave" | "missing IN" | "missing OUT" | "absent" | "not in yet" | "check" | "off day" | "unscheduled";
             /**
              * Inside
-             * @description the day's last event is an IN (for today: in the building now)
+             * @description the day's last pass is an IN (while open: in the building now)
              */
             inside: boolean;
+            /**
+             * Open
+             * @description the day can still change: its OUT window (off day, unscheduled: the date) hasn't ended
+             */
+            open: boolean;
         };
         /** AuditEntry */
         AuditEntry: {
@@ -1817,6 +2020,7 @@ export interface components {
             /**
              * Date
              * Format: date
+             * @description the roster date (a night shift: the day it starts)
              */
             date: string;
             /** Employee Code */
@@ -1825,30 +2029,40 @@ export interface components {
             name: string;
             /** Department */
             department: string | null;
+            /**
+             * Shift
+             * @description the shift's name; None for an off day or unscheduled
+             */
+            shift: string | null;
+            /** Shift Start */
+            shift_start: string | null;
+            /** Shift End */
+            shift_end: string | null;
             /** First In */
             first_in: string | null;
             /** Last Out */
             last_out: string | null;
             /**
              * Worked Hours
-             * @description last OUT minus first IN, in hours (complete days only)
+             * @description last OUT minus first IN, in hours, when both count
              */
             worked_hours: number | null;
-            /**
-             * Missing Out
-             * @description came in but no OUT that day (not for today: still inside)
-             */
-            missing_out: boolean;
-            /**
-             * Check
-             * @description the last OUT is earlier than the first IN: needs a look
-             */
-            check: boolean;
+            /** Late Minutes */
+            late_minutes: number | null;
+            /** Early Leave Minutes */
+            early_leave_minutes: number | null;
+            /** Overtime Minutes */
+            overtime_minutes: number | null;
             /**
              * Status
              * @enum {string}
              */
-            status: "complete" | "missing exit" | "missing entry" | "check" | "absent";
+            status: "on time" | "late" | "early leave" | "missing IN" | "missing OUT" | "absent" | "not in yet" | "check" | "off day" | "unscheduled";
+            /**
+             * Open
+             * @description the day is still running (its OUT window hasn't closed)
+             */
+            open: boolean;
         };
         /** DatabaseStatus */
         DatabaseStatus: {
@@ -1982,7 +2196,7 @@ export interface components {
             voided: boolean;
             /**
              * Repeat
-             * @description not the person's first IN or last OUT that day: kept, but the day doesn't use it (e.g. back in after the last OUT, a lunch break)
+             * @description no roster day uses it (not the shift's first IN or last OUT): kept, but not counted (e.g. a lunch break, a pass outside the windows)
              * @default false
              */
             repeat?: boolean;
@@ -2281,41 +2495,70 @@ export interface components {
             date: string;
             /**
              * People
-             * @description people counted: everyone active, plus anyone with events that day
+             * @description roster days that date: every roster row (a shift or OFF), plus unscheduled people with passes
              */
             people: number;
             /**
+             * Scheduled
+             * @description rostered on a shift (not OFF)
+             */
+            scheduled: number;
+            /**
              * Present
-             * @description came in that day (has an IN: complete, missing exit or check)
+             * @description came in for their shift (an IN in its IN window: on time, late, early leave, missing OUT)
              */
             present: number;
             /**
              * Inside Now
-             * @description their last event today is an IN (in the building now); only for today (None otherwise)
+             * @description people whose open day (a shift still running, from yesterday or today) ends with an IN: in the building now; only for today
              */
             inside_now: number | null;
+            /** On Time */
+            on_time: number;
+            /** Late */
+            late: number;
+            /** Early Leave */
+            early_leave: number;
             /**
-             * Complete
-             * @description first IN and a later last OUT
+             * Overtime
+             * @description days with an OUT after the shift's end
              */
-            complete: number;
-            /** Absent */
-            absent: number;
+            overtime: number;
             /**
-             * Missing Exit
-             * @description an IN but no OUT at all (for today: still inside, not a problem yet)
+             * Missing In
+             * @description an OUT for the shift but no IN in its IN window
              */
-            missing_exit: number;
+            missing_in: number;
             /**
-             * Missing Entry
-             * @description went out without an IN that day
+             * Missing Out
+             * @description an IN, no OUT after it, and the OUT window has closed
              */
-            missing_entry: number;
+            missing_out: number;
             /**
              * Check
-             * @description the last OUT is earlier than the first IN: needs a look
+             * @description passes in the shift's time, but none where they count: needs a look
              */
             check: number;
+            /**
+             * Absent
+             * @description rostered, the IN window has closed, no pass at all
+             */
+            absent: number;
+            /**
+             * Not In Yet
+             * @description rostered, no IN yet, the IN window still open
+             */
+            not_in_yet: number;
+            /**
+             * Off Day
+             * @description OFF on the roster
+             */
+            off_day: number;
+            /**
+             * Unscheduled
+             * @description passes, but no roster row for that date
+             */
+            unscheduled: number;
             /** Arrivals By Hour */
             arrivals_by_hour: components["schemas"]["HourCount"][];
             /** Cameras */
@@ -2369,6 +2612,28 @@ export interface components {
         Page_Person_: {
             /** Items */
             items: components["schemas"]["Person"][];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+        };
+        /** Page[RosterRow] */
+        Page_RosterRow_: {
+            /** Items */
+            items: components["schemas"]["RosterRow"][];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+        };
+        /** Page[ShiftOut] */
+        Page_ShiftOut_: {
+            /** Items */
+            items: components["schemas"]["ShiftOut"][];
             /** Total */
             total: number;
             /** Page */
@@ -2548,28 +2813,54 @@ export interface components {
             department: string | null;
             /**
              * Days
-             * @description days in the range
+             * @description roster days in the range (shifts, OFF days and unscheduled dates with passes)
              */
             days: number;
             /**
+             * Days Scheduled
+             * @description days rostered on a shift
+             */
+            days_scheduled: number;
+            /**
              * Days Present
-             * @description days with an IN (complete, missing exit or check)
+             * @description came in for the shift (on time, late, early leave, missing OUT)
              */
             days_present: number;
+            /** Days On Time */
+            days_on_time: number;
+            /** Days Late */
+            days_late: number;
             /**
-             * Days Missing Exit
-             * @description days with an IN but no OUT (today not counted while still inside)
+             * Late Minutes
+             * @description minutes late, added up
              */
-            days_missing_exit: number;
-            /** Days Missing Entry */
-            days_missing_entry: number;
+            late_minutes: number;
+            /** Days Early Leave */
+            days_early_leave: number;
+            /** Early Leave Minutes */
+            early_leave_minutes: number;
+            /** Overtime Minutes */
+            overtime_minutes: number;
+            /** Days Missing In */
+            days_missing_in: number;
+            /** Days Missing Out */
+            days_missing_out: number;
             /**
              * Days Check
-             * @description days whose last OUT is earlier than the first IN
+             * @description days with passes but none where they count
              */
             days_check: number;
             /** Days Absent */
             days_absent: number;
+            /**
+             * Days Not In Yet
+             * @description today's shifts whose IN window is still open
+             */
+            days_not_in_yet: number;
+            /** Days Off */
+            days_off: number;
+            /** Days Unscheduled */
+            days_unscheduled: number;
             /** Total Hours */
             total_hours: number;
             /**
@@ -2761,6 +3052,178 @@ export interface components {
              */
             role: "admin" | "hr" | "viewer" | "guard";
         };
+        /** RosterCell */
+        RosterCell: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /**
+             * Shift Id
+             * @description the shift; None = OFF
+             */
+            shift_id: number | null;
+        };
+        /** RosterChanged */
+        RosterChanged: {
+            /**
+             * Changed
+             * @description entries added or changed
+             */
+            changed: number;
+            /**
+             * Removed
+             * @description entries removed
+             */
+            removed: number;
+        };
+        /** RosterEntry */
+        RosterEntry: {
+            /** Person Id */
+            person_id: number;
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /**
+             * Shift Id
+             * @description the shift; None = OFF (unless clear)
+             */
+            shift_id?: number | null;
+            /**
+             * Clear
+             * @description remove the entry: the date becomes unscheduled
+             * @default false
+             */
+            clear?: boolean;
+        };
+        /** RosterImportChange */
+        RosterImportChange: {
+            /**
+             * Line
+             * @description row number in the file (1 = the heading row)
+             */
+            line: number;
+            /**
+             * Column
+             * @description the date heading as written
+             */
+            column: string;
+            /** Employee Code */
+            employee_code: string;
+            /** Name */
+            name: string;
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /**
+             * Old
+             * @description the entry now: a shift's name, OFF, or None (no entry)
+             */
+            old: string | null;
+            /**
+             * New
+             * @description a shift's name or OFF
+             */
+            new: string;
+        };
+        /** RosterImportCounts */
+        RosterImportCounts: {
+            /**
+             * Set
+             * @description cells that add or change an entry
+             */
+            set: number;
+            /** Unchanged */
+            unchanged: number;
+            /** Error */
+            error: number;
+        };
+        /** RosterImportError */
+        RosterImportError: {
+            /** Line */
+            line: number;
+            /**
+             * Column
+             * @description the date heading; empty for a problem with the whole row
+             */
+            column: string;
+            /** Employee Code */
+            employee_code: string;
+            /** Message */
+            message: string;
+        };
+        /** RosterImportPreview */
+        RosterImportPreview: {
+            /** File */
+            file: string;
+            /** Dates */
+            dates: string[];
+            /**
+             * People
+             * @description rows with a known, active person
+             */
+            people: number;
+            /**
+             * Ignored Columns
+             * @description headings that are neither the code, the name nor a date
+             */
+            ignored_columns: string[];
+            counts: components["schemas"]["RosterImportCounts"];
+            /**
+             * Changes
+             * @description the first 1000 changes
+             */
+            changes: components["schemas"]["RosterImportChange"][];
+            /**
+             * Errors
+             * @description the first 1000 errors
+             */
+            errors: components["schemas"]["RosterImportError"][];
+        };
+        /** RosterImportResult */
+        RosterImportResult: {
+            /** File */
+            file: string;
+            /** Changed */
+            changed: number;
+            /** Unchanged */
+            unchanged: number;
+        };
+        /** RosterRow */
+        RosterRow: {
+            /** Person Id */
+            person_id: number;
+            /** Employee Code */
+            employee_code: string;
+            /** Name */
+            name: string;
+            /** Department */
+            department: string | null;
+            /** Site Id */
+            site_id: number | null;
+            /** Active */
+            active: boolean;
+            /**
+             * Cells
+             * @description the dates with an entry (a date left out has none: unscheduled)
+             */
+            cells: components["schemas"]["RosterCell"][];
+        };
+        /** RosterUpdate */
+        RosterUpdate: {
+            /**
+             * Reason
+             * @description why (goes to the audit log)
+             */
+            reason: string;
+            /** Entries */
+            entries: components["schemas"]["RosterEntry"][];
+        };
         /** SessionIn */
         SessionIn: {
             /** Camera Id */
@@ -2850,6 +3313,164 @@ export interface components {
             values: {
                 [key: string]: number | boolean;
             };
+        };
+        /** ShiftIn */
+        ShiftIn: {
+            /**
+             * Reason
+             * @description why (goes to the audit log)
+             */
+            reason: string;
+            /** Name */
+            name: string;
+            /**
+             * Start
+             * Format: time
+             * @description local time, e.g. 06:30
+             */
+            start: string;
+            /**
+             * End
+             * Format: time
+             * @description local time; at or before start = ends the next day
+             */
+            end: string;
+            /**
+             * Crosses Midnight
+             * @description left out: worked out from start and end
+             */
+            crosses_midnight?: boolean | null;
+            /**
+             * Grace Min
+             * @default 30
+             */
+            grace_min?: number;
+            /**
+             * In Window Before Min
+             * @default 120
+             */
+            in_window_before_min?: number;
+            /**
+             * Out Window After Min
+             * @default 240
+             */
+            out_window_after_min?: number;
+        };
+        /** ShiftOut */
+        ShiftOut: {
+            /** Id */
+            id: number;
+            /** Name */
+            name: string;
+            /**
+             * Start
+             * @description HH:MM, the times in force on the asked date (default today)
+             */
+            start: string;
+            /** End */
+            end: string;
+            /** Crosses Midnight */
+            crosses_midnight: boolean;
+            /**
+             * Grace Min
+             * @description IN up to start + grace is on time; OUT before end - grace is an early leave
+             */
+            grace_min: number;
+            /**
+             * In Window Before Min
+             * @description the IN window opens this long before the start
+             */
+            in_window_before_min: number;
+            /**
+             * Out Window After Min
+             * @description the OUT window closes this long after the end
+             */
+            out_window_after_min: number;
+            /**
+             * Effective From
+             * @description when the times in force began; None = from the start
+             */
+            effective_from: string | null;
+            /**
+             * Versions
+             * @description every version, oldest first (planned ones included)
+             */
+            versions: components["schemas"]["ShiftVersion"][];
+            /**
+             * Roster Days
+             * @description roster entries using this shift (it can't be deleted while any do)
+             */
+            roster_days: number;
+        };
+        /** ShiftPatch */
+        ShiftPatch: {
+            /**
+             * Reason
+             * @description why (goes to the audit log)
+             */
+            reason: string;
+            /**
+             * Name
+             * @description a new name (applies everywhere)
+             */
+            name?: string | null;
+            /** Start */
+            start?: string | null;
+            /** End */
+            end?: string | null;
+            /** Crosses Midnight */
+            crosses_midnight?: boolean | null;
+            /** Grace Min */
+            grace_min?: number | null;
+            /** In Window Before Min */
+            in_window_before_min?: number | null;
+            /** Out Window After Min */
+            out_window_after_min?: number | null;
+            /**
+             * Effective From
+             * @description the first day the new times apply (default today); the days before keep the old ones
+             */
+            effective_from?: string | null;
+        };
+        /** ShiftVersion */
+        ShiftVersion: {
+            /** Id */
+            id: number;
+            /**
+             * Effective From
+             * @description the first day these times apply; None = from the start
+             */
+            effective_from: string | null;
+            /**
+             * Start
+             * @description HH:MM
+             */
+            start: string;
+            /**
+             * End
+             * @description HH:MM (the next day when crosses_midnight)
+             */
+            end: string;
+            /** Crosses Midnight */
+            crosses_midnight: boolean;
+            /** Grace Min */
+            grace_min: number;
+            /** In Window Before Min */
+            in_window_before_min: number;
+            /** Out Window After Min */
+            out_window_after_min: number;
+            /**
+             * Created
+             * Format: date-time
+             */
+            created: string;
+            /** Created By */
+            created_by: string;
+            /**
+             * Planned
+             * @description starts after today: not in force yet, can be withdrawn
+             */
+            planned: boolean;
         };
         /** Site */
         Site: {
@@ -3597,7 +4218,7 @@ export interface operations {
                 to?: string | null;
                 /** @description person id */
                 person?: number | null;
-                status?: ("complete" | "missing exit" | "missing entry" | "check" | "absent") | null;
+                status?: ("on time" | "late" | "early leave" | "missing IN" | "missing OUT" | "absent" | "not in yet" | "check" | "off day" | "unscheduled") | null;
                 /** @description exact department name */
                 department?: string | null;
                 page?: number;
@@ -6401,6 +7022,584 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    list_shifts: {
+        parameters: {
+            query?: {
+                /** @description the times in force on this date (default today) */
+                on?: string | null;
+                page?: number;
+                page_size?: number;
+                /** @description field to sort by; prefix with "-" for descending, e.g. "-date" */
+                sort?: string | null;
+                /** @description text search (case-insensitive) */
+                q?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_ShiftOut_"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_shift: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShiftIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShiftOut"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_shift: {
+        parameters: {
+            query?: {
+                /** @description default today */
+                on?: string | null;
+            };
+            header?: never;
+            path: {
+                shift_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShiftOut"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_shift: {
+        parameters: {
+            query: {
+                /** @description why */
+                reason: string;
+            };
+            header?: never;
+            path: {
+                shift_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the shift is on the roster */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_shift: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                shift_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShiftPatch"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShiftOut"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description another shift has that name */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    withdraw_shift_change: {
+        parameters: {
+            query: {
+                /** @description why */
+                reason: string;
+            };
+            header?: never;
+            path: {
+                shift_id: number;
+                version_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShiftOut"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the change has started already (or it is the first version) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_roster: {
+        parameters: {
+            query?: {
+                /** @description first date (default: this week's Monday) */
+                from?: string | null;
+                /** @description last date, inclusive (default: a week from `from`) */
+                to?: string | null;
+                /** @description exact department name */
+                department?: string | null;
+                page?: number;
+                page_size?: number;
+                /** @description field to sort by; prefix with "-" for descending, e.g. "-date" */
+                sort?: string | null;
+                /** @description text search (case-insensitive) */
+                q?: string | null;
+                /** @description only rows of this site */
+                site_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_RosterRow_"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_roster: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RosterUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RosterChanged"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description no such person */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description no such shift, or a cell twice */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    roster_template: {
+        parameters: {
+            query?: {
+                format?: "xlsx" | "csv";
+                /** @description first date (default: this week's Monday) */
+                from?: string | null;
+                /** @description last date, inclusive (default: a week from `from`) */
+                to?: string | null;
+                /** @description people of this site only */
+                site_id?: number | null;
+                /** @description exact department name */
+                department?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description the roster as a file */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": unknown;
+                    "text/csv": unknown;
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_roster_import: {
+        parameters: {
+            query?: {
+                /** @description the file's name, e.g. roster.xlsx */
+                filename?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
+                "text/csv": string;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RosterImportPreview"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_roster: {
+        parameters: {
+            query: {
+                /** @description the file's name */
+                filename?: string;
+                /** @description why (goes to the audit log) */
+                reason: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
+                "text/csv": string;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RosterImportResult"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description the file can't be read, or a cell has an error: nothing imported */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

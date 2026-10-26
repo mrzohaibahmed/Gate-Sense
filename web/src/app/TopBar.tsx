@@ -110,7 +110,7 @@ function LiveDot() {
 
 type Notice = { key: string; icon: typeof Bell; text: string; to: string; tone: "missing" | "error" | "warn" };
 
-/** Missing exits today and cameras with an error or warning. */
+/** Today's shifts that ended without an OUT, and cameras with an error or warning. */
 function Notifications() {
   const { data: me } = useMe();
   const { cameras } = useLive();
@@ -119,7 +119,7 @@ function Notifications() {
     queryKey: ["notifications", "missing", siteId],
     queryFn: () =>
       api.get("/api/attendance", {
-        query: { from: today(), to: today(), status: "missing exit", page_size: 20, site_id: siteId },
+        query: { from: today(), to: today(), status: "missing OUT", page_size: 20, site_id: siteId },
       }),
     enabled: can(me, "attendance:read"),
     refetchInterval: 60_000,
@@ -129,8 +129,8 @@ function Notifications() {
     notices.push({
       key: `m${row.person_id}`,
       icon: UserRoundX,
-      text: `${row.name}: no exit yet today`,
-      to: `/attendance?status=missing%20exit`,
+      text: `${row.name}: no OUT for the ${row.shift ?? ""} shift`,
+      to: `/attendance?status=missing%20OUT`,
       tone: "missing",
     });
   }

@@ -5,18 +5,19 @@ import { useSearchParams } from "react-router";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip as ChartTooltip, XAxis, YAxis } from "recharts";
 
 import { api, resourceUrl } from "@/api/client";
-import type { DailyRow, PersonTotal } from "@/api/types";
+import type { DailyRow, PersonTotal, Status } from "@/api/types";
 import { PageHeader } from "@/app/AppShell";
 import { useFilters } from "@/app/filters";
 import { can, useMe } from "@/auth/auth";
-import { StatusBadge } from "@/components/badges";
+import { MinutesBadges, StatusBadge } from "@/components/badges";
 import { TableSkeleton } from "@/components/states";
-import { Badge, Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/input";
 import { EmptyState, ErrorState, Table, Td, Th } from "@/components/ui/misc";
 import { type Preset, presetRange } from "@/lib/ranges";
-import { hhmm, today } from "@/lib/utils";
+import { shiftLabel, timeOn } from "@/lib/days";
+import { today } from "@/lib/utils";
 
 type Kind = "daily" | "monthly";
 const PRESETS: [Preset, string][] = [
@@ -28,6 +29,7 @@ const PRESETS: [Preset, string][] = [
 ];
 /** Rows shown in the preview; the export always has every row. */
 const PREVIEW_ROWS = 500;
+const PRESENT: Status[] = ["on time", "late", "early leave", "missing OUT"];
 
 function hours(h: number | null | undefined): string {
   return h == null ? "" : h.toFixed(2);
@@ -162,8 +164,9 @@ export function ReportsPage() {
           </NativeSelect>
         </div>
         <p className="text-xs text-muted-foreground">
-          A working day runs from the first IN to the last OUT of the calendar date. Voided events don't count;
-          corrected times do.
+          One row per roster day: the first IN in the shift&apos;s IN window to the last OUT in its OUT window, with the
+          shift&apos;s times in force that day. A night shift is the day it starts. Off days and unscheduled days are
+          listed but never absent. Voided events don&apos;t count; corrected times do.
         </p>
         {report.error ? (
           <ErrorState error={report.error} retry={() => void report.refetch()} />
@@ -202,10 +205,11 @@ export function DailyTable({ rows }: { rows: DailyRow[] }) {
     <>
       <Summary
         items={[
-          ["Person-days", rows.length],
-          ["Present", rows.filter((r) => r.first_in).length],
-          ["Missing OUT", rows.filter((r) => r.missing_out).length],
-          ["To check", rows.filter((r) => r.check).length],
+          ["Roster days", rows.length],
+          ["Present", rows.filter((r) => PRESENT.includes(r.status)).length],
+          ["Late", rows.filter((r) => r.status === "late").length],
+          ["Missing IN / OUT", rows.filter((r) => r.status === "missing IN" || r.status === "missing OUT").length],
+          ["To check", rows.filter((r) => r.status === "check").length],
           ["Hours worked", worked.toFixed(1)],
         ]}
       />
@@ -229,9 +233,11 @@ export function DailyTable({ rows }: { rows: DailyRow[] }) {
                   <Th>Name</Th>
                   <Th>Code</Th>
                   <Th>Department</Th>
+                  <Th>Shift</Th>
                   <Th>First IN</Th>
                   <Th>Last OUT</Th>
                   <Th className="text-right">Hours</Th>
+                  <Th>Late / early / overtime</Th>
                   <Th>Status</Th>
                 </tr>
               </thead>
@@ -242,23 +248,19 @@ export function DailyTable({ rows }: { rows: DailyRow[] }) {
                     <Td className="font-medium">{r.name}</Td>
                     <Td>{r.employee_code}</Td>
                     <Td>{r.department ?? ""}</Td>
-                    <Td className="tabular-nums">{hhmm(r.first_in)}</Td>
-                    <Td className="tabular-nums">
-                      {hhmm(r.last_out)}
-                      {r.missing_out && (
-                        <Badge tone="missing" className="ml-1">
-                          missing OUT
-                        </Badge>
-                      )}
-                      {r.check && (
-                        <Badge tone="error" className="ml-1" title="The last OUT is earlier than the first IN">
-                          check
-                        </Badge>
-                      )}
-                    </Td>
+                    <Td className="whitespace-nowrap">{shiftLabel(r)}</Td>
+                    <Td className="tabular-nums">{timeOn(r.first_in, r.date)}</Td>
+                    <Td className="tabular-nums">{timeOn(r.last_out, r.date)}</Td>
                     <Td className="text-right tabular-nums">{hours(r.worked_hours)}</Td>
                     <Td>
-                      <StatusBadge status={r.status} today={r.date === today()} />
+                      <MinutesBadges
+                        late={r.late_minutes}
+                        early={r.early_leave_minutes}
+                        overtime={r.overtime_minutes}
+                      />
+                    </Td>
+                    <Td>
+                      <StatusBadge status={r.status} />
                     </Td>
                   </tr>
                 ))}
@@ -280,7 +282,8 @@ export function MonthlyView({ people }: { people: PersonTotal[] }) {
         items={[
           ["People", people.length],
           ["Days present", people.reduce((sum, p) => sum + p.days_present, 0)],
-          ["Missing exits", people.reduce((sum, p) => sum + p.days_missing_exit, 0)],
+          ["Days late", people.reduce((sum, p) => sum + p.days_late, 0)],
+          ["Missing IN / OUT", people.reduce((sum, p) => sum + p.days_missing_in + p.days_missing_out, 0)],
           ["Days to check", people.reduce((sum, p) => sum + p.days_check, 0)],
           ["Hours worked", total.toFixed(1)],
         ]}
@@ -327,11 +330,16 @@ export function MonthlyView({ people }: { people: PersonTotal[] }) {
                   <Th>Name</Th>
                   <Th>Code</Th>
                   <Th>Department</Th>
-                  <Th className="text-right">Days present</Th>
-                  <Th className="text-right">Missing exits</Th>
-                  <Th className="text-right">Missing entries</Th>
-                  <Th className="text-right">Days to check</Th>
+                  <Th className="text-right">Present / scheduled</Th>
+                  <Th className="text-right">Late (days, min)</Th>
+                  <Th className="text-right">Early leave (days, min)</Th>
+                  <Th className="text-right">Overtime</Th>
+                  <Th className="text-right">Missing IN</Th>
+                  <Th className="text-right">Missing OUT</Th>
+                  <Th className="text-right">To check</Th>
                   <Th className="text-right">Absent</Th>
+                  <Th className="text-right">Off</Th>
+                  <Th className="text-right">Unscheduled</Th>
                   <Th className="text-right">Total hours</Th>
                   <Th className="text-right">Average</Th>
                 </tr>
@@ -339,16 +347,27 @@ export function MonthlyView({ people }: { people: PersonTotal[] }) {
               <tbody>
                 {people.map((p) => (
                   <tr key={p.employee_code}>
-                    <Td className="font-medium">{p.name}</Td>
+                    <Td className="font-medium whitespace-nowrap">{p.name}</Td>
                     <Td>{p.employee_code}</Td>
                     <Td>{p.department ?? ""}</Td>
                     <Td className="text-right tabular-nums">
-                      {p.days_present} / {p.days}
+                      {p.days_present} / {p.days_scheduled}
                     </Td>
-                    <Td className="text-right tabular-nums">{p.days_missing_exit || ""}</Td>
-                    <Td className="text-right tabular-nums">{p.days_missing_entry || ""}</Td>
+                    <Td className="text-right tabular-nums">
+                      {p.days_late ? `${p.days_late}, ${p.late_minutes}` : ""}
+                    </Td>
+                    <Td className="text-right tabular-nums">
+                      {p.days_early_leave ? `${p.days_early_leave}, ${p.early_leave_minutes}` : ""}
+                    </Td>
+                    <Td className="text-right whitespace-nowrap tabular-nums">
+                      {p.overtime_minutes ? `${p.overtime_minutes} min` : ""}
+                    </Td>
+                    <Td className="text-right tabular-nums">{p.days_missing_in || ""}</Td>
+                    <Td className="text-right tabular-nums">{p.days_missing_out || ""}</Td>
                     <Td className="text-right tabular-nums">{p.days_check || ""}</Td>
                     <Td className="text-right tabular-nums">{p.days_absent || ""}</Td>
+                    <Td className="text-right tabular-nums">{p.days_off || ""}</Td>
+                    <Td className="text-right tabular-nums">{p.days_unscheduled || ""}</Td>
                     <Td className="text-right tabular-nums">{hours(p.total_hours)}</Td>
                     <Td className="text-right tabular-nums">{hours(p.avg_hours)}</Td>
                   </tr>

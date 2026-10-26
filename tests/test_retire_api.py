@@ -19,7 +19,9 @@ from app import camera_settings, config, db, enrollment
 from app.workers import WorkerManager as AppWorkerManager
 from tests.fakes import FakeDetector, FakeRecognizer, photo
 from tests.test_api import FAKE, wait_for
-from tests.test_data_api import admin, as_role, at, clip, first_password, items, seed  # noqa: F401  (fixture)
+from tests.test_data_api import (  # noqa: F401  (first_password, fixed_clock: fixtures)
+    admin, as_role, at, clip, first_password, fixed_clock, items, seed,
+)
 
 TODAY, YESTERDAY = date.today(), date.today() - timedelta(days=1)
 
@@ -241,11 +243,12 @@ def test_daily_register(app):
     r = v.get("/api/reports/daily").json()
     assert (r["first"], r["last"]) == (TODAY.isoformat(), TODAY.isoformat())
     rows = {x["name"]: x for x in r["rows"]}
-    assert rows["Ayesha"]["worked_hours"] == 9.08 and not rows["Ayesha"]["missing_out"]
-    # Bilal came in today and hasn't gone out: still inside, not "missing OUT" until the day is over
-    assert rows["Bilal"]["status"] == "missing exit" and not rows["Bilal"]["missing_out"]
-    assert rows["Bilal"]["last_out"] is None and not rows["Bilal"]["check"]
-    assert rows["Dawood"]["status"] == "absent"
+    assert (rows["Ayesha"]["worked_hours"], rows["Ayesha"]["status"], rows["Ayesha"]["shift"]) == (
+        9.08, "on time", "General")
+    # Bilal came in late today and hasn't gone out, the OUT window still open: late, not "missing OUT" yet
+    assert (rows["Bilal"]["status"], rows["Bilal"]["late_minutes"], rows["Bilal"]["open"]) == ("late", 80, True)
+    assert rows["Bilal"]["last_out"] is None
+    assert rows["Chand"]["status"] == "missing IN" and rows["Dawood"]["status"] == "absent"
     stores = v.get("/api/reports/daily", params={"department": "Stores"}).json()["rows"]
     assert [x["name"] for x in stores] == ["Ayesha", "Chand"]
     assert v.get("/api/reports/daily", params={"site_id": 99}).json()["rows"] == []
@@ -256,20 +259,26 @@ def test_monthly_totals_match_the_daily_rows(app):
     params = {"from": (TODAY - timedelta(days=6)).isoformat(), "to": TODAY.isoformat()}
     daily = hr.get("/api/reports/daily", params=params).json()["rows"]
     people = {p["employee_code"]: p for p in hr.get("/api/reports/monthly", params=params).json()["people"]}
-    assert len(daily) == 4 * 7 and set(people) == {"1001", "1002", "1003", "1004"}
+    assert len(daily) == 4 * 2 and set(people) == {"1001", "1002", "1003", "1004"}  # rostered yesterday and today
+    counted = {"days_on_time": "on time", "days_late": "late", "days_early_leave": "early leave",
+               "days_missing_in": "missing IN", "days_missing_out": "missing OUT", "days_check": "check",
+               "days_absent": "absent", "days_not_in_yet": "not in yet", "days_off": "off day",
+               "days_unscheduled": "unscheduled"}
     for code, total in people.items():
         mine = [d for d in daily if d["employee_code"] == code]
         hours = [d["worked_hours"] for d in mine if d["worked_hours"] is not None]
-        assert total["days"] == len(mine) == 7
+        assert total["days"] == len(mine) == 2 and total["days_scheduled"] == 2
         assert total["total_hours"] == round(sum(hours), 2)
-        assert total["days_present"] == sum(d["status"] in ("complete", "missing exit", "check") for d in mine)
-        assert total["days_check"] == sum(d["check"] for d in mine)
-        assert total["days_missing_exit"] == sum(d["missing_out"] for d in mine)
-        assert total["days_absent"] == sum(d["status"] == "absent" for d in mine)
+        assert total["days_present"] == sum(d["status"] in ("on time", "late", "early leave", "missing OUT")
+                                            for d in mine)
+        for key, status in counted.items():
+            assert total[key] == sum(d["status"] == status for d in mine), key
+        for key in ("late_minutes", "early_leave_minutes", "overtime_minutes"):
+            assert total[key] == sum(d[key] or 0 for d in mine), key
         assert total["avg_hours"] == (round(total["total_hours"] / len(hours), 2) if hours else None)
     assert (people["1001"]["days_present"], people["1001"]["total_hours"]) == (2, 17.08)  # 8.00 + 9.08
-    assert people["1002"]["days_missing_exit"] == 0  # today's open day isn't counted while still inside
-    assert people["1002"]["days_present"] == 1 and people["1004"]["days_absent"] == 7
+    assert people["1002"]["days_missing_out"] == 0  # today's shift is still running: late, at work
+    assert people["1002"]["days_present"] == 1 and people["1004"]["days_absent"] == 2
 
 
 def test_exports_and_their_audit(app):
@@ -280,11 +289,11 @@ def test_exports_and_their_audit(app):
     assert r.headers["content-disposition"] == (f'attachment; filename="gatesense-daily-{YESTERDAY}_{TODAY}.csv"')
     assert r.content.startswith(b"\xef\xbb\xbf")
     rows = list(csv.reader(io.StringIO(r.content.decode("utf-8-sig"))))
-    assert rows[0] == ["Date", "Employee code", "Name", "Department", "First IN", "Last OUT", "Hours worked",
-                       "Missing OUT", "Check", "Status"]
+    assert rows[0] == ["Date", "Employee code", "Name", "Department", "Shift", "Shift start", "Shift end", "First IN",
+                       "Last OUT", "Hours worked", "Late (min)", "Early leave (min)", "Overtime (min)", "Status"]
     assert len(rows) == 1 + 8  # 4 people, 2 days
     bilal = next(row for row in rows[1:] if row[2] == "Bilal" and row[0] == str(TODAY))
-    assert (bilal[4], bilal[5], bilal[7], bilal[9]) == ("09:20:00", "", "", "inside")  # today: like the screens
+    assert (bilal[4], bilal[7], bilal[8], bilal[10], bilal[13]) == ("General", "09:20:00", "", "80", "late")
 
     x = hr.get("/api/reports/monthly/export", params={**params, "format": "xlsx", "department": "Stores"})
     assert x.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -293,11 +302,12 @@ def test_exports_and_their_audit(app):
     assert wb.sheetnames == ["Summary", "Daily detail"]
     summary, detail = wb["Summary"], wb["Daily detail"]
     assert summary.freeze_panes == "A2" and summary["A1"].font.bold and summary["A1"].fill.fgColor.rgb.endswith("0E7C66")
-    assert [c.value for c in summary[1]][:5] == ["Employee code", "Name", "Department", "Days", "Days present"]
+    assert [c.value for c in summary[1]][:6] == ["Employee code", "Name", "Department", "Days", "Scheduled",
+                                                 "Present"]
     assert [r[1] for r in summary.iter_rows(min_row=2, values_only=True)] == ["Ayesha", "Chand"]
     hours_col = [c.value for c in summary[1]].index("Total hours") + 1
     assert summary.cell(row=2, column=hours_col).value == 17.08  # Ayesha's total hours, a number
-    first_in = detail.cell(row=2, column=5)
+    first_in = detail.cell(row=2, column=8)
     assert first_in.number_format == "hh:mm" and str(first_in.value) == "08:00:00"
     exported = [e for e in app.state.db.audit_entries() if e["action"] == "export_report"]
     assert [(e["user"], e["target"]) for e in exported] == [("hr", "report:monthly"), ("hr", "report:daily")]

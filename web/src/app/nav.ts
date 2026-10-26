@@ -1,5 +1,6 @@
 import {
   BarChart3,
+  CalendarDays,
   ClipboardList,
   LayoutDashboard,
   type LucideIcon,
@@ -20,12 +21,19 @@ export type NavItem = {
   permissions: readonly Permission[];
 };
 
-export const SETTINGS_PERMISSIONS = ["settings:manage", "users:manage", "cameras:manage", "sites:manage"] as const;
+export const SETTINGS_PERMISSIONS = [
+  "settings:manage",
+  "users:manage",
+  "cameras:manage",
+  "sites:manage",
+  "shifts:manage",
+] as const;
 
 export const NAV: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, permissions: ["attendance:read"] },
   { to: "/live", label: "Live cameras", icon: Video, permissions: ["live:view"] },
   { to: "/attendance", label: "Attendance", icon: ClipboardList, permissions: ["attendance:read"] },
+  { to: "/roster", label: "Roster", icon: CalendarDays, permissions: ["roster:read"] },
   { to: "/people", label: "People", icon: Users, permissions: ["people:read"] },
   { to: "/enrollment", label: "Enrollment", icon: ScanFace, permissions: ["people:manage"] },
   { to: "/reports", label: "Reports", icon: BarChart3, permissions: ["reports:read"] },

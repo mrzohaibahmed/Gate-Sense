@@ -206,21 +206,24 @@ No software check stops every attack (a good mask, a high-resolution screen at t
 .venv\Scripts\python scripts\today.py --date 2026-10-20
 ```
 
-Prints name, first IN, last OUT, worked hours and the missing-exit and check flags for every enrolled person, with the same rule as the dashboard and the reports.
+Prints name, shift, first IN, last OUT, worked hours, late / early leave / overtime minutes and the status for every roster day, with the same rule as the dashboard and the reports.
 
-**One attendance per person per day:** the day is the first IN and the last OUT (local midnight to midnight); every other event is a *repeat* (kept, listed greyed with a "repeat" tag in the day's events, not used). Status:
+**Shifts and the roster:** each person's day comes from the roster (Roster page): a shift or OFF per person per date. Shifts are set in Settings > Shifts (seeded: Morning 06:30-14:30, General 08:00-16:30, Night 22:00-06:00). For a roster day, the day's IN is the first IN in the shift's IN window (2 h before the start to the shift's midpoint) and its OUT the last OUT in the OUT window (midpoint to 4 h after the end); a night shift is dated the day it starts (IN Monday 21:55, OUT Tuesday 06:05 = one Monday row). Every other pass is a *repeat* (kept, listed greyed with a "repeat" tag, not used).
 
-| Status | When | Hours |
-|---|---|---|
-| `complete` | an IN, and the last OUT is after the first IN (an IN after the last OUT, e.g. IN 8, OUT 16, IN 17, is a repeat: 08:00-16:00, 8 h) | last OUT - first IN |
-| `missing exit` | an IN but no OUT at all; for today this reads `inside` (screens and exports) | - |
-| `missing entry` | OUTs but no IN | - |
-| `check` | the last OUT is earlier than the first IN: someone should look | - |
-| `absent` | no events | - |
+| Status | When |
+|---|---|
+| `on time` | IN at or before start + grace (30 min) |
+| `late` | IN after start + grace; the late minutes count from the start |
+| `early leave` | OUT before end - grace; also an IN and then an OUT before the midpoint (e.g. Morning, IN 06:35, OUT 09:00 = 330 min early) |
+| `missing IN` | an OUT for the shift but no IN in its IN window |
+| `missing OUT` | an IN, no OUT after it, and the OUT window has closed (while it is open the day reads on time or late, with an "Inside" badge) |
+| `absent` | rostered, the IN window has closed, no pass at all |
+| `not in yet` | rostered, the IN window is still open |
+| `check` | passes during the shift, but none where they count (e.g. an OUT before the IN): someone should look |
+| `off day` | OFF on the roster: never absent; passes that day are shown, not counted |
+| `unscheduled` | passes on a date with no roster entry: shown, nothing guessed |
 
-"Present" means came in that day (complete, missing exit or check): the Overview's Present tile and the reports' Days present. On these screens a night shift (IN 23:50, OUT 00:10) is still two days.
-
-**Shifts and roster (rules ready, screens next):** the database has shifts (seeded: Morning 06:30-14:30, General 08:00-16:30, Night 22:00-06:00) and a roster (one row per person per date: a shift or OFF). Per roster date the day is the first IN in the shift's IN window (2 h before the start to the shift's midpoint) and the last OUT in its OUT window (midpoint to 4 h after the end); a night shift is dated the day it starts. Statuses: on time (IN up to start + 30 min grace), late, early leave (OUT before end - grace), missing IN, missing OUT, absent, check, off day, unscheduled (passes with no roster row; never guessed), plus late, early-leave and overtime minutes. Nothing is stored, so a roster change recalculates the days from the raw events. The dashboard, reports and today.py still use the calendar day above until the roster screens come.
+Overtime minutes are the OUT's minutes after the shift's end. "Present" means came in for the shift (on time, late, early leave, missing OUT). Changing a shift's times applies from a date you pick (default today); earlier days keep the times they had. Nothing is stored: a roster change recalculates the days from the raw camera passes, which never change.
 
 ## Dashboard
 
@@ -233,7 +236,7 @@ role (admin, HR, viewer, guard) sees only its own menu items.
 - **Live cameras**: 1, 2, 4 or 9 cameras per screen with Start and Stop; full screen shows the camera's events and,
   for admins, its live recognition decisions (score, second-best, margin, face width in camera pixels, skip reason)
   for tuning the thresholds.
-- **Attendance**: daily rows with filters; a side panel with the day's events and snapshots, corrections (add an IN or
+- **Attendance**: roster days (shift, first IN, last OUT, worked, late / early / overtime, status) with filters; a side panel with the day's events and snapshots, corrections (add an IN or
   OUT, change a time) and void or restore an event (HR and admin; a reason is required, nothing is deleted, voided
   events are greyed and can be hidden).
 - **People**: profile with photos, a month calendar and history; edit name, department, shift and site (the employee
@@ -247,11 +250,17 @@ role (admin, HR, viewer, guard) sees only its own menu items.
   refused one. While the wizard has the webcam open, webcam camera workers can't start (and the wizard can't take
   the webcam from a running one); it gives the webcam back when it closes, or at the latest 90 seconds after the tab
   was closed.
-- **Reports**: the daily register (first IN, last OUT, hours worked, missing OUT, check) and the monthly summary per person
-  (days present, total hours, missing exits, days to check) for any date range and department, exported as CSV or Excel.
+- **Roster**: a week per screen, people by days; pick a shift or OFF per cell, or for selected people and days at
+  once, copy last week, then save the changes together with one reason (admin and HR; viewers read it, guards don't
+  see it). **Import from Excel**: download the week as a file, fill it in (a shift's name, OFF, or blank to leave a day
+  as it is), and the file is checked first with every error listed by line and column; it is imported all or nothing.
+- **Reports**: the daily register (shift, first IN, last OUT, hours worked, late / early leave / overtime minutes,
+  status) and the monthly summary per person (scheduled and present days, days per status, minutes, total hours) for
+  any date range and department, exported as CSV or Excel.
 - **Audit log**: every change with who, when and why; CSV export.
-- **Settings**: cameras (add, edit, test the connection, reorder, delete, view and download the log), sites, users and
-  roles, recognition thresholds, and system information with "Back up now".
+- **Settings**: cameras (add, edit, test the connection, reorder, delete, view and download the log), sites, shifts
+  (times, grace and windows, each change from a date; planned changes can be withdrawn), users and roles, recognition
+  thresholds, and system information with "Back up now".
 
 To work on the web dashboard itself, run the app with **start-debug.bat** and, in a second window:
 
@@ -277,7 +286,7 @@ It listens on `http://127.0.0.1:8000` (this PC only; change it with `GATESENSE_H
 
 **Users and login.** The API has its own user accounts with four roles: **admin** (everything, including user accounts), **hr**, **viewer** and **guard** (the permissions of each are in `api/permissions.py`). On its first start the API creates the user `admin` with the `GATESENSE_ADMIN_PASSWORD`; that password must be changed at the first login. To try it, open `http://127.0.0.1:8000/docs`, run `POST /api/auth/login` with `{"username": "admin", "password": "..."}` (the page keeps the session cookie), then `POST /api/auth/password`, then the other endpoints. Admins manage accounts under `/api/users` (create with a temporary password, change role, deactivate, reset password; each change needs a reason). Sessions end after 8 hours without activity; 5 wrong passwords in a row lock an account for 15 minutes. Logins, failed logins, logouts and refused requests go to the audit log. On the first start after this update the database gets new tables (users, sessions, sites); a copy of the old database is saved in `data/backups/` first.
 
-**Data endpoints** (used by the dashboard; all listed with their response types at `/docs`): `/api/overview` (the day at a glance: present, inside now, complete, missing exit, missing entry, check, absent, arrivals per hour, every camera's status), `/api/attendance` (daily rows, the same as the Overview), `/api/events` (raw IN/OUT events with score and snapshot; `/api/snapshots/{id}` shows a snapshot to logged-in users only), `/api/attendance/corrections` (HR and admin: add an IN/OUT, change a time, void or restore an event; the original time is kept and every correction needs a reason), `/api/people` (list, profile with photos and recent attendance, add, edit, deactivate, re-enroll), `/api/cameras` (list with status, add, edit, start, stop, and `/api/cameras/test` to open a camera once and see its resolution and fps), `/api/sites`, `/api/audit` and `/api/settings` (thresholds and the cool-down; admin only, each change audited, applied to cameras started afterwards). Lists take `page`, `page_size`, `sort` (e.g. `-date`), `q` (search) and, where it applies, `site_id`. Camera passwords never appear in a response: sources keep their `${VAR}` placeholders. A camera's region of interest can be saved, but the camera worker doesn't use it yet.
+**Data endpoints** (used by the dashboard; all listed with their response types at `/docs`): `/api/overview` (the day at a glance: scheduled, present, inside now, a count per status, overtime days, arrivals per hour, every camera's status), `/api/attendance` (roster days, the same as the Overview), `/api/shifts` (shifts with their dated versions; admin and HR change them), `/api/roster` (the week grid, saves, and `/api/roster/import` with a preview), `/api/events` (raw IN/OUT events with score and snapshot; `/api/snapshots/{id}` shows a snapshot to logged-in users only), `/api/attendance/corrections` (HR and admin: add an IN/OUT, change a time, void or restore an event; the original time is kept and every correction needs a reason), `/api/people` (list, profile with photos and recent attendance, add, edit, deactivate, re-enroll), `/api/cameras` (list with status, add, edit, start, stop, and `/api/cameras/test` to open a camera once and see its resolution and fps), `/api/sites`, `/api/audit` and `/api/settings` (thresholds and the cool-down; admin only, each change audited, applied to cameras started afterwards). Lists take `page`, `page_size`, `sort` (e.g. `-date`), `q` (search) and, where it applies, `site_id`. Camera passwords never appear in a response: sources keep their `${VAR}` placeholders. A camera's region of interest can be saved, but the camera worker doesn't use it yet.
 
 **Live video and live updates.** While logged in (admin, HR or guard), open `http://127.0.0.1:8000/api/cameras/1/stream` in the browser (or use it as an image source): the running camera's picture with face boxes and names, up to 8 frames a second and 960 px wide (`STREAM_FPS`, `STREAM_MAX_WIDTH` in `app/config.py`); `/api/cameras/1/snapshot.jpg` is one current frame. The camera encodes each frame once however many people watch, and goes back to its normal pace when nobody does. A web page can open the WebSocket `/api/ws` to get each new IN/OUT event, every camera's status every 2 seconds, and a notice after each correction.
 

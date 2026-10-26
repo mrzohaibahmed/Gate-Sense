@@ -2,6 +2,7 @@
 removes the unused daily_attendance table and sites.timezone (kept in the copy made before the upgrade)."""
 
 import sqlite3
+from datetime import date, datetime
 
 from app import config, db
 
@@ -45,7 +46,7 @@ def test_existing_database_keeps_its_data(tmp_path, capsys):
     before = dump(path)
 
     conn = db.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.VERSIONS) == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.VERSIONS) == 6
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
     assert {"users", "sessions", "sites", "user_preferences", "shifts", "roster"} <= tables
     assert "daily_attendance" not in tables
@@ -63,7 +64,7 @@ def test_existing_database_keeps_its_data(tmp_path, capsys):
 
     backups = list((tmp_path / "backups").glob("attendance-v0-*.db"))
     assert len(backups) == 1 and dump(backups[0]) == before  # the untouched copy
-    assert "upgraded from version 0 to 5" in capsys.readouterr().out
+    assert "upgraded from version 0 to 6" in capsys.readouterr().out
 
     db.connect(path).close()  # already upgraded: nothing runs, no second copy
     assert len(list((tmp_path / "backups").iterdir())) == 1 and dump(path, KEPT_TABLES) == after
@@ -93,13 +94,13 @@ def test_step_4_from_version_3_backs_up_then_drops_the_unused_parts(tmp_path, ca
     after = dump(path, KEPT_TABLES + ("sites",))
     assert {t: after[t] for t in KEPT_TABLES} == {t: before[t] for t in KEPT_TABLES}
     assert after["sites"] == [(1, config.DEFAULT_SITE_NAME), (2, "Yard")]
-    assert "upgraded from version 3 to 5" in capsys.readouterr().out
+    assert "upgraded from version 3 to 6" in capsys.readouterr().out
 
 
 def test_new_database_gets_everything_without_a_backup(tmp_path):
     path = tmp_path / "new.db"
     conn = db.connect(path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
     cam = db.upsert_camera(conn, "gate", 0, "IN")
     db.ensure_cameras(conn, [{"name": "gate2", "source": 1, "direction": "OUT"}])
     assert [r["site_id"] for r in conn.execute("SELECT site_id FROM cameras ORDER BY id")] == [1, 1] and cam == 1
@@ -150,4 +151,32 @@ def test_step_5_adds_shifts_and_an_empty_roster(tmp_path, capsys):
     conn.close()
     assert dump(path, KEPT_TABLES) == before
     assert next((tmp_path / "backups").glob("attendance-v4-*.db"))
-    assert "upgraded from version 4 to 5" in capsys.readouterr().out
+    assert "upgraded from version 4 to 6" in capsys.readouterr().out
+
+
+def test_step_6_moves_shift_times_into_versions(tmp_path):
+    """A version 5 database (shift times on the shifts table, a roster row): the times become each shift's first
+    version, from the start; the roster and the days computed from it don't change."""
+    path = tmp_path / "attendance.db"
+    old_database(path)
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    for step in db.VERSIONS[:5]:
+        step(conn)
+    conn.execute("UPDATE shifts SET start_time = '07:00', grace_min = 10 WHERE name = 'Morning'")
+    conn.execute("INSERT INTO roster (person_id, date, shift_id, updated, updated_by) "
+                 "VALUES (1, '2026-10-20', 1, '2026-10-19 12:00:00', 'hr1')")
+    conn.execute("PRAGMA user_version = 5")
+    conn.commit()
+    conn.close()
+
+    conn = db.connect(path)
+    assert [r[1] for r in conn.execute("PRAGMA table_info(shifts)")] == ["id", "name"]
+    morning = db.get_shift(conn, 1)
+    assert (morning.name, f"{morning.start:%H:%M}", morning.grace_min, morning.effective_from) == (
+        "Morning", "07:00", 10, None)
+    assert [r["effective_from"] for r in db.shift_version_rows(conn, 1)] == [None]
+    [day] = db.roster_days(conn, date(2026, 10, 20), date(2026, 10, 20))
+    assert (day.shift, day.status, day.first_in) == ("Morning", "late", datetime(2026, 10, 20, 9, 1))
+    conn.close()
+    assert next((tmp_path / "backups").glob("attendance-v5-*.db"))

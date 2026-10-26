@@ -26,7 +26,9 @@ and sites.timezone (stored but never applied: a day is local midnight to midnigh
 The usual backup copy is made first, so the old values are kept there. Step 5 adds
 shifts (seeded with config.DEFAULT_SHIFTS) and the roster (person, date, shift or
 NULL = OFF; one row per person per date). Roster days are computed from the raw
-events by app/shifts.py, like the calendar days, so nothing derived is stored.
+events by app/shifts.py, so nothing derived is stored. Step 6 moves a shift's times,
+grace and windows into shift_versions (effective_from: NULL = from the start), so a
+change applies from a date and never rewrites the days before it.
 """
 
 import json
@@ -36,9 +38,9 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from app import config
-from app.attendance import DaySummary, Event, repeat_ids, summarize_day, within_cooldown
+from app.attendance import Event, within_cooldown
 from app.camera import mask_source
-from app.shifts import OFF, ROSTER_PAD_DAYS, Shift, ShiftDay, roster_repeat_ids, summarize_roster
+from app.shifts import OFF, ROSTER_PAD_DAYS, Shift, ShiftDay, roster_repeat_ids, summarize_roster, version_on
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS persons (
@@ -191,15 +193,43 @@ def _v5_shifts_roster(conn: sqlite3.Connection) -> None:
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_roster_date ON roster(date)")
     if conn.execute("SELECT 1 FROM shifts LIMIT 1").fetchone() is None:
-        for s in config.DEFAULT_SHIFTS:
-            shift = Shift(s["name"], time.fromisoformat(s["start"]), time.fromisoformat(s["end"]),
-                          s["crosses_midnight"])
-            conn.execute(f"INSERT INTO shifts ({', '.join(SHIFT_COLUMNS)}) "
-                         f"VALUES ({', '.join('?' * len(SHIFT_COLUMNS))})", _shift_values(shift))
+        for s in config.DEFAULT_SHIFTS:  # this step's own columns (step 6 moves them to shift_versions)
+            conn.execute("INSERT INTO shifts (name, start_time, end_time, crosses_midnight, grace_min, "
+                         "in_window_before_min, out_window_after_min) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                         (s["name"], s["start"], s["end"], int(s["crosses_midnight"]), config.SHIFT_GRACE_MIN,
+                          config.SHIFT_IN_WINDOW_BEFORE_MIN, config.SHIFT_OUT_WINDOW_AFTER_MIN))
 
 
-VERSIONS = [_v1_users_sessions_sites, _v2_person_sites_original_times,
-            _v3_user_preferences, _v4_drop_unused, _v5_shifts_roster]  # PRAGMA user_version = how many have run
+V6_RULES = ("start_time", "end_time", "crosses_midnight", "grace_min", "in_window_before_min", "out_window_after_min")
+
+
+def _v6_shift_versions(conn: sqlite3.Connection) -> None:
+    """Effective-dated shift times: shift_versions (one row per shift per effective_from date; NULL = from the start),
+    the current times of every shift as its first version, and those columns removed from shifts (the name stays)."""
+    conn.execute("""CREATE TABLE IF NOT EXISTS shift_versions (
+        id                   INTEGER PRIMARY KEY,
+        shift_id             INTEGER NOT NULL REFERENCES shifts(id),
+        effective_from       TEXT,
+        start_time           TEXT NOT NULL,
+        end_time             TEXT NOT NULL,
+        crosses_midnight     INTEGER NOT NULL,
+        grace_min            INTEGER NOT NULL,
+        in_window_before_min INTEGER NOT NULL,
+        out_window_after_min INTEGER NOT NULL,
+        created              TEXT NOT NULL,
+        created_by           TEXT NOT NULL,
+        UNIQUE (shift_id, effective_from)
+    )""")
+    if "start_time" in _columns(conn, "shifts"):
+        conn.execute(f"INSERT INTO shift_versions (shift_id, effective_from, {', '.join(V6_RULES)}, created, "
+                     f"created_by) SELECT id, NULL, {', '.join(V6_RULES)}, ?, 'system' FROM shifts",
+                     (_ts(datetime.now()),))
+        for column in V6_RULES:
+            conn.execute(f"ALTER TABLE shifts DROP COLUMN {column}")
+
+
+VERSIONS = [_v1_users_sessions_sites, _v2_person_sites_original_times, _v3_user_preferences, _v4_drop_unused,
+            _v5_shifts_roster, _v6_shift_versions]  # PRAGMA user_version = how many have run
 
 
 def _has_data(conn) -> bool:
@@ -570,11 +600,6 @@ def last_event_times(conn: sqlite3.Connection, since: datetime) -> dict[tuple[st
     return {(r["employee_code"], r["direction"]): datetime.fromisoformat(r["ts"]) for r in rows}
 
 
-def events_for_day(conn: sqlite3.Connection, day: date, person_ids: list[int] | None = None) -> list[Event]:
-    """A day's non-voided events (of `person_ids`, or everyone), for the daily summary."""
-    return events_between(conn, day, day, person_ids)
-
-
 def events_between(conn: sqlite3.Connection, first: date, last: date,
                    person_ids: list[int] | None = None) -> list[Event]:
     """The non-voided events of the dates `first` to `last` inclusive (of `person_ids`, or everyone)."""
@@ -589,86 +614,163 @@ def events_between(conn: sqlite3.Connection, first: date, last: date,
     return [Event(r["employee_code"], datetime.fromisoformat(r["timestamp"]), r["direction"], r["id"]) for r in rows]
 
 
-def repeat_event_ids(conn: sqlite3.Connection, day: date, person_ids: list[int] | None = None) -> set[int]:
-    """The day's repeat events (not the person's first IN or last OUT): kept and listed, but not used for the day."""
-    by_person: dict[str, list[Event]] = {}
-    for e in events_for_day(conn, day, person_ids):
-        by_person.setdefault(e.person, []).append(e)
-    return set().union(*(repeat_ids(evs) for evs in by_person.values()))
-
-
-def day_summaries(conn: sqlite3.Connection, day: date) -> tuple[list[DaySummary], dict[str, int]]:
-    """A day's summaries (every active person, plus anyone with events), and employee_code -> person id.
-
-    Read-only: the API's attendance rows, overview and reports, and scripts/today.py all use this, so they agree.
-    """
-    ids = person_ids(conn)
-    events = events_for_day(conn, day)
-    # Include people with events even if they were deactivated since.
-    for code in {e.person for e in events} - ids.keys():
-        ids[code] = conn.execute("SELECT id FROM persons WHERE employee_code = ?", (code,)).fetchone()["id"]
-    return summarize_day(events, list(ids)), ids
-
-
 # --- Shifts and roster (the rules are in app/shifts.py) ------------------------------------------------------------
+#
+# A shift is a name (shifts) plus versions (shift_versions): the times, grace and windows in force from a date. The
+# first version is from the start (effective_from NULL); changing the times adds a version from the date the user
+# picks, so the days before it keep the times they had.
 
-SHIFT_COLUMNS = ("name", "start_time", "end_time", "crosses_midnight", "grace_min", "in_window_before_min",
-                 "out_window_after_min")
+RULE_COLUMNS = ("start_time", "end_time", "crosses_midnight", "grace_min", "in_window_before_min",
+                "out_window_after_min")
 
 
-def _shift_values(shift: Shift) -> tuple:
-    return (shift.name, f"{shift.start:%H:%M}", f"{shift.end:%H:%M}", int(shift.crosses_midnight), shift.grace_min,
+def _rule_values(shift: Shift) -> tuple:
+    return (f"{shift.start:%H:%M}", f"{shift.end:%H:%M}", int(shift.crosses_midnight), shift.grace_min,
             shift.in_window_before_min, shift.out_window_after_min)
 
 
-def _shift_row(row: sqlite3.Row) -> Shift:
-    return Shift(row["name"], time.fromisoformat(row["start_time"]), time.fromisoformat(row["end_time"]),
+def _rule_details(shift: Shift) -> dict:
+    return dict(zip(RULE_COLUMNS, _rule_values(shift)))
+
+
+def _version_shift(row: sqlite3.Row, name: str) -> Shift:
+    return Shift(name, time.fromisoformat(row["start_time"]), time.fromisoformat(row["end_time"]),
                  bool(row["crosses_midnight"]), row["grace_min"], row["in_window_before_min"],
-                 row["out_window_after_min"], row["id"])
+                 row["out_window_after_min"], row["shift_id"],
+                 date.fromisoformat(row["effective_from"]) if row["effective_from"] else None)
 
 
-def list_shifts(conn: sqlite3.Connection) -> list[Shift]:
-    return [_shift_row(r) for r in conn.execute("SELECT * FROM shifts ORDER BY start_time, name")]
+def shift_versions(conn: sqlite3.Connection, shift_id: int | None = None) -> dict[int, list[Shift]]:
+    """shift id -> its versions, oldest first (the first one from the start), for one shift or all of them."""
+    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM shifts")}
+    only = " WHERE shift_id = ?" if shift_id is not None else ""
+    rows = conn.execute(f"SELECT * FROM shift_versions{only} ORDER BY shift_id, effective_from IS NOT NULL, "
+                        "effective_from", () if shift_id is None else (shift_id,))
+    out: dict[int, list[Shift]] = {}
+    for r in rows:
+        out.setdefault(r["shift_id"], []).append(_version_shift(r, names[r["shift_id"]]))
+    return out
 
 
-def get_shift(conn: sqlite3.Connection, shift_id: int) -> Shift:
-    row = conn.execute("SELECT * FROM shifts WHERE id = ?", (shift_id,)).fetchone()
-    if row is None:
+def shift_version_rows(conn: sqlite3.Connection, shift_id: int) -> list[sqlite3.Row]:
+    """One shift's version rows (id, effective_from, times, created, created_by), oldest first."""
+    return conn.execute("SELECT * FROM shift_versions WHERE shift_id = ? ORDER BY effective_from IS NOT NULL, "
+                        "effective_from", (shift_id,)).fetchall()
+
+
+def list_shifts(conn: sqlite3.Connection, on: date | None = None) -> list[Shift]:
+    """Every shift as in force on `on` (default today), by start time then name."""
+    day = on or date.today()
+    return sorted((version_on(vs, day) for vs in shift_versions(conn).values()),
+                  key=lambda s: (s.start, s.name.lower()))
+
+
+def get_shift(conn: sqlite3.Connection, shift_id: int, on: date | None = None) -> Shift:
+    """The shift as in force on `on` (default today); ValueError if there is no such shift."""
+    versions = shift_versions(conn, shift_id).get(shift_id)
+    if not versions:
         raise ValueError(f"no shift with id {shift_id}")
-    return _shift_row(row)
+    return version_on(versions, on or date.today())
 
 
-def save_shift(conn: sqlite3.Connection, shift: Shift, reason: str, user: str) -> int:
-    """Add a shift (shift.id None) or change one; returns its id. Audited: add_shift, or edit_shift with the old and
-    new values. A change applies to every day on that shift, past ones too: the days are computed, not stored."""
+def _unique_name(conn, name: str, shift_id: int | None) -> None:
+    if conn.execute("SELECT 1 FROM shifts WHERE name = ? AND id IS NOT ?", (name, shift_id)).fetchone():
+        raise ValueError(f"a shift named {name!r} already exists")
+
+
+def add_shift(conn: sqlite3.Connection, shift: Shift, reason: str, user: str) -> int:
+    """A new shift with its first version (from the start); returns its id. Audited (add_shift)."""
     require_reason(reason)
-    new = dict(zip(SHIFT_COLUMNS, _shift_values(shift)))
     with conn:
-        if conn.execute("SELECT 1 FROM shifts WHERE name = ? AND id IS NOT ?", (shift.name, shift.id)).fetchone():
-            raise ValueError(f"a shift named {shift.name!r} already exists")
-        if shift.id is None:
-            cur = conn.execute(f"INSERT INTO shifts ({', '.join(SHIFT_COLUMNS)}) "
-                               f"VALUES ({', '.join('?' * len(SHIFT_COLUMNS))})", tuple(new.values()))
-            _audit(conn, user, "add_shift", f"shift:{cur.lastrowid}", new, reason)
-            return cur.lastrowid
-        old = dict(zip(SHIFT_COLUMNS, _shift_values(get_shift(conn, shift.id))))
-        changes = {k: [old[k], v] for k, v in new.items() if old[k] != v}
-        if changes:
-            _audit(conn, user, "edit_shift", f"shift:{shift.id}", changes, reason)
-            conn.execute(f"UPDATE shifts SET {', '.join(f'{k} = ?' for k in SHIFT_COLUMNS)} WHERE id = ?",
-                         (*new.values(), shift.id))
-    return shift.id
+        _unique_name(conn, shift.name, None)
+        shift_id = conn.execute("INSERT INTO shifts (name) VALUES (?)", (shift.name,)).lastrowid
+        _insert_version(conn, shift_id, None, shift, user)
+        _audit(conn, user, "add_shift", f"shift:{shift_id}", {"name": shift.name, **_rule_details(shift)}, reason)
+    return shift_id
+
+
+def _insert_version(conn, shift_id: int, effective_from: date | None, shift: Shift, user: str) -> None:
+    conn.execute(f"INSERT INTO shift_versions (shift_id, effective_from, {', '.join(RULE_COLUMNS)}, created, "
+                 f"created_by) VALUES (?, ?, {', '.join('?' * len(RULE_COLUMNS))}, ?, ?)",
+                 (shift_id, effective_from.isoformat() if effective_from else None, *_rule_values(shift),
+                  _ts(datetime.now()), user))
+
+
+def change_shift(conn: sqlite3.Connection, shift_id: int, rules: Shift, effective_from: date, reason: str,
+                 user: str) -> bool:
+    """New times (grace, windows) for a shift from `effective_from` on: a new version, or the one that already starts
+    that day is replaced. The days before keep their times. Audited (edit_shift: the date and the old and new values
+    in force on it). False if nothing changes. `rules.name` is ignored (rename_shift changes the name)."""
+    require_reason(reason)
+    if isinstance(effective_from, datetime) or not isinstance(effective_from, date):
+        raise ValueError("the change needs the date it applies from")
+    with conn:
+        old = get_shift(conn, shift_id, effective_from)
+        if old.rules() == rules.rules():
+            return False
+        same_day = conn.execute("SELECT id FROM shift_versions WHERE shift_id = ? AND effective_from = ?",
+                                (shift_id, effective_from.isoformat())).fetchone()
+        if same_day:
+            conn.execute(f"UPDATE shift_versions SET {', '.join(f'{c} = ?' for c in RULE_COLUMNS)}, created = ?, "
+                         "created_by = ? WHERE id = ?",
+                         (*_rule_values(rules), _ts(datetime.now()), user, same_day["id"]))
+        else:
+            _insert_version(conn, shift_id, effective_from, rules, user)
+        before, after = _rule_details(old), _rule_details(rules)
+        _audit(conn, user, "edit_shift", f"shift:{shift_id}",
+               {"name": old.name, "effective_from": effective_from.isoformat(),
+                **{k: [before[k], v] for k, v in after.items() if before[k] != v}}, reason)
+    return True
+
+
+def rename_shift(conn: sqlite3.Connection, shift_id: int, name: str, reason: str, user: str) -> bool:
+    """Change a shift's name (everywhere, past days too: it is only a label). Audited (edit_shift). False if the
+    same."""
+    require_reason(reason)
+    renamed = Shift(name, time(8), time(16), False).name  # the same checks as a new shift's name
+    with conn:
+        old = get_shift(conn, shift_id).name
+        if old == renamed:
+            return False
+        _unique_name(conn, renamed, shift_id)
+        conn.execute("UPDATE shifts SET name = ? WHERE id = ?", (renamed, shift_id))
+        _audit(conn, user, "edit_shift", f"shift:{shift_id}", {"name": [old, renamed]}, reason)
+    return True
+
+
+def delete_shift_version(conn: sqlite3.Connection, shift_id: int, version_id: int, reason: str, user: str) -> None:
+    """Withdraw a planned change: only a version that isn't in force yet (it starts after today) can go. Audited."""
+    require_reason(reason)
+    with conn:
+        row = conn.execute("SELECT * FROM shift_versions WHERE id = ? AND shift_id = ?",
+                           (version_id, shift_id)).fetchone()
+        if row is None:
+            raise LookupError(f"shift {shift_id} has no version {version_id}")
+        if not row["effective_from"] or date.fromisoformat(row["effective_from"]) <= date.today():
+            raise ValueError("only a change that hasn't started yet can be withdrawn; to change the times again, "
+                             "add a new change from a date")
+        name = get_shift(conn, shift_id).name
+        _audit(conn, user, "delete_shift_version", f"shift:{shift_id}",
+               {"name": name, "effective_from": row["effective_from"], **{c: row[c] for c in RULE_COLUMNS}}, reason)
+        conn.execute("DELETE FROM shift_versions WHERE id = ?", (version_id,))
+
+
+def shift_roster_days(conn: sqlite3.Connection) -> dict[int, int]:
+    """shift id -> how many roster rows use it."""
+    return {r[0]: r[1] for r in conn.execute(
+        "SELECT shift_id, count(*) FROM roster WHERE shift_id IS NOT NULL GROUP BY shift_id")}
 
 
 def delete_shift(conn: sqlite3.Connection, shift_id: int, reason: str, user: str) -> None:
     """Remove a shift that no roster row uses (a used one stays: its days are computed from it). Audited."""
+    require_reason(reason)
     with conn:
         shift = get_shift(conn, shift_id)
-        used = conn.execute("SELECT count(*) FROM roster WHERE shift_id = ?", (shift_id,)).fetchone()[0]
+        used = shift_roster_days(conn).get(shift_id, 0)
         if used:
             raise ValueError(f"shift {shift.name!r} is on {used} roster day(s); change those first")
-        _audit(conn, user, "delete_shift", f"shift:{shift_id}", dict(zip(SHIFT_COLUMNS, _shift_values(shift))),
-               reason)
+        _audit(conn, user, "delete_shift", f"shift:{shift_id}", {"name": shift.name, **_rule_details(shift)}, reason)
+        conn.execute("DELETE FROM shift_versions WHERE shift_id = ?", (shift_id,))
         conn.execute("DELETE FROM shifts WHERE id = ?", (shift_id,))
 
 
@@ -685,52 +787,91 @@ def _roster_entry(conn, person_id: int, day: str) -> str | None:
     return None if row is None else OFF if row["shift_id"] is None else row["name"]
 
 
+def write_roster(conn: sqlite3.Connection, entries: list[tuple[int, date, int | None]], reason: str,
+                 user: str) -> int:
+    """set_roster's work inside the caller's transaction (people import style); returns how many rows changed.
+    An entry's shift id None = OFF."""
+    names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM shifts")}
+    codes: dict[int, str] = {}
+    changed = 0
+    for person_id, day, shift_id in entries:
+        if person_id not in codes:
+            codes[person_id] = _person(conn, person_id)["employee_code"]
+        day = _roster_day(day)
+        if shift_id is not None and shift_id not in names:
+            raise ValueError(f"no shift with id {shift_id}")
+        new = OFF if shift_id is None else names[shift_id]
+        old = _roster_entry(conn, person_id, day)
+        if old == new:
+            continue
+        conn.execute(
+            "INSERT INTO roster (person_id, date, shift_id, updated, updated_by) VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(person_id, date) DO UPDATE SET shift_id = excluded.shift_id, updated = excluded.updated, "
+            "updated_by = excluded.updated_by",
+            (person_id, day, shift_id, _ts(datetime.now()), user))
+        _audit(conn, user, "set_roster", f"roster:{codes[person_id]}:{day}",
+               {"person": codes[person_id], "date": day, "shift": [old, new]}, reason)
+        changed += 1
+    return changed
+
+
 def set_roster(conn: sqlite3.Connection, entries: list[tuple[int, date, int | None]], reason: str, user: str) -> int:
     """Set roster rows: each (person id, date, shift id or None = OFF) adds or replaces that person's one row for that
     date. All or nothing; one audit row per change (set_roster, the old and new entry: a shift's name, "OFF", or None
     for no row). Returns how many rows changed. Nothing derived is stored: the days around a change are recalculated
     from the raw events the next time they are read."""
     require_reason(reason)
-    changed = 0
     with conn:
-        for person_id, day, shift_id in entries:
-            person, day = _person(conn, person_id), _roster_day(day)
-            new = OFF if shift_id is None else get_shift(conn, shift_id).name
-            old = _roster_entry(conn, person_id, day)
-            if old == new:
-                continue
-            conn.execute(
-                "INSERT INTO roster (person_id, date, shift_id, updated, updated_by) VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(person_id, date) DO UPDATE SET shift_id = excluded.shift_id, updated = excluded.updated, "
-                "updated_by = excluded.updated_by",
-                (person_id, day, shift_id, _ts(datetime.now()), user))
-            _audit(conn, user, "set_roster", f"roster:{person['employee_code']}:{day}",
-                   {"person": person["employee_code"], "date": day, "shift": [old, new]}, reason)
-            changed += 1
-    return changed
+        return write_roster(conn, entries, reason, user)
+
+
+def clear_roster_rows(conn: sqlite3.Connection, entries: list[tuple[int, date]], reason: str, user: str) -> int:
+    """Remove roster rows (each date becomes unscheduled for that person) inside the caller's transaction; audited
+    (clear_roster). Returns how many there were."""
+    removed = 0
+    for person_id, day in entries:
+        person, day = _person(conn, person_id), _roster_day(day)
+        old = _roster_entry(conn, person_id, day)
+        if old is None:
+            continue
+        _audit(conn, user, "clear_roster", f"roster:{person['employee_code']}:{day}",
+               {"person": person["employee_code"], "date": day, "shift": [old, None]}, reason)
+        conn.execute("DELETE FROM roster WHERE person_id = ? AND date = ?", (person_id, day))
+        removed += 1
+    return removed
 
 
 def clear_roster(conn: sqlite3.Connection, person_id: int, day: date, reason: str, user: str) -> bool:
     """Remove the person's roster row for `day` (the date becomes unscheduled); audited. False if there was none."""
     require_reason(reason)
     with conn:
-        person, day = _person(conn, person_id), _roster_day(day)
-        old = _roster_entry(conn, person_id, day)
-        if old is None:
-            return False
-        _audit(conn, user, "clear_roster", f"roster:{person['employee_code']}:{day}",
-               {"person": person["employee_code"], "date": day, "shift": [old, None]}, reason)
-        conn.execute("DELETE FROM roster WHERE person_id = ? AND date = ?", (person_id, day))
-    return True
+        return clear_roster_rows(conn, [(person_id, day)], reason, user) == 1
+
+
+def roster_rows(conn: sqlite3.Connection, first: date, last: date,
+                person_ids: list[int] | None = None) -> list[sqlite3.Row]:
+    """The roster rows (person_id, employee_code, date, shift_id) of the dates `first` to `last`."""
+    only = f" AND r.person_id IN ({','.join('?' * len(person_ids))})" if person_ids else ""
+    return conn.execute("SELECT r.person_id, p.employee_code, r.date, r.shift_id FROM roster r "
+                        "JOIN persons p ON p.id = r.person_id WHERE r.date >= ? AND r.date <= ?" + only
+                        + " ORDER BY r.date, r.person_id", (first.isoformat(), last.isoformat(),
+                                                            *(person_ids or ()))).fetchall()
 
 
 def roster_between(conn: sqlite3.Connection, first: date, last: date) -> dict[tuple[str, date], Shift | None]:
-    """(employee_code, date) -> the rostered Shift, or None for OFF, for the dates `first` to `last` inclusive."""
-    shifts = {s.id: s for s in list_shifts(conn)}
-    rows = conn.execute("SELECT p.employee_code, r.date, r.shift_id FROM roster r JOIN persons p ON p.id = r.person_id "
-                        "WHERE r.date >= ? AND r.date <= ?", (first.isoformat(), last.isoformat()))
-    return {(r["employee_code"], date.fromisoformat(r["date"])):
-            None if r["shift_id"] is None else shifts[r["shift_id"]] for r in rows}
+    """(employee_code, date) -> the rostered shift as in force on that date, or None for OFF, for the dates `first`
+    to `last` inclusive."""
+    versions = shift_versions(conn)
+    out = {}
+    for r in roster_rows(conn, first, last):
+        day = date.fromisoformat(r["date"])
+        out[r["employee_code"], day] = None if r["shift_id"] is None else version_on(versions[r["shift_id"]], day)
+    return out
+
+
+def clock() -> datetime:
+    """Now, for the days still running (open, "not in yet"); tests replace it."""
+    return datetime.now()
 
 
 def _roster_inputs(conn, first: date, last: date) -> tuple[list[Event], dict[tuple[str, date], Shift | None]]:
@@ -741,14 +882,16 @@ def _roster_inputs(conn, first: date, last: date) -> tuple[list[Event], dict[tup
 
 def roster_days(conn: sqlite3.Connection, first: date, last: date, now: datetime | None = None) -> list[ShiftDay]:
     """The roster days from `first` to `last` (app.shifts.summarize_roster), computed from the raw events: one per
-    roster row, plus an "unscheduled" one per person and date with passes but no row. `now` (default: the current
-    time) tells which days are still open. Read-only."""
+    roster row, plus an "unscheduled" one per person and date with passes but no row. `now` (default: clock(), the
+    current time) tells which days are still open. Read-only: the API's attendance rows, overview, reports and
+    scripts/today.py all use this, so they agree."""
     events, roster = _roster_inputs(conn, first, last)
-    return summarize_roster(events, roster, first, last, datetime.now() if now is None else now)
+    return summarize_roster(events, roster, first, last, clock() if now is None else now)
 
 
-def roster_repeat_event_ids(conn: sqlite3.Connection, first: date, last: date) -> set[int]:
+def roster_repeat_event_ids(conn: sqlite3.Connection, first: date, last: date,
+                            now: datetime | None = None) -> set[int]:
     """Ids of the non-voided events dated `first` to `last` that no roster day uses (app.shifts.roster_repeat_ids)."""
     events, roster = _roster_inputs(conn, first, last)
-    repeats = roster_repeat_ids(events, roster)
+    repeats = roster_repeat_ids(events, roster, clock() if now is None else now)
     return {e.id for e in events if e.id in repeats and first <= e.timestamp.date() <= last}

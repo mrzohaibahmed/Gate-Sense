@@ -10,7 +10,7 @@ import type { AttendanceEvent, AttendanceRow, Status } from "@/api/types";
 import { PageHeader } from "@/app/AppShell";
 import { useFilters } from "@/app/filters";
 import { can, useMe } from "@/auth/auth";
-import { DirectionBadge, StatusBadge } from "@/components/badges";
+import { DirectionBadge, MinutesBadges, StatusBadge } from "@/components/badges";
 import { type ColumnMeta, DataTable } from "@/components/DataTable";
 import { ReasonDialog } from "@/components/ReasonDialog";
 import { Button } from "@/components/ui/button";
@@ -18,21 +18,26 @@ import { Badge, Separator } from "@/components/ui/card";
 import { Dialog, DialogDescription, DialogTitle, SheetContent } from "@/components/ui/dialog";
 import { Input, NativeSelect } from "@/components/ui/input";
 import { EmptyState, ErrorState, Switch } from "@/components/ui/misc";
+import { shiftLabel, STATUSES, timeOn } from "@/lib/days";
 import { cn, duration, hhmm, today } from "@/lib/utils";
 
 import { CorrectionForm } from "./CorrectionForm";
 
-export const STATUSES: Status[] = ["complete", "missing exit", "missing entry", "check", "absent"];
 const STATUS_OPTION: Record<Status, string> = {
-  complete: "Complete (in and out)",
-  "missing exit": "Missing exit",
-  "missing entry": "Missing entry",
-  check: "Check (last OUT before first IN)",
+  "on time": "On time",
+  late: "Late",
+  "early leave": "Early leave",
+  "missing IN": "Missing IN",
+  "missing OUT": "Missing OUT",
   absent: "Absent",
+  "not in yet": "Not in yet (shift not started)",
+  check: "Check (passes, but none where they count)",
+  "off day": "Off (OFF on the roster)",
+  unscheduled: "Unscheduled (no roster entry)",
 };
 const PAGE_SIZE = 100;
 
-function columns(isToday: boolean): ColumnDef<AttendanceRow>[] {
+function columns(): ColumnDef<AttendanceRow>[] {
   const meta = (m: ColumnMeta) => m;
   return [
     { accessorKey: "date", header: "Date", meta: meta({ label: "Date", sortKey: "date" }) },
@@ -51,16 +56,22 @@ function columns(isToday: boolean): ColumnDef<AttendanceRow>[] {
       cell: ({ getValue }) => (getValue() as string | null) ?? "",
     },
     {
+      accessorKey: "shift",
+      header: "Shift",
+      meta: meta({ label: "Shift", sortKey: "shift" }),
+      cell: ({ row }) => <span className="whitespace-nowrap">{shiftLabel(row.original)}</span>,
+    },
+    {
       accessorKey: "first_in",
       header: "First IN",
       meta: meta({ label: "First IN", sortKey: "first_in" }),
-      cell: ({ getValue }) => hhmm(getValue() as string | null),
+      cell: ({ row }) => timeOn(row.original.first_in, row.original.date),
     },
     {
       accessorKey: "last_out",
       header: "Last OUT",
       meta: meta({ label: "Last OUT", sortKey: "last_out" }),
-      cell: ({ getValue }) => hhmm(getValue() as string | null),
+      cell: ({ row }) => timeOn(row.original.last_out, row.original.date),
     },
     {
       accessorKey: "worked_minutes",
@@ -69,10 +80,22 @@ function columns(isToday: boolean): ColumnDef<AttendanceRow>[] {
       cell: ({ getValue }) => duration(getValue() as number | null),
     },
     {
+      id: "minutes",
+      header: "Late / early / overtime",
+      meta: meta({ label: "Late / early / overtime", sortKey: "late_minutes" }),
+      cell: ({ row }) => (
+        <MinutesBadges
+          late={row.original.late_minutes}
+          early={row.original.early_leave_minutes}
+          overtime={row.original.overtime_minutes}
+        />
+      ),
+    },
+    {
       accessorKey: "status",
       header: "Status",
       meta: meta({ label: "Status", sortKey: "status" }),
-      cell: ({ row }) => <StatusBadge status={row.original.status} today={isToday && row.original.date === today()} />,
+      cell: ({ row }) => <StatusBadge status={row.original.status} inside={row.original.open && row.original.inside} />,
     },
   ];
 }
@@ -133,7 +156,7 @@ export function AttendancePage() {
     for (const r of rows.data?.items ?? []) if (r.department) names.add(r.department);
     return [...names].sort();
   }, [people.data, rows.data]);
-  const cols = useMemo(() => columns(to === today()), [to]);
+  const cols = useMemo(() => columns(), []);
 
   return (
     <>
@@ -252,11 +275,17 @@ export function DayPanel({ row }: { row: AttendanceRow }) {
   const correct = can(me, "attendance:correct");
   const [showVoided, setShowVoided] = useState(true);
   const [target, setTarget] = useState<AttendanceEvent | null>(null);
+  // A night shift's OUT is the next morning: list the events of every date the day touches.
+  const last = [row.date, row.shift_end, row.last_out, row.first_in]
+    .filter((d): d is string => !!d)
+    .map((d) => d.slice(0, 10))
+    .sort()
+    .at(-1)!;
   const events = useQuery({
-    queryKey: ["events", "day", row.person_id, row.date],
+    queryKey: ["events", "day", row.person_id, row.date, last],
     queryFn: () =>
       api.get("/api/events", {
-        query: { person: row.person_id, from: row.date, to: row.date, sort: "timestamp", page_size: 200 },
+        query: { person: row.person_id, from: row.date, to: last, sort: "timestamp", page_size: 200 },
       }),
   });
   const items = events.data?.items ?? [];
@@ -282,11 +311,13 @@ export function DayPanel({ row }: { row: AttendanceRow }) {
           {row.department ? ` · ${row.department}` : ""} · {row.date}
         </DialogDescription>
         <div className="flex flex-wrap items-center gap-2 pt-1 text-sm">
-          <StatusBadge status={row.status} today={row.date === today()} />
+          <StatusBadge status={row.status} inside={row.open && row.inside} />
+          <span className="text-muted-foreground">{shiftLabel(row)}</span>
           <span>
-            IN {hhmm(row.first_in) || "—"} · OUT {hhmm(row.last_out) || "—"}
+            IN {timeOn(row.first_in, row.date) || "—"} · OUT {timeOn(row.last_out, row.date) || "—"}
             {row.worked_minutes != null && ` · ${duration(row.worked_minutes)}`}
           </span>
+          <MinutesBadges late={row.late_minutes} early={row.early_leave_minutes} overtime={row.overtime_minutes} />
         </div>
       </div>
       <Separator />
@@ -340,7 +371,11 @@ export function DayPanel({ row }: { row: AttendanceRow }) {
                       <span className="text-xs text-muted-foreground">was {hhmm(e.original_timestamp)}</span>
                     )}
                     {e.voided && <Badge tone="error">Voided</Badge>}
-                    {e.repeat && <Badge title="Kept, but the day uses the first IN and the last OUT">repeat</Badge>}
+                    {e.repeat && (
+                      <Badge title="Kept, but the day uses the first IN in the shift's IN window and the last OUT in its OUT window">
+                        repeat
+                      </Badge>
+                    )}
                   </span>
                   <span className="text-xs text-muted-foreground">
                     {e.camera}

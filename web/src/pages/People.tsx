@@ -18,7 +18,7 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import { api, resourceUrl } from "@/api/client";
-import type { AttendanceRow, Person } from "@/api/types";
+import type { AttendanceRow, Person, Status } from "@/api/types";
 import { PageHeader } from "@/app/AppShell";
 import { useFilters } from "@/app/filters";
 import { can, useMe } from "@/auth/auth";
@@ -30,6 +30,7 @@ import { Badge, Card, CardContent, CardHeader, CardTitle } from "@/components/ui
 import { Button } from "@/components/ui/button";
 import { Input, NativeSelect } from "@/components/ui/input";
 import { EmptyState, ErrorState, Td, Th } from "@/components/ui/misc";
+import { shiftLabel, timeOn } from "@/lib/days";
 import { cn, duration, hhmm, today } from "@/lib/utils";
 
 import { ImportPeopleDialog } from "./ImportPeople";
@@ -224,12 +225,17 @@ function shiftMonth(month: string, delta: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-const CELL: Record<string, string> = {
-  complete: "bg-status-left/15 text-status-left",
-  "missing exit": "bg-status-missing/15 text-status-missing",
-  "missing entry": "bg-status-missing/15 text-status-missing",
+const CELL: Record<Status, string> = {
+  "on time": "bg-ok/15 text-ok",
+  late: "bg-warn/15 text-warn",
+  "early leave": "bg-warn/15 text-warn",
+  "missing IN": "bg-status-missing/15 text-status-missing",
+  "missing OUT": "bg-status-missing/15 text-status-missing",
   check: "bg-destructive/15 text-destructive",
   absent: "bg-status-absent/10 text-status-absent",
+  "not in yet": "bg-muted text-muted-foreground",
+  "off day": "bg-muted/60 text-muted-foreground",
+  unscheduled: "bg-primary/10 text-primary",
 };
 
 /** A month of days coloured by status; hover shows the times. */
@@ -258,7 +264,7 @@ export function AttendanceCalendar({ rows, month }: { rows: AttendanceRow[]; mon
               role="gridcell"
               title={
                 r
-                  ? `${d}: ${statusLabel(r.status, d === today())}${r.first_in ? `, IN ${hhmm(r.first_in)}` : ""}${r.last_out ? `, OUT ${hhmm(r.last_out)}` : ""}`
+                  ? `${d}: ${statusLabel(r.status)} (${shiftLabel(r)})${r.first_in ? `, IN ${timeOn(r.first_in, d)}` : ""}${r.last_out ? `, OUT ${timeOn(r.last_out, d)}` : ""}`
                   : d
               }
               className={cn(
@@ -467,6 +473,7 @@ export function PersonProfilePage() {
               <thead>
                 <tr>
                   <Th>Date</Th>
+                  <Th>Shift</Th>
                   <Th>Status</Th>
                   <Th>First IN</Th>
                   <Th>Last OUT</Th>
@@ -480,11 +487,12 @@ export function PersonProfilePage() {
                   return (
                     <tr key={r.date}>
                       <Td>{r.date}</Td>
+                      <Td className="whitespace-nowrap">{shiftLabel(r)}</Td>
                       <Td>
-                        <StatusBadge status={r.status} today={r.date === today()} />
+                        <StatusBadge status={r.status} inside={r.open && r.inside} />
                       </Td>
-                      <Td>{hhmm(r.first_in)}</Td>
-                      <Td>{hhmm(r.last_out)}</Td>
+                      <Td>{timeOn(r.first_in, r.date)}</Td>
+                      <Td>{timeOn(r.last_out, r.date)}</Td>
                       <Td>{duration(r.worked_minutes)}</Td>
                       <Td>
                         <span className="flex flex-wrap gap-1">

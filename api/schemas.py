@@ -4,17 +4,19 @@ Every endpoint declares a pydantic response model, so the OpenAPI schema (and th
 TypeScript types the dashboard generates from it) is complete.
 """
 
-from datetime import date, datetime, timedelta
-from typing import Literal
+from datetime import date, datetime
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from api.db import Database, parse_ts
-from app.attendance import STATUSES
+from app.shifts import STATUSES
 
-# A day: complete (first IN, a later last OUT), missing exit (no OUT; for today: still inside), missing entry (no IN),
-# check (the last OUT is earlier than the first IN), absent.
-Status = Literal["complete", "missing exit", "missing entry", "check", "absent"]
+# A roster day's status (app/shifts.py): on time, late, early leave, missing IN, missing OUT, absent, not in yet (the IN
+# window is still open), check (passes, but none where they count), off day (OFF on the roster), unscheduled (passes
+# on a date with no roster row).
+Status = Literal["on time", "late", "early leave", "missing IN", "missing OUT", "absent", "not in yet", "check",
+                 "off day", "unscheduled"]
 Direction = Literal["IN", "OUT"]
 assert set(Status.__args__) == set(STATUSES)
 
@@ -42,42 +44,52 @@ class Message(BaseModel):
     detail: str
 
 
-# --- Daily attendance -------------------------------------------------------------------
+# --- Daily attendance: roster days -------------------------------------------------------------------------------
 
 
 class AttendanceRow(BaseModel):
-    date: date
+    date: Annotated[date, Field(description="the roster date (a night shift: the day it starts); unscheduled: the "
+                                            "calendar date of the passes")]
     person_id: int
     employee_code: str
     name: str
     department: str | None
     site_id: int | None
-    first_in: datetime | None
-    last_out: datetime | None
-    worked_hours: float | None = Field(description="last OUT minus first IN, in hours (2 decimals); only for complete")
+    shift_id: int | None
+    shift: str | None = Field(description="the rostered shift's name; None for an off day or unscheduled")
+    shift_start: datetime | None = Field(description="the shift's planned start (its times in force that day)")
+    shift_end: datetime | None
+    first_in: datetime | None = Field(description="the first IN in the shift's IN window (off day, unscheduled: the "
+                                                  "first IN that date)")
+    last_out: datetime | None = Field(description="the last OUT in the OUT window, or for an early leave before the "
+                                                  "midpoint the last OUT after the IN")
+    worked_hours: float | None = Field(description="last OUT minus first IN, in hours (2 decimals), when both count")
     worked_minutes: int | None
+    late_minutes: int | None = Field(description="minutes after the start (0 = within the grace); None = no IN")
+    early_leave_minutes: int | None = Field(description="minutes before the end (0 = not early); None = no OUT")
+    overtime_minutes: int | None = Field(description="minutes after the end (0 = none); None = no OUT")
     status: Status
-    inside: bool = Field(description="the day's last event is an IN (for today: in the building now)")
+    inside: bool = Field(description="the day's last pass is an IN (while open: in the building now)")
+    open: bool = Field(description="the day can still change: its OUT window (off day, unscheduled: the date) hasn't "
+                                   "ended")
 
 
-def attendance_rows(db: Database, first: date, last: date) -> list[dict]:
-    """Daily rows from `first` to `last` (inclusive), computed like the dashboard's Today page
-    (app.db.day_summaries: every active person, plus anyone with events that day)."""
+def attendance_rows(db: Database, first: date, last: date, now: datetime | None = None) -> list[dict]:
+    """Roster days from `first` to `last` (inclusive), the same as every screen, report and scripts/today.py
+    (app.db.roster_days: one per roster row, plus unscheduled dates with passes)."""
     people = {p["employee_code"]: p for p in db.people()}
     rows = []
-    day = first
-    while day <= last:
-        summaries, ids = db.day_summaries(day)
-        for s in summaries:
-            p = people.get(s.person, {})
-            rows.append({
-                "date": day, "person_id": ids[s.person], "employee_code": s.person, "name": p.get("name", s.person),
-                "department": p.get("department"), "site_id": p.get("site_id"), "first_in": s.first_in,
-                "last_out": s.last_out, "worked_hours": s.worked_hours,
-                "worked_minutes": None if s.worked_hours is None else round((s.last_out - s.first_in).total_seconds() / 60),
-                "status": s.status, "inside": s.inside,
-            })
-        day += timedelta(days=1)
+    for d in db.roster_days(first, last, now):
+        p = people[d.person]
+        rows.append({
+            "date": d.day, "person_id": p["id"], "employee_code": d.person, "name": p["name"],
+            "department": p["department"], "site_id": p["site_id"], "shift_id": d.shift_id, "shift": d.shift,
+            "shift_start": d.start, "shift_end": d.end, "first_in": d.first_in, "last_out": d.last_out,
+            "worked_hours": None if d.worked_minutes is None else round(d.worked_minutes / 60, 2),
+            "worked_minutes": d.worked_minutes, "late_minutes": d.late_minutes,
+            "early_leave_minutes": d.early_leave_minutes, "overtime_minutes": d.overtime_minutes,
+            "status": d.status, "inside": d.inside, "open": d.open,
+        })
     return rows
 
 
@@ -98,8 +110,8 @@ class Event(BaseModel):
     score: float | None = Field(description="match score; None for a manual event")
     manual: bool
     voided: bool
-    repeat: bool = Field(False, description="not the person's first IN or last OUT that day: kept, but the day "
-                                            "doesn't use it (e.g. back in after the last OUT, a lunch break)")
+    repeat: bool = Field(False, description="no roster day uses it (not the shift's first IN or last OUT): kept, "
+                                            "but not counted (e.g. a lunch break, a pass outside the windows)")
     snapshot_url: str | None = Field(description="GET it with the session cookie; None if there is no snapshot")
 
 

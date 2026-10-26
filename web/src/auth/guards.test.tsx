@@ -68,13 +68,13 @@ describe("route guards", () => {
     const labels = menu()
       .getAllByRole("link")
       .map((a) => a.textContent);
-    expect(labels).toEqual(["Overview", "Attendance", "People", "Reports"]);
+    expect(labels).toEqual(["Overview", "Attendance", "Roster", "People", "Reports"]);
   });
 
   it("an admin sees every item", async () => {
     renderRoutes(routes, "/", makeMe("admin", PERMISSIONS.admin!));
     await screen.findByRole("complementary", { name: "Main menu" });
-    expect(menu().getAllByRole("link")).toHaveLength(8);
+    expect(menu().getAllByRole("link")).toHaveLength(9);
   });
 
   it("a guard sees live cameras but not people", async () => {
@@ -82,6 +82,7 @@ describe("route guards", () => {
     await screen.findByRole("complementary", { name: "Main menu" });
     expect(menu().getByRole("link", { name: "Live cameras" })).toBeInTheDocument();
     expect(menu().queryByRole("link", { name: "People" })).not.toBeInTheDocument();
+    expect(menu().queryByRole("link", { name: "Roster" })).not.toBeInTheDocument();
   });
 
   it("shows 403 for a page the role lacks, typed into the address bar", async () => {

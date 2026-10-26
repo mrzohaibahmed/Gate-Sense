@@ -363,22 +363,89 @@ class Database:
                 "SELECT camera_id, count(*) FROM attendance_events WHERE timestamp >= ? AND timestamp < ? "
                 "AND voided = 0 GROUP BY camera_id", (start, end))}
 
-    # --- Daily attendance (the same summaries as the dashboard's Today page) ---------------
+    # --- Daily attendance: roster days (app.shifts), the same for every screen, report and today.py ---------------
 
-    def day_summaries(self, day: date) -> tuple[list, dict[str, int]]:
+    def roster_days(self, first: date, last: date, now: datetime | None = None) -> list:
+        """app.db.roster_days: one per roster row, plus unscheduled dates with passes."""
         with self.conn() as conn:
-            return app_db.day_summaries(conn, day)
+            return app_db.roster_days(conn, first, last, now)
 
     def repeat_ids(self, rows: list[dict]) -> set[int]:
-        """Which of these event rows are repeats of their person's day (app.attendance.repeat_ids)."""
-        by_day: dict[date, set[int]] = {}
-        for r in rows:
-            if not r["voided"]:
-                by_day.setdefault(parse_ts(r["timestamp"]).date(), set()).add(r["person_id"])
-        if not by_day:
+        """Which of these event rows no roster day uses (app.shifts.roster_repeat_ids)."""
+        days = [parse_ts(r["timestamp"]).date() for r in rows if not r["voided"]]
+        if not days:
             return set()
         with self.conn() as conn:
-            return set().union(*(app_db.repeat_event_ids(conn, day, sorted(people)) for day, people in by_day.items()))
+            repeats = app_db.roster_repeat_event_ids(conn, min(days), max(days))
+        return {r["id"] for r in rows if r["id"] in repeats}
+
+    # --- Shifts (effective-dated versions) and the roster ---------------------------------------------------------
+
+    def shifts(self, on: date | None = None) -> list[dict]:
+        """Every shift as in force on `on` (default today), with all its versions and how many roster days use it."""
+        with self.conn() as conn:
+            used = app_db.shift_roster_days(conn)
+            out = []
+            for shift in app_db.list_shifts(conn, on):
+                out.append({"shift": shift, "roster_days": used.get(shift.id, 0),
+                            "versions": [dict(r) for r in app_db.shift_version_rows(conn, shift.id)]})
+            return out
+
+    def shift(self, shift_id: int, on: date | None = None) -> dict | None:
+        return next((s for s in self.shifts(on) if s["shift"].id == shift_id), None)
+
+    def add_shift(self, shift, actor: str, reason: str) -> int:
+        with self.conn() as conn:
+            return app_db.add_shift(conn, shift, reason, actor)
+
+    def change_shift(self, shift_id: int, rules, effective_from: date, actor: str, reason: str) -> bool:
+        with self.conn() as conn:
+            return app_db.change_shift(conn, shift_id, rules, effective_from, reason, actor)
+
+    def rename_shift(self, shift_id: int, name: str, actor: str, reason: str) -> bool:
+        with self.conn() as conn:
+            return app_db.rename_shift(conn, shift_id, name, reason, actor)
+
+    def delete_shift(self, shift_id: int, actor: str, reason: str) -> None:
+        with self.conn() as conn:
+            app_db.delete_shift(conn, shift_id, reason, actor)
+
+    def delete_shift_version(self, shift_id: int, version_id: int, actor: str, reason: str) -> None:
+        with self.conn() as conn:
+            app_db.delete_shift_version(conn, shift_id, version_id, reason, actor)
+
+    def roster(self, first: date, last: date) -> list[dict]:
+        """Roster rows (person_id, employee_code, date, shift_id: None = OFF) of the dates `first` to `last`."""
+        with self.conn() as conn:
+            return [dict(r) for r in app_db.roster_rows(conn, first, last)]
+
+    def set_roster(self, sets: list[tuple[int, date, int | None]], clears: list[tuple[int, date]], actor: str,
+                   reason: str) -> tuple[int, int]:
+        """Set and remove roster entries in one transaction, each change audited; (changed, removed)."""
+        app_db.require_reason(reason)
+        with self.transaction() as conn:
+            return (app_db.write_roster(conn, sets, reason, actor),
+                    app_db.clear_roster_rows(conn, clears, reason, actor))
+
+    def plan_roster_import(self, data: bytes, filename: str):
+        """What importing a roster file would do (app.roster_import.plan); changes nothing."""
+        from app import roster_import
+
+        with self.conn() as conn:
+            return roster_import.plan(conn, data, filename)
+
+    def import_roster(self, data: bytes, filename: str, actor: str, reason: str):
+        """Import a roster file in one transaction, audited (app.roster_import.import_roster)."""
+        from app import roster_import
+
+        with self.conn() as conn:
+            return roster_import.import_roster(conn, data, filename, actor, reason)
+
+    def roster_template(self, first: date, last: date, kind: str, site_id: int | None, department: str | None) -> bytes:
+        from app import roster_import
+
+        with self.conn() as conn:
+            return roster_import.template(conn, first, last, kind, site_id, department)
 
     # --- Events ----------------------------------------------------------------------------
 

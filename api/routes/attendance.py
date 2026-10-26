@@ -1,4 +1,5 @@
-"""Daily attendance rows, raw events with their snapshots, corrections, and the day overview."""
+"""Daily attendance rows (roster days, app/shifts.py), raw events with their snapshots, corrections, and the day
+overview."""
 
 from datetime import date, datetime, timedelta
 from typing import Literal
@@ -15,7 +16,9 @@ from api.schemas import (
 )
 from api.workers import WorkerInfo
 from app import config
-from app.attendance import ABSENT, CAME_IN, CHECK, COMPLETE, MISSING_ENTRY, MISSING_EXIT
+from app.shifts import (
+    ABSENT, CAME_IN, CHECK, EARLY_LEAVE, LATE, MISSING_IN, MISSING_OUT, NOT_IN_YET, OFF_DAY, ON_TIME, UNSCHEDULED,
+)
 
 router = APIRouter(tags=["attendance"], responses=auth.PROTECTED_RESPONSES)
 read = require_permission("attendance:read")
@@ -39,17 +42,19 @@ def list_attendance(request: Request, params: ListParams = Depends(list_params),
                     status: Status | None = None,
                     department: str | None = Query(None, description="exact department name"),
                     _: CurrentUser = Depends(read)) -> dict:
-    """One row per person per day: first IN, last OUT, worked time and status, computed from the events (voided ones
-    ignored; any other event is a repeat). Status: complete, missing exit (today: still inside), missing entry, check
-    (the last OUT is earlier than the first IN; no hours), absent. site_id = the person's site. Default sort: -date,
-    then name."""
+    """One row per roster day: every roster row (a shift or OFF) plus unscheduled dates with passes, computed from
+    the events (voided ones ignored) with the shift's times in force that day. The first IN in the shift's IN window,
+    the last OUT in its OUT window, worked time, late / early leave / overtime minutes and the status: on time, late,
+    early leave, missing IN, missing OUT, absent, not in yet, check, off day, unscheduled. A night shift is dated the
+    day it starts. Any other event is a repeat. site_id = the person's site. Default sort: -date, then name."""
     first, last = dates(date_from, date_to)
     rows = attendance_rows(auth.db_of(request), first, last)
     rows = [r for r in rows if (person is None or r["person_id"] == person) and (status is None or r["status"] == status)
             and (params.site_id is None or r["site_id"] == params.site_id)
             and (department is None or (r["department"] or "") == department)]
-    return paginate(rows, params, ("name", "employee_code", "department"),
-                    ("date", "name", "employee_code", "department", "first_in", "last_out", "worked_hours", "status"),
+    return paginate(rows, params, ("name", "employee_code", "department", "shift"),
+                    ("date", "name", "employee_code", "department", "shift", "first_in", "last_out", "worked_hours",
+                     "late_minutes", "early_leave_minutes", "overtime_minutes", "status"),
                     "-date", tiebreak="name")
 
 
@@ -62,9 +67,8 @@ def list_events(request: Request, params: ListParams = Depends(list_params),
                 date_to: date | None = Query(None, alias="to", description="last day, inclusive"),
                 camera: int | None = Query(None, description="camera id"), direction: Direction | None = None,
                 person: int | None = Query(None, description="person id"), _: CurrentUser = Depends(read)) -> dict:
-    """Raw IN/OUT events with score and snapshot URL, manual and voided ones included; `repeat` marks the events the
-    person's day doesn't use (not the first IN or the last OUT). site_id = the camera's site. Default sort:
-    -timestamp."""
+    """Raw IN/OUT events with score and snapshot URL, manual and voided ones included; `repeat` marks the events no
+    roster day uses (not the shift's first IN or last OUT). site_id = the camera's site. Default sort: -timestamp."""
     first, last = dates(date_from, date_to)
     db = auth.db_of(request)
     rows, total = db.events(params, datetime.combine(first, datetime.min.time()),
@@ -108,7 +112,7 @@ class Correction(Reason):
     def local_time(cls, v: datetime | None) -> datetime | None:
         if v is not None and v.tzinfo is not None:
             raise ValueError("give the local time without a time zone (e.g. 2026-10-20T08:30:00): GateSense stores "
-                             "local times, and the day runs from local midnight to midnight")
+                             "local times, and shifts are local times too")
         return v
 
 
@@ -177,15 +181,24 @@ class CameraStatus(WorkerInfo):
 
 class Overview(BaseModel):
     date: date
-    people: int = Field(description="people counted: everyone active, plus anyone with events that day")
-    present: int = Field(description="came in that day (has an IN: complete, missing exit or check)")
-    inside_now: int | None = Field(description="their last event today is an IN (in the building now); only for "
-                                               "today (None otherwise)")
-    complete: int = Field(description="first IN and a later last OUT")
-    absent: int
-    missing_exit: int = Field(description="an IN but no OUT at all (for today: still inside, not a problem yet)")
-    missing_entry: int = Field(description="went out without an IN that day")
-    check: int = Field(description="the last OUT is earlier than the first IN: needs a look")
+    people: int = Field(description="roster days that date: every roster row (a shift or OFF), plus unscheduled "
+                                    "people with passes")
+    scheduled: int = Field(description="rostered on a shift (not OFF)")
+    present: int = Field(description="came in for their shift (an IN in its IN window: on time, late, early leave, "
+                                     "missing OUT)")
+    inside_now: int | None = Field(description="people whose open day (a shift still running, from yesterday or "
+                                               "today) ends with an IN: in the building now; only for today")
+    on_time: int
+    late: int
+    early_leave: int
+    overtime: int = Field(description="days with an OUT after the shift's end")
+    missing_in: int = Field(description="an OUT for the shift but no IN in its IN window")
+    missing_out: int = Field(description="an IN, no OUT after it, and the OUT window has closed")
+    check: int = Field(description="passes in the shift's time, but none where they count: needs a look")
+    absent: int = Field(description="rostered, the IN window has closed, no pass at all")
+    not_in_yet: int = Field(description="rostered, no IN yet, the IN window still open")
+    off_day: int = Field(description="OFF on the roster")
+    unscheduled: int = Field(description="passes, but no roster row for that date")
     arrivals_by_hour: list[HourCount]
     cameras: list[CameraStatus]
 
@@ -194,11 +207,16 @@ class Overview(BaseModel):
 def get_overview(request: Request, day: date | None = Query(None, alias="date", description="default today"),
                  site_id: int | None = Query(None, description="people and cameras of this site only"),
                  _: CurrentUser = Depends(read)) -> Overview:
-    """The day at a glance: counts like the Today page, arrivals per hour and every camera's status."""
+    """The day at a glance: the roster days' statuses (like the Attendance page), arrivals per hour and every
+    camera's status."""
     db = auth.db_of(request)
     day = day or date.today()
-    rows = [r for r in attendance_rows(db, day, day) if site_id is None or r["site_id"] == site_id]
-    count = {s: sum(r["status"] == s for r in rows) for s in (COMPLETE, MISSING_EXIT, MISSING_ENTRY, CHECK, ABSENT)}
+    today = day == date.today()
+    both = [r for r in attendance_rows(db, day - timedelta(days=1) if today else day, day)
+            if site_id is None or r["site_id"] == site_id]
+    rows = [r for r in both if r["date"] == day]
+    count = {s: sum(r["status"] == s for r in rows) for s in (
+        ON_TIME, LATE, EARLY_LEAVE, MISSING_IN, MISSING_OUT, CHECK, ABSENT, NOT_IN_YET, OFF_DAY, UNSCHEDULED)}
     hours = [0] * 24
     for r in rows:
         if r["first_in"]:
@@ -212,9 +230,12 @@ def get_overview(request: Request, day: date | None = Query(None, alias="date", 
         if site_id is None or row["site_id"] == site_id:
             cameras.append(CameraStatus(**info.model_dump(), id=row["id"], direction=row["direction"],
                                         site_id=row["site_id"], events=events.get(row["id"], 0)))
+    inside = {r["person_id"] for r in both if r["open"] and r["inside"]}  # a night shift from yesterday counts
     return Overview(
-        date=day, people=len(rows), present=sum(r["status"] in CAME_IN for r in rows),
-        inside_now=sum(r["inside"] for r in rows) if day == date.today() else None, complete=count[COMPLETE],
-        absent=count[ABSENT], missing_exit=count[MISSING_EXIT], missing_entry=count[MISSING_ENTRY],
-        check=count[CHECK],
+        date=day, people=len(rows), scheduled=sum(r["shift"] is not None for r in rows),
+        present=sum(r["status"] in CAME_IN for r in rows), inside_now=len(inside) if today else None,
+        on_time=count[ON_TIME], late=count[LATE], early_leave=count[EARLY_LEAVE],
+        overtime=sum((r["overtime_minutes"] or 0) > 0 for r in rows), missing_in=count[MISSING_IN],
+        missing_out=count[MISSING_OUT], check=count[CHECK], absent=count[ABSENT], not_in_yet=count[NOT_IN_YET],
+        off_day=count[OFF_DAY], unscheduled=count[UNSCHEDULED],
         arrivals_by_hour=[HourCount(hour=h, arrivals=n) for h, n in enumerate(hours)], cameras=cameras)

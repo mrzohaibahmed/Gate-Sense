@@ -4,7 +4,7 @@ from datetime import date, datetime
 import pytest
 
 from app import db
-from app.attendance import COMPLETE, MISSING_EXIT
+from app.shifts import LATE, MISSING_OUT, ON_TIME
 
 
 @pytest.fixture
@@ -74,7 +74,21 @@ def setup(conn):
     pid = db.person_ids(conn)["waqas"]
     cam_in = db.upsert_camera(conn, "entrance", 0, "IN")
     cam_out = db.upsert_camera(conn, "exit", 1, "OUT")
+    plan(conn, pid, date(2026, 10, 20), "General")
     return conn, pid, cam_in, cam_out
+
+
+def plan(conn, person_id: int, day: date, shift: str) -> None:
+    """A roster row written directly (no audit row: these tests count the corrections' audit rows)."""
+    shift_id = next(s.id for s in db.list_shifts(conn) if s.name == shift)
+    conn.execute("INSERT INTO roster (person_id, date, shift_id, updated, updated_by) VALUES (?, ?, ?, '', 'test')",
+                 (person_id, day.isoformat(), shift_id))
+    conn.commit()
+
+
+def the_day(conn, day: date):
+    [d] = db.roster_days(conn, day, day)
+    return d
 
 
 def audit(conn):
@@ -90,15 +104,15 @@ def test_reason_is_required(setup):
     assert audit(conn) == []
 
 
-def test_manual_event_fixes_missing_exit(setup):
+def test_manual_event_fixes_missing_out(setup):
     conn, pid, cam_in, cam_out = setup
     day = date(2026, 10, 20)
-    db.add_event(conn, pid, cam_in, datetime(2026, 10, 20, 9, 0), 0.8, None)
-    assert db.day_summaries(conn, day)[0][0].status == MISSING_EXIT
+    db.add_event(conn, pid, cam_in, datetime(2026, 10, 20, 8, 0), 0.8, None)
+    assert the_day(conn, day).status == MISSING_OUT
 
-    eid = db.add_manual_event(conn, pid, cam_out, datetime(2026, 10, 20, 17, 0), "forgot exit camera", "admin")
-    s = db.day_summaries(conn, day)[0][0]
-    assert s.status == COMPLETE and s.worked_hours == 8.0
+    eid = db.add_manual_event(conn, pid, cam_out, datetime(2026, 10, 20, 16, 0), "forgot exit camera", "admin")
+    d = the_day(conn, day)
+    assert d.status == ON_TIME and d.worked_minutes == 480
     row = conn.execute("SELECT manual, match_score FROM attendance_events WHERE id = ?", (eid,)).fetchone()
     assert row["manual"] == 1 and row["match_score"] == 0
     [entry] = audit(conn)
@@ -109,13 +123,13 @@ def test_manual_event_fixes_missing_exit(setup):
 def test_void_and_restore_event(setup):
     conn, pid, cam_in, cam_out = setup
     day = date(2026, 10, 20)
-    db.add_event(conn, pid, cam_in, datetime(2026, 10, 20, 9, 0), 0.8, None)
-    wrong = db.add_event(conn, pid, cam_out, datetime(2026, 10, 20, 9, 1), 0.5, None)
+    db.add_event(conn, pid, cam_in, datetime(2026, 10, 20, 8, 0), 0.8, None)
+    wrong = db.add_event(conn, pid, cam_out, datetime(2026, 10, 20, 16, 10), 0.5, None)
     db.set_event_voided(conn, wrong, True, "was someone else", "admin")
-    assert db.day_summaries(conn, day)[0][0].status == MISSING_EXIT
+    assert the_day(conn, day).status == MISSING_OUT
     assert len(db.events_on(conn, day)) == 2  # still listed for the corrections page
     db.set_event_voided(conn, wrong, False, "it was him after all", "admin")
-    assert db.day_summaries(conn, day)[0][0].status == COMPLETE
+    assert the_day(conn, day).status == ON_TIME
     assert [e["action"] for e in audit(conn)] == ["restore_event", "void_event"]
 
 
@@ -161,21 +175,23 @@ def test_ensure_cameras_keeps_existing_source(conn):
     assert cams == {"entrance": "0", "exit": "clip.mp4"}
 
 
-def test_events_to_day_summaries(conn):
+def test_events_to_roster_days(conn):
     db.sync_persons(conn, ["ali", "waqas"])
     ids = db.person_ids(conn)
     cam_in = db.upsert_camera(conn, "entrance", 0, "IN")
     cam_out = db.upsert_camera(conn, "exit", "clip.mp4", "OUT")
     day = date(2026, 10, 20)
+    for code in ids:
+        plan(conn, ids[code], day, "General")
     db.add_event(conn, ids["waqas"], cam_in, datetime(2026, 10, 20, 9, 0), 0.8, None)
     db.add_event(conn, ids["waqas"], cam_out, datetime(2026, 10, 20, 17, 30), 0.7, None)
-    db.add_event(conn, ids["ali"], cam_in, datetime(2026, 10, 20, 9, 15), 0.6, None)
-    db.add_event(conn, ids["ali"], cam_out, datetime(2026, 10, 19, 18, 0), 0.6, None)  # yesterday: ignored
+    db.add_event(conn, ids["ali"], cam_in, datetime(2026, 10, 20, 8, 15), 0.6, None)
+    db.add_event(conn, ids["ali"], cam_out, datetime(2026, 10, 19, 18, 0), 0.6, None)  # the day before: not this shift
 
-    summaries = {s.person: s for s in db.day_summaries(conn, day)[0]}
-    assert summaries["waqas"].status == COMPLETE and summaries["waqas"].worked_hours == 8.5
-    assert summaries["waqas"].first_in == datetime(2026, 10, 20, 9, 0)
-    assert summaries["ali"].status == MISSING_EXIT
+    days = {d.person: d for d in db.roster_days(conn, day, day)}
+    assert days["waqas"].status == LATE and days["waqas"].worked_minutes == 510
+    assert days["waqas"].first_in == datetime(2026, 10, 20, 9, 0) and days["waqas"].late_minutes == 60
+    assert days["ali"].status == MISSING_OUT
 
 
 def test_last_event_times_per_direction_since_a_time(conn):

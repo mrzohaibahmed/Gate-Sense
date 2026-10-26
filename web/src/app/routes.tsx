@@ -10,6 +10,7 @@ import { ChangePasswordPage, LoginPage } from "@/pages/Login";
 import { OverviewPage } from "@/pages/Overview";
 import { PeoplePage, PersonProfilePage } from "@/pages/People";
 import { ReportsPage } from "@/pages/Reports";
+import { RosterPage } from "@/pages/Roster";
 import { SettingsPage } from "@/pages/Settings";
 
 import { AppShell } from "./AppShell";
@@ -19,6 +20,7 @@ const pages: Record<string, React.ReactNode> = {
   "/": <OverviewPage />,
   "/live": <LiveCamerasPage />,
   "/attendance": <AttendancePage />,
+  "/roster": <RosterPage />,
   "/people": <PeoplePage />,
   "/enrollment": <EnrollmentPage />,
   "/reports": <ReportsPage />,
