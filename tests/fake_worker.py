@@ -63,6 +63,8 @@ if locks is None:
     print(f"ERROR: {args.camera} (or its webcam) is already open in another worker process.", flush=True)
     sys.exit(1)
 runtime = workers.WorkerRuntime(args.camera, None, args.parent_pid, args.run_dir)
+runtime.device = {"name": "cpu", "requested": "cuda", "label": "CPU", "providers": ["CPUExecutionProvider"],
+                  "warning": "the NVIDIA GPU can't be used (no NVIDIA GPU driver found); using the CPU"}
 source = writer = None
 if args.frames:
     source = FakeFrameSource(args.error)

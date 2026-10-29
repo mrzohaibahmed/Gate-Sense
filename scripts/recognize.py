@@ -68,7 +68,7 @@ from app.gallery import LOAD_ERRORS, Gallery, Match  # noqa: E402
 from app.images import crop_face, write_image  # noqa: E402
 from app.live import CameraHealth, LiveWriter  # noqa: E402
 from app.liveness import SOURCE as LIVENESS_SOURCE, Liveness, LivenessUnavailable, context_crop  # noqa: E402
-from app.models import onnx_threads, providers_in_use  # noqa: E402
+from app.models import device, onnx_threads, providers_in_use  # noqa: E402
 from app.recognizer import Recognizer  # noqa: E402
 from app.tracker import FaceTracker, Sample, TrackState  # noqa: E402
 
@@ -497,6 +497,12 @@ def run(args, cam: dict, source, runtime: "workers.WorkerRuntime", live: LiveWri
               f"track ({LIVENESS_SOURCE})")
     else:
         print("Liveness OFF (LIVENESS_ENABLED): phone screens and printed photos are not refused")
+    dev = device()  # after every model loaded: a model that wouldn't load on the GPU moved them to the CPU
+    print(f"Device {dev.label} (GATESENSE_DEVICE={dev.requested})"
+          + (f", liveness providers {checker.providers()}" if checker else ""))
+    if dev.warning:
+        print(f"WARNING: {dev.warning}")
+    runtime.device = dev.as_dict()
     mirror = bool(cam.get("mirror"))
     if mirror:
         print("View mirrored left-right (recognition uses the original frame)")

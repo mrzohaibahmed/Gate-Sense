@@ -137,6 +137,12 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
         database.connect().close()  # create or upgrade the tables before anything uses them
         if message := auth.bootstrap_admin(database):
             print(message, flush=True)
+        from app import models  # here, not at import: it loads onnxruntime and InsightFace
+
+        dev = await run_in_threadpool(models.device)  # the enrollment models' device; each camera logs its own
+        print(f"Models run on the {dev.label} (GATESENSE_DEVICE={dev.requested})", flush=True)
+        if dev.warning:
+            print(f"WARNING: {dev.warning}", flush=True)
         manager.open(f"http://{config.API_HOST}:{config.API_PORT}")
         live_updates = asyncio.create_task(app.state.events.run())
         nightly = asyncio.create_task(maintenance.run_loop(database))

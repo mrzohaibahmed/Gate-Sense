@@ -108,6 +108,10 @@ class Liveness:
             total += float(softmax(s.run(None, {name: x})[0])[0, REAL])
         return total / len(self.models)
 
+    def providers(self) -> list[str]:
+        """The execution providers the models' sessions actually use."""
+        return self.models[0][0].get_providers()
+
     def check(self, img: np.ndarray, bbox, threshold: float | None = None) -> LivenessResult:
         threshold = config.LIVENESS_THRESHOLD if threshold is None else threshold
         t0 = time.perf_counter()
@@ -120,16 +124,31 @@ def input_size(s) -> int:
     return shape[2] if isinstance(shape[2], int) else 80
 
 
-def session(path: Path):
-    """LIVENESS_THREADS threads, and no spin-waiting after a run: the models are tiny, and threads left spinning
+def session(path: Path, device=None):
+    """On the face models' device (`device`, default models.device()), falling back to the CPU like them.
+    LIVENESS_THREADS threads, and no spin-waiting after a run: the models are tiny, and threads left spinning
     take the CPU from the detector and recognizer that run next (measured on a 2-core i5: 156 ms a frame with
     onnxruntime's defaults, 93 ms like this, 72 ms without liveness)."""
     import onnxruntime as ort
 
+    from app import models
+
+    shared = device is None
+    device = models.device() if shared else device
     options = ort.SessionOptions()
     options.intra_op_num_threads = config.LIVENESS_THREADS
     options.add_session_config_entry("session.intra_op.allow_spinning", "0")
-    return ort.InferenceSession(str(path), options, providers=config.PROVIDERS)
+    try:
+        s = ort.InferenceSession(str(path), options, providers=device.providers)
+    except Exception as e:  # noqa: BLE001 - a CUDA failure mustn't stop the worker: the CPU runs the same model
+        if device.name != "cuda":
+            raise
+        reason = f"the liveness models didn't load on it: {models.first_line(e, 200)}"
+        device = models.fall_back_to_cpu(reason) if shared else models.Device("cpu", device.requested, reason)
+        return ort.InferenceSession(str(path), options, providers=device.providers)
+    if shared and device.name == "cuda" and models.lost_cuda([s]):
+        models.fall_back_to_cpu("the liveness models started on the CPU: CUDA 12 and cuDNN 9 must be installed")
+    return s
 
 
 # --- Model files: download and verify ------------------------------------------------------------------------

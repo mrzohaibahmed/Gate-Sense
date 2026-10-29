@@ -1676,6 +1676,18 @@ export interface components {
              */
             feed: "camera" | "worker";
         };
+        /** CameraDevice */
+        CameraDevice: {
+            /** Camera */
+            camera: string;
+            /**
+             * Label
+             * @description where this running camera's models run: NVIDIA GPU (CUDA) or CPU
+             */
+            label: string;
+            /** Warning */
+            warning?: string | null;
+        };
         /** CameraHealth */
         CameraHealth: {
             /** Name */
@@ -1877,6 +1889,10 @@ export interface components {
              * @default
              */
             detail?: string;
+            /** Device */
+            device?: string | null;
+            /** Device Warning */
+            device_warning?: string | null;
             /** Id */
             id: number;
             /**
@@ -2100,6 +2116,34 @@ export interface components {
             backend: string;
             /** Detail */
             detail?: string | null;
+        };
+        /** DeviceInfo */
+        DeviceInfo: {
+            /**
+             * Active
+             * @description where the face and liveness models run: cuda or cpu
+             */
+            active: string;
+            /**
+             * Label
+             * @description "NVIDIA GPU (CUDA)" or "CPU"
+             */
+            label: string;
+            /**
+             * Requested
+             * @description the GATESENSE_DEVICE setting: auto, cuda or cpu
+             */
+            requested: string;
+            /**
+             * Providers
+             * @description onnxruntime execution providers, in order of preference
+             */
+            providers: string[];
+            /**
+             * Warning
+             * @description why it runs on the CPU although the setting allowed the GPU
+             */
+            warning?: string | null;
         };
         /** DiskHealth */
         DiskHealth: {
@@ -3643,6 +3687,13 @@ export interface components {
             backups: components["schemas"]["Backup"][];
             /** Cameras Running */
             cameras_running: number;
+            /** @description this app's device (the enrollment models); GATESENSE_DEVICE is read at start, so a change needs a restart */
+            device: components["schemas"]["DeviceInfo"];
+            /**
+             * Camera Devices
+             * @description the device each running camera reported at its start
+             */
+            camera_devices: components["schemas"]["CameraDevice"][];
             maintenance: components["schemas"]["Maintenance"];
         };
         /** TestResult */
@@ -3778,6 +3829,10 @@ export interface components {
              * @default
              */
             detail?: string;
+            /** Device */
+            device?: string | null;
+            /** Device Warning */
+            device_warning?: string | null;
         };
     };
     responses: never;

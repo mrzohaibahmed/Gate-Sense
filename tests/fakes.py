@@ -60,3 +60,6 @@ class FakeLiveness:
         score = self.scores[min(len(self.calls), len(self.scores) - 1)]
         self.calls.append((img.shape, np.asarray(bbox, np.float32).copy()))
         return LivenessResult(score, score >= threshold, 1.0)
+
+    def providers(self):
+        return ["CPUExecutionProvider"]

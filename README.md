@@ -1,6 +1,6 @@
 # GateSense
 
-Face-recognition attendance: an entrance camera records IN time and an exit camera records OUT time for enrolled people. Unknown faces are ignored. Runs on CPU with InsightFace (buffalo_s) and OpenCV. See [PLAN.md](PLAN.md) for the full design.
+Face-recognition attendance: an entrance camera records IN time and an exit camera records OUT time for enrolled people. Unknown faces are ignored. Runs on CPU (an NVIDIA GPU is optional) with InsightFace (buffalo_s) and OpenCV. See [PLAN.md](PLAN.md) for the full design.
 
 ## Setup (Windows)
 
@@ -9,11 +9,22 @@ Requires Python 3.11 and a webcam.
 ```
 py -3.11 -m venv .venv
 .venv\Scripts\python -m pip install --upgrade pip
-.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m pip install --no-deps -r requirements.txt
 ```
 
 No C++ Build Tools are needed; current insightface ships a prebuilt wheel. `requirements.txt` pins every package,
-including the ones they need and the test tools, to an exact version, so every PC gets the same set.
+including the ones they need and the test tools, to an exact version, so every PC gets the same set (hence
+`--no-deps`: insightface would also pull in the CPU-only `onnxruntime`, which clashes with `onnxruntime-gpu`). A venv
+from before the GPU support has the CPU-only package: run `.venv\Scripts\python -m pip uninstall -y onnxruntime
+onnxruntime-gpu` first, then the install line above.
+
+**NVIDIA GPU (optional).** GateSense installs `onnxruntime-gpu` 1.29.0, the CUDA 12 build (from Microsoft's CUDA 12 feed: the one on PyPI is CUDA 13 since 1.27), which runs on the CPU when there is
+no GPU. To use an NVIDIA GPU, install the NVIDIA driver, CUDA 12.8 or newer 12.x and cuDNN 9 (on the PATH). `GATESENSE_DEVICE` (in
+`.env` or the environment) picks the device: `auto` (default) or `cuda` use the GPU when it works and otherwise the
+CPU, with a warning in the camera logs; `cpu` always uses the CPU. It's read when GateSense and each camera start.
+The model is the same either way, so nobody needs re-enrolling. Settings > System shows the device in use, for
+GateSense and for each running camera. `.venv\Scripts\python scripts\bench_device.py` measures ms per frame on the
+CPU and on the GPU.
 
 Then set the first admin password: copy `.env.example` to `.env` and fill in `GATESENSE_ADMIN_PASSWORD=`. `.env` is git-ignored. A real `GATESENSE_ADMIN_PASSWORD` environment variable, if set, takes priority over `.env`.
 

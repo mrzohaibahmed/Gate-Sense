@@ -1,6 +1,6 @@
 """Environment check.
 
-Imports every dependency, loads the InsightFace buffalo_s model on CPU
+Imports every dependency, loads the InsightFace buffalo_s model on the device GATESENSE_DEVICE picks
 (downloading it on first run), grabs one webcam frame and reports how many
 faces were found and how long detection took.
 
@@ -25,7 +25,7 @@ def main() -> int:
     import onnxruntime as ort
     import insightface
 
-    from app.models import face_analysis, providers_in_use
+    from app.models import device, face_analysis, providers_in_use
 
     print(f"numpy       {np.__version__}")
     print(f"opencv      {cv2.__version__}")
@@ -36,13 +36,17 @@ def main() -> int:
 
         print(f"pytest      {pytest.__version__}")
     except ImportError:  # only needed to run the tests
-        print("pytest      not installed (only for the tests: pip install -r requirements.txt)")
+        print("pytest      not installed (only for the tests: pip install --no-deps -r requirements.txt)")
 
-    print(f"\nLoading {config.MODEL_PACK} on CPU (downloads on first run)...")
+    dev = device()
+    print(f"\nLoading {config.MODEL_PACK} on the {dev.label} (downloads on first run)...")
     t0 = time.perf_counter()
     fa = face_analysis()
+    dev = device()  # the CPU after all if the models wouldn't load on the GPU
     print(f"Model loaded in {time.perf_counter() - t0:.1f}s: {sorted(fa.models)}")
-    print(f"Providers in use: {providers_in_use()}")
+    print(f"Device: {dev.label} (GATESENSE_DEVICE={dev.requested}); providers in use: {providers_in_use()}")
+    if dev.warning:
+        print(f"WARNING: {dev.warning}")
 
     from app import liveness
 

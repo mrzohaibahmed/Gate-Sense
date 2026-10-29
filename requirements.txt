@@ -1,10 +1,18 @@
 # Every package GateSense needs, pinned to the exact version, so every PC gets the same set:
-#   .venv\Scripts\python -m pip install -r requirements.txt
+#   .venv\Scripts\python -m pip install --no-deps -r requirements.txt
+# --no-deps because insightface asks for the CPU-only "onnxruntime", which would overwrite onnxruntime-gpu's files
+# (both install into the same onnxruntime folder); every package they need is listed below anyway.
+# Upgrading a PC that has the CPU-only package: remove it first, then install as above:
+#   .venv\Scripts\python -m pip uninstall -y onnxruntime onnxruntime-gpu
 # To upgrade one, change its version here and reinstall; check that the packages it needs (below) still fit.
 
 # Used directly by GateSense
 insightface==2.1
-onnxruntime==1.31.0
+# onnxruntime with the NVIDIA CUDA 12 provider (needs CUDA 12.8+ and cuDNN 9 to use a GPU); without a GPU it runs on
+# the CPU like the CPU-only package (GATESENSE_DEVICE, app/models.py). Since 1.27 the onnxruntime-gpu on PyPI is the
+# CUDA 13 build, so this is Microsoft's CUDA 12 build of 1.29.0 (the newest there) from its onnxruntime-cuda-12 feed,
+# checked by its SHA-256 (Windows, Python 3.11).
+onnxruntime-gpu @ https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/download/onnxruntime-gpu/1.29/onnxruntime_gpu-1.29.0-cp311-cp311-win_amd64.whl#sha256=00592622fa1a82f770c4f89b5d1318fc65ecb022b4c79728e7723f0701f6f3af
 opencv-python==5.0.0.93
 numpy==2.4.6
 supervision==0.30.9

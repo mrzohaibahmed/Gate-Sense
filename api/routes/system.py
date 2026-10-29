@@ -38,6 +38,20 @@ class Maintenance(BaseModel):
     snapshots_bytes: int
 
 
+class DeviceInfo(BaseModel):
+    active: str = Field(description="where the face and liveness models run: cuda or cpu")
+    label: str = Field(description='"NVIDIA GPU (CUDA)" or "CPU"')
+    requested: str = Field(description="the GATESENSE_DEVICE setting: auto, cuda or cpu")
+    providers: list[str] = Field(description="onnxruntime execution providers, in order of preference")
+    warning: str | None = Field(None, description="why it runs on the CPU although the setting allowed the GPU")
+
+
+class CameraDevice(BaseModel):
+    camera: str
+    label: str = Field(description="where this running camera's models run: NVIDIA GPU (CUDA) or CPU")
+    warning: str | None = None
+
+
 class SystemInfo(BaseModel):
     version: str
     started: datetime
@@ -51,6 +65,9 @@ class SystemInfo(BaseModel):
     enrolled: int = Field(description="people with face embeddings")
     backups: list[Backup] = Field(description="newest first: data/backups/ (copies made before upgrades, and manual)")
     cameras_running: int
+    device: DeviceInfo = Field(description="this app's device (the enrollment models); GATESENSE_DEVICE is read at "
+                                           "start, so a change needs a restart")
+    camera_devices: list[CameraDevice] = Field(description="the device each running camera reported at its start")
     maintenance: Maintenance
 
 
@@ -79,12 +96,20 @@ def system_info(request: Request, _: CurrentUser = Depends(manage)) -> SystemInf
     started = request.app.state.started
     config.refresh_settings()
     last = maintenance.read_state().get("last") or {}
+    from app import models  # here, not at import: it loads onnxruntime and InsightFace
+
+    dev = models.device()
+    workers = request.app.state.workers.statuses()
     return SystemInfo(
         version=__version__, started=datetime.fromtimestamp(started), uptime_seconds=round(time.time() - started, 1),
         python=sys.version.split()[0], database_bytes=size(config.DB_PATH) + size(wal), database_schema=version,
         events=events, people=people, gallery_bytes=size(config.GALLERY_PATH),
         enrolled=len(enrollment.load_gallery().counts()), backups=backups(),
-        cameras_running=sum(w.state != "stopped" for w in request.app.state.workers.statuses()),
+        cameras_running=sum(w.state != "stopped" for w in workers),
+        device=DeviceInfo(active=dev.name, label=dev.label, requested=dev.requested, providers=dev.providers,
+                          warning=dev.warning),
+        camera_devices=[CameraDevice(camera=w.camera, label=w.device, warning=w.device_warning)
+                        for w in workers if w.device],
         maintenance=Maintenance(
             last_run=datetime.fromisoformat(last["time"]) if last.get("time") else None, last_ok=last.get("ok"),
             last_error=last.get("error"), backup_hour=config.BACKUP_HOUR,

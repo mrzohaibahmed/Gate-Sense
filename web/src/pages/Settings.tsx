@@ -1089,6 +1089,20 @@ function SystemTab() {
     ["People", `${s.people} (${s.enrolled} enrolled)`],
     ["Face data", bytes(s.gallery_bytes)],
     ["Cameras running", s.cameras_running],
+    [
+      "Processing device",
+      <>
+        {s.device.label} <span className="text-muted-foreground">(GATESENSE_DEVICE={s.device.requested})</span>
+        {s.device.warning ? <span className="block text-status-missing">{s.device.warning}</span> : null}
+      </>,
+    ],
+    ...s.camera_devices.map((c): [string, React.ReactNode] => [
+      `Camera ${c.camera}`,
+      <>
+        {c.label}
+        {c.warning ? <span className="block text-status-missing">{c.warning}</span> : null}
+      </>,
+    ]),
     ["Snapshots", `${bytes(s.maintenance.snapshots_bytes)} · kept ${s.maintenance.snapshot_retention_days} days`],
     [
       "Nightly backup",

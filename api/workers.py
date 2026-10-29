@@ -53,6 +53,8 @@ class WorkerInfo(BaseModel):
     last_error: str | None = None
     warning: str | None = None
     detail: str = ""  # stop reason of the last run
+    device: str | None = None  # where its models run: "NVIDIA GPU (CUDA)" or "CPU"; None while loading or stopped
+    device_warning: str | None = None  # why it runs on the CPU although GATESENSE_DEVICE allowed the GPU
 
 
 def api_pid(run_dir: Path | None = None) -> int | None:
@@ -138,12 +140,14 @@ class WorkerManager:
         if frame_time is None and st.state != "stopped":
             frame_time = live.read_info(st.camera, self._mgr.live_dir).get("frame_time")
         error = health.get("last_error")
+        dev = (st.device or {}) if st.state != "stopped" else {}
         if st.state == "stopped" and st.detail and st.detail not in CLEAN_STOPS:
             error = error or st.detail
         return WorkerInfo(
             camera=st.camera, state=st.state, held_by=self.holder(st), pid=st.pid, started=st.started,
             fps=st.fps, last_frame_at=datetime.fromtimestamp(frame_time) if frame_time else None,
             last_error=error, warning=st.warning, detail=st.detail,
+            device=dev.get("label"), device_warning=dev.get("warning"),
         )
 
     def status(self, name: str) -> WorkerInfo:

@@ -19,10 +19,29 @@ RUN_DIR = DATA_DIR / "run"  # worker status (<camera>.json) and stop (<camera>.s
 LOG_DIR = DATA_DIR / "logs"  # worker logs (<camera>.log)
 LIVE_DIR = DATA_DIR / "live"  # latest annotated frame (<camera>.jpg) and decisions (<camera>.json)
 
+
+def _server_setting(name: str) -> str | None:
+    """A server setting from the environment, else from .env (read here only; .env is never loaded wholesale)."""
+    if os.environ.get(name):
+        return os.environ[name]
+    path = Path(os.environ.get("GATESENSE_ENV_FILE") or ROOT_DIR / ".env")
+    if path.is_file():
+        from dotenv import dotenv_values
+
+        return dotenv_values(path).get(name) or None
+    return None
+
+
 # --- Models ----------------------------------------------------------------
 MODEL_PACK = "buffalo_s"  # InsightFace pack: SCRFD-500M detector + MobileFaceNet ArcFace
-PROVIDERS = ["CPUExecutionProvider"]  # explicit, so the Azure provider is never used
-CTX_ID = -1  # -1 = CPU, 0 = first GPU
+# Where the face and liveness models run (GATESENSE_DEVICE, environment or .env; read when a process starts):
+# "auto" (default) and "cuda" = an NVIDIA GPU through onnxruntime-gpu's CUDA provider (CUDA 12.8+ and cuDNN 9) when it
+# works, otherwise the CPU with a warning; "cpu" = always the CPU. The same model files either way, so the gallery
+# stays valid (app/models.py device()).
+DEVICES = ("auto", "cuda", "cpu")
+DEVICE = (_server_setting("GATESENSE_DEVICE") or "auto").strip().lower()
+CPU_PROVIDERS = ["CPUExecutionProvider"]  # explicit, so the Azure provider is never used
+CUDA_PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]  # the CPU runs whatever CUDA can't
 MODEL_MODULES = ["detection", "recognition"]  # skip the pack's gender/age and landmark models
 
 # --- Detection -------------------------------------------------------------
@@ -203,20 +222,6 @@ ENV_PATH = Path(os.environ.get("GATESENSE_ENV_FILE") or ROOT_DIR / ".env")
 
 # --- API (FastAPI, api/) --------------------------------------------------------
 # GateSense runs as one app: the API also serves the built web dashboard (web/dist) at /.
-
-
-def _server_setting(name: str) -> str | None:
-    """A server setting from the environment, else from .env (read here only; .env is never loaded wholesale)."""
-    if os.environ.get(name):
-        return os.environ[name]
-    path = Path(os.environ.get("GATESENSE_ENV_FILE") or ROOT_DIR / ".env")
-    if path.is_file():
-        from dotenv import dotenv_values
-
-        return dotenv_values(path).get(name) or None
-    return None
-
-
 API_HOST = _server_setting("GATESENSE_HOST") or "127.0.0.1"  # bind address: 127.0.0.1 = this PC only
 API_PORT = int(_server_setting("GATESENSE_PORT") or 8000)
 # HTTPS: both files (PEM) to serve over https. Required when API_HOST isn't this PC, unless GATESENSE_ALLOW_HTTP=1

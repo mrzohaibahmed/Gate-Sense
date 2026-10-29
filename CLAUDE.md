@@ -7,7 +7,8 @@
 ## Decisions
 
 - Python 3.11. OpenCV for video: webcam now, RTSP IP cameras later.
-- Face detection and recognition: InsightFace (SCRFD + ArcFace) with the **buffalo_s** model pack on **onnxruntime, CPU only**. No YOLO. GPU support is optional later.
+- Face detection and recognition: InsightFace (SCRFD + ArcFace) with the **buffalo_s** model pack on **onnxruntime-gpu 1.29.0, CUDA 12 build** (Microsoft's onnxruntime-cuda-12 feed, direct wheel URL + sha256 in requirements.txt: PyPI's is CUDA 13 since 1.27; needs CUDA 12.8+ and cuDNN 9; runs on the CPU without a GPU). No YOLO.
+- Device (`app/models.py`): `GATESENSE_DEVICE` auto|cuda|cpu (env or .env via `config._server_setting`, default auto, read at process start; unknown = auto + warning). `models.device()` resolves once per process (`resolve_device`: cpu = `config.CPU_PROVIDERS`, ctx_id -1; otherwise CUDA only if onnxruntime lists `CUDAExecutionProvider` and `cuda_error()` (nvcuda.dll present, `preload_dlls`, a one-operator probe session keeps CUDA) passes, then `config.CUDA_PROVIDERS` [CUDA, CPU], ctx_id 0; else the CPU with `warning`). `face_analysis()` and the liveness `session()` fall back to the CPU (`fall_back_to_cpu`) when loading on CUDA raises or onnxruntime silently left CUDA out (`lost_cuda`); a CPU failure still raises. Same model files either way (no re-enrollment). Logged by the worker at start ("Device ...", WARNING with the reason) and the API lifespan; the worker status file has `device` (`WorkerRuntime.device`), API `WorkerInfo.device`/`device_warning`, `/api/system` `device` + `camera_devices`, shown in Settings > System. Install with `pip install --no-deps -r requirements.txt` (insightface requires the CPU-only `onnxruntime`, which would overwrite onnxruntime-gpu's files). Tests: conftest fixes `models._device` = CPU; `tests/test_device.py` (selection, fallback, GPU = CPU embeddings: skips without a working GPU); `scripts/bench_device.py` ms/frame CPU vs GPU. This PC has no NVIDIA GPU.
 - No model training. Enroll each person from 5 to 10 photos, turned into 512-d embeddings.
 - Match by cosine similarity with a configurable threshold, starting at 0.45.
 - CPU speed: process 5 to 10 fps, detect on frames about 640 px wide, recognize only the best few frames per person.
@@ -69,7 +70,7 @@ app/
   env.py         loads .env (never overrides real environment variables)
   sources.py     ${VAR} placeholders in camera sources: expand (URL-encodes passwords), missing_variables
   camera_settings.py  camera list editing: validate/build sources, cameras.json, .env passwords, test_connection
-  models.py      loads the buffalo_s pack once (CPU providers only)
+  models.py      loads the buffalo_s pack once on the device (GATESENSE_DEVICE: CUDA or CPU, CPU fallback)
   detector.py    SCRFD face detection + quality filter
   recognizer.py  ArcFace embeddings
   gallery.py     every embedding per person; best-score cosine matching
@@ -115,9 +116,10 @@ api/
   security.py    security headers (CSP...) and the request size limit (ASGI middleware)
   maintenance.py nightly backup sets + copy + keep N, snapshot cleanup, "Back up now", restore_set
 scripts/
-  check_env.py   verifies deps, model, webcam, liveness models
+  check_env.py   verifies deps, model, device, webcam, liveness models
   get_models.py  download and verify the models (liveness; buffalo_s) before a PC goes offline (--check)
   bench_liveness.py  ms per face and worker fps with liveness off/on on this PC (a photo of one real face)
+  bench_device.py    ms per frame (detect, embed, liveness) on the CPU and the NVIDIA GPU, and their embedding cosine
   enroll.py      build data/gallery.npz from known/, sync persons table (optional --capture NAME)
   recognize.py   attendance worker for one camera (--camera, --source, --no-db)
   today.py       print a day's attendance (--date)
@@ -138,7 +140,7 @@ tests/                 pytest tests (fakes.py: fake detector/recognizer; fake_wo
                        test_production.py: one app, headers, limits, HTTPS check, nightly maintenance;
                        test_migration.py: schema steps keep old data; test_resilience.py: worker errors,
                        durable writes, refusing to start; test_supervisor.py: Auto; test_backup_restore.py;
-                       test_liveness.py: crop, score, model files; test_shifts.py: shifts and roster days; test_roster_api.py; test_shift_mode.py;
+                       test_liveness.py: crop, score, model files; test_device.py: GPU/CPU device; test_shifts.py: shifts and roster days; test_roster_api.py; test_shift_mode.py;
                        test_ops.py: log rotation, debug lines,
                        quiet access log, ONNX threads, health, webcam driver errors; test_people_import.py)
 requirements.txt       every package pinned to an exact version (the direct ones first, incl. pytest/httpx2 for the

@@ -55,3 +55,7 @@ def isolated_env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(liveness, "fetch", no_download)
     liveness.shared.cache_clear()
+    # The models' device: the CPU, whatever this PC has (tests/test_device.py checks the real one).
+    from app import models
+
+    monkeypatch.setattr(models, "_device", models.Device("cpu", "auto"))

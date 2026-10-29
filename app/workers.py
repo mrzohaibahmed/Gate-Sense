@@ -234,6 +234,7 @@ class WorkerRuntime:
         self.health_provider = None  # callable returning the frame source's health dict
         self.frame_errors = 0  # frames whose processing raised (logged and skipped; the worker keeps going)
         self.last_frame_error: str | None = None
+        self.device: dict | None = None  # models.Device.as_dict() once the models are loaded
         self.write_errors = ErrorLog(f"{camera}: writing the status file")
         self.write("loading")
 
@@ -253,7 +254,7 @@ class WorkerRuntime:
                 "state": state, "fps": round(self.fps, 1), "frames": self.frames, "reason": reason,
                 "warning": self.warning if state != "stopped" else None,
                 "frame_errors": self.frame_errors, "last_frame_error": self.last_frame_error,
-                "health": health,
+                "health": health, "device": self.device,
             }, durable=state == "stopped")  # rewritten every few seconds; only the final one matters later
         except Exception as e:  # noqa: BLE001
             self.write_errors(e)
@@ -309,6 +310,7 @@ class WorkerStatus:
     warning: str | None = None  # camera problem reported by the worker
     health: dict | None = None  # frame source health (state, size, fps, last frame, reconnects, last error)
     parent_pid: int | None = None  # the process that started it (--parent-pid); None = command line
+    device: dict | None = None  # where its models run (models.Device.as_dict()); None while loading
 
 
 class WorkerManager:
@@ -375,6 +377,7 @@ class WorkerManager:
                     name, state, data["pid"], datetime.fromisoformat(data["started"]), data.get("fps"),
                     cam["source"] if data.get("source") is None else data["source"], managed=proc is not None,
                     warning=data.get("warning"), health=data.get("health"), parent_pid=data.get("parent_pid"),
+                    device=data.get("device"),
                 )
             detail = (data or {}).get("reason") or self._exit.get(name, "")
             return WorkerStatus(name, "stopped", source=cam["source"], detail=detail)

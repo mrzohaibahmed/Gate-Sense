@@ -19,6 +19,8 @@ const SYSTEM = {
   enrolled: 0,
   backups: [],
   cameras_running: 0,
+  device: { active: "cpu", label: "CPU", requested: "auto", providers: ["CPUExecutionProvider"], warning: null },
+  camera_devices: [] as { camera: string; label: string; warning: string | null }[],
   maintenance: {
     last_run: null,
     last_ok: null,
