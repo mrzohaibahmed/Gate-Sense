@@ -42,9 +42,9 @@ def plan(conn, codes, days, shift: str = "General") -> None:
     ids = db.person_ids(conn)
     for code in codes:
         for day in days:
+            conn.execute("DELETE FROM roster WHERE person_id = ? AND date = ?", (ids[code], day.isoformat()))
             conn.execute("INSERT INTO roster (person_id, date, shift_id, updated, updated_by) VALUES (?, ?, ?, '', "
-                         "'test') ON CONFLICT(person_id, date) DO UPDATE SET shift_id = excluded.shift_id",
-                         (ids[code], day.isoformat(), shift_id))
+                         "'test')", (ids[code], day.isoformat(), shift_id))
     conn.commit()
 
 

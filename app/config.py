@@ -236,9 +236,20 @@ WEB_DIST = Path(os.environ.get("GATESENSE_WEB_DIST") or ROOT_DIR / "web" / "dist
 MAX_REQUEST_BYTES = 10_000_000  # larger request bodies are refused (413): enrollment photos are the biggest
 LOGIN_RATE_LIMIT = 10  # login attempts per IP address per LOGIN_RATE_WINDOW_SECONDS (on top of the account lockout)
 LOGIN_RATE_WINDOW_SECONDS = 60
-# Database URL for the API's data-access module (api/db.py). None = SQLite at DB_PATH. sqlite:/// URLs work
-# today; a postgresql:// URL is recognised and reported as not supported until that backend is written.
-DATABASE_URL = os.environ.get("GATESENSE_DATABASE_URL") or None
+# The database: GATESENSE_DB_URL from the environment only (never .env, never written to a log: it holds the
+# password). Unset = SQLite at DB_PATH. mssql+pyodbc://user:password@host\INSTANCE/GateSense?driver=ODBC+Driver+18+
+# for+SQL+Server&TrustServerCertificate=yes = Microsoft SQL Server (app/mssql.py); sqlite:/// URLs work too; a
+# postgresql:// URL is recognised and refused. The old name GATESENSE_DATABASE_URL alone refuses to start
+# (app/dbconn.py), so a PC set up for it doesn't silently fall back to SQLite.
+DATABASE_URL_ENV = "GATESENSE_DB_URL"
+OLD_DATABASE_URL_ENV = "GATESENSE_DATABASE_URL"
+DATABASE_URL = os.environ.get(DATABASE_URL_ENV) or None
+OLD_DATABASE_URL = os.environ.get(OLD_DATABASE_URL_ENV) or None
+# SQL Server only (SQLite waits up to 10 s for its write lock, as before):
+DB_LOCK_TIMEOUT_MS = 10_000  # one writer at a time (sp_getapplock); a write that waits longer fails and is retried
+DB_LOGIN_TIMEOUT_SECONDS = 5  # connecting while the server is down gives up after this long
+DB_QUERY_TIMEOUT_SECONDS = 30  # a statement the server doesn't answer (backups and the migration have none)
+DB_RECONNECT_SECONDS = 5  # after a lost connection, a long-lived one (a camera worker's) tries again after this long
 
 # --- API users and login (api/auth.py; roles and permissions: api/permissions.py) ----------------
 API_FIRST_ADMIN = "admin"  # created on the API's first start (no users yet) with the GATESENSE_ADMIN_PASSWORD

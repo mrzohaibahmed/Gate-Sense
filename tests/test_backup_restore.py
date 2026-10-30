@@ -21,6 +21,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import restore as restore_script  # noqa: E402
 import stop as stop_script  # noqa: E402
 
+# The SQLite database file in a set (online backup, integrity check, -wal/-shm, restore by copying the file).
+# SQL Server's .bak sets: tests/test_mssql.py.
+pytestmark = pytest.mark.sqlite_only
+
 GATE = {"name": "gate1", "direction": "IN", "type": "hikvision", "ip": "192.168.1.101", "port": 554,
         "user": "gatesense", "channel": 1, "stream": "main", "enabled": True}
 

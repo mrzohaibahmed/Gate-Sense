@@ -42,7 +42,7 @@ from api.routes import (
 )
 from api.routes import auth as auth_routes
 from api.workers import WorkerManager
-from app import config
+from app import config, dbconn
 from app import db as app_db
 from app import liveness as app_liveness
 
@@ -93,15 +93,29 @@ def quiet_access_log() -> None:
 
 
 def startup_problems(database: Database | None = None) -> list[str]:
-    """Why GateSense must not start: an unreadable cameras.json (it would start the wrong cameras) or a damaged
-    database (PRAGMA quick_check). Checked by start.bat's preflight and again when the app starts."""
+    """Why GateSense must not start: an unreadable cameras.json (it would start the wrong cameras), a damaged
+    database (PRAGMA quick_check), or on SQL Server one it can't connect to or whose schema it can't run (a wrong or
+    old database setting too). Checked by start.bat's preflight and again when the app starts."""
     problems = []
     try:
         config.check_cameras()
     except config.CamerasFileError as e:
         problems.append(str(e))
+    database = database or Database()
     try:
-        path = (database or Database()).path
+        backend = database.backend
+        if backend == dbconn.MSSQL:
+            from app import mssql
+
+            dbconn.check_url(database.url)
+            if problem := mssql.startup_problem(database.url):
+                problems.append(problem)
+            return problems
+    except dbconn.DatabaseConfigError as e:
+        problems.append(str(e))
+        return problems
+    try:
+        path = database.path
     except Exception:  # noqa: BLE001  not SQLite: Database.connect reports that itself
         path = None
     if path is not None and (damage := app_db.quick_check(path)):

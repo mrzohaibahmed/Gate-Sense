@@ -87,6 +87,82 @@ upgraded at the first start as usual. Try a restore once on a spare PC before yo
 
 After updating GateSense's code, restart it (`stop.bat`, then `start.bat`); start.bat rebuilds the web dashboard when it changed.
 
+## SQL Server (optional)
+
+GateSense keeps its data in SQLite (`data\attendance.db`) unless the environment variable `GATESENSE_DB_URL` points
+at a Microsoft SQL Server database. It is read from the environment only (never from `.env`), and the password in it
+is never shown or logged. The face embeddings stay in `data\gallery.npz` either way. Everything works the same on
+both: the same tables (in SQL Server types), the same days, statuses and reports.
+
+**Once, as an administrator of the SQL Server instance** (here `localhost\SQLEXPRESS01`, SQL Server 2025 Express):
+
+1. Allow SQL Server logins (a new Express instance accepts Windows logins only): in SQL Server Management Studio,
+   the instance's Properties > Security > "SQL Server and Windows Authentication mode", then restart the service
+   (PowerShell as administrator: `Restart-Service 'MSSQL$SQLEXPRESS01'`).
+2. The database, its login and the login's rights, with `sqlcmd -S localhost\SQLEXPRESS01 -E -C` (choose the
+   password; it must meet the Windows password policy):
+
+   ```sql
+   CREATE DATABASE GateSense;
+   ALTER DATABASE GateSense SET READ_COMMITTED_SNAPSHOT ON WITH ROLLBACK IMMEDIATE;  -- readers never wait for writers
+   CREATE LOGIN gatesense_app WITH PASSWORD = N'choose-a-strong-password', DEFAULT_DATABASE = GateSense, CHECK_POLICY = ON;
+   USE GateSense;
+   CREATE USER gatesense_app FOR LOGIN gatesense_app;
+   ALTER ROLE db_datareader ADD MEMBER gatesense_app;
+   ALTER ROLE db_datawriter ADD MEMBER gatesense_app;
+   ALTER ROLE db_ddladmin ADD MEMBER gatesense_app;        -- creates GateSense's tables (migration, first start)
+   ALTER ROLE db_backupoperator ADD MEMBER gatesense_app;  -- the nightly and "Back up now" BACKUP DATABASE
+   USE master;
+   CREATE USER gatesense_app FOR LOGIN gatesense_app;
+   GRANT CREATE DATABASE TO gatesense_app;                 -- RESTORE VERIFYONLY (checking each backup) requires it
+   GO
+   ```
+3. SQL Server's service writes the backup files itself, so let it write the backup folder:
+
+   ```
+   mkdir "D:\Camera Attendence\data\backups"
+   icacls "D:\Camera Attendence\data\backups" /grant "NT Service\MSSQL$SQLEXPRESS01:(OI)(CI)M"
+   ```
+4. Tell GateSense (PowerShell; single quotes keep the URL as it is). In the password, write `@ : / ? # & % +` and
+   spaces percent-encoded (`@` = `%40`, `:` = `%3A`, `/` = `%2F`, `?` = `%3F`, `#` = `%23`, `&` = `%26`, `%` = `%25`,
+   `+` = `%2B`, space = `%20`):
+
+   ```
+   setx GATESENSE_DB_URL 'mssql+pyodbc://gatesense_app:PASSWORD@localhost\SQLEXPRESS01/GateSense?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes'
+   ```
+   `setx` applies to programs started afterwards: open a new terminal (and restart VS Code) before the next step.
+   As a Windows service (`install_service.ps1`), add the same variable to the service (the `+` keeps the variables
+   the install script set): `nssm set GateSense AppEnvironmentExtra "+GATESENSE_DB_URL=..."`.
+
+**Move the data from SQLite** (the SQLite file is only read, never changed or deleted):
+
+```
+stop.bat
+.venv\Scripts\python scripts\migrate_sqlite_to_mssql.py            # copies every table with its ids, in one transaction
+.venv\Scripts\python scripts\migrate_sqlite_to_mssql.py --check    # compare again: row counts and checksums per table
+start.bat
+```
+
+The migration refuses while GateSense runs, refuses a value it would have to change (it lists them), and refuses if
+the SQL Server tables already have rows (`--force` empties them first, in the same transaction). It prints each
+table's row count in SQLite and in SQL Server with a checksum of its rows, and `gallery.npz`'s SHA-256 before and
+after. Settings > System then shows the SQL Server database's size and schema version.
+
+**On SQL Server, backups** are `GateSense-nightly-<time>.bak` (and `-manual-`) in the same sets as before: a
+COPY_ONLY backup with checksums, checked with `RESTORE VERIFYONLY`, copied to the second backup folder (compared byte
+for byte). `scripts\restore.py` checks a `.bak` and prints the T-SQL an administrator runs to restore it (the app's
+login can't replace its own database), then the command for the other parts of the set.
+
+**If SQL Server restarts**, the cameras keep their events in memory and write them as soon as it is back (an event
+whose save was interrupted is looked for first, so none is recorded twice); the dashboard shows the database error
+meanwhile. GateSense refuses to start if it can't reach SQL Server, if only the old variable
+`GATESENSE_DATABASE_URL` is set, or if the database has another schema version.
+
+**Back to SQLite:** `stop.bat`, remove the variable
+(`[Environment]::SetEnvironmentVariable('GATESENSE_DB_URL', $null, 'User')` in PowerShell, then a new terminal), and
+`start.bat`. GateSense then uses `data\attendance.db` as it was at the migration: anything recorded on SQL Server
+after that stays in SQL Server only (it is not copied back).
+
 ## Check the environment
 
 ```
@@ -309,6 +385,11 @@ It listens on `http://127.0.0.1:8000` (this PC only; change it with `GATESENSE_H
 .venv\Scripts\python -m pytest
 cd web && npm test
 ```
+
+The Python tests use SQLite. To run them on SQL Server too, point `GATESENSE_TEST_DB_URL` at a separate, empty
+database whose name contains "test" (every test empties it; the tests never use `GATESENSE_DB_URL`), e.g.
+`GATESENSE_TEST_DB_URL=mssql+pyodbc://@localhost\SQLEXPRESS01/GateSense_Test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes&Trusted_Connection=yes`.
+The SQL Server backup tests also need `GATESENSE_TEST_BACKUP_DIR`, a folder the SQL Server service can write.
 
 ## Logs, health and long runs
 

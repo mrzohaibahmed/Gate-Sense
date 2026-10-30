@@ -230,8 +230,8 @@ def import_people(conn: sqlite3.Connection, data: bytes, filename: str, user: st
         for row in result.rows:
             if row.action == "new":
                 cur = conn.execute(
-                    f"INSERT INTO persons (employee_code, name, department, shift, site_id) "
-                    f"VALUES (?, ?, ?, ?, COALESCE(?, {db.DEFAULT_SITE}))",
+                    "INSERT INTO persons (employee_code, name, department, shift, site_id) "
+                    + db._row(conn, f"?, ?, ?, ?, COALESCE(?, {db.DEFAULT_SITE})"),
                     (row.employee_code, row.name, row.department, row.shift, row.site_id))
                 row.person_id = cur.lastrowid
                 db.write_audit(conn, user, "add_person", f"person:{row.employee_code}",

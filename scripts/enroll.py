@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cv2  # noqa: E402
 
-from app import config, db, enroll_quality, enrollment, workers  # noqa: E402
+from app import config, db, dbconn, enroll_quality, enrollment, workers  # noqa: E402
 from app.camera import open_capture, parse_source  # noqa: E402
 from app.detector import Detector  # noqa: E402
 from app.models import providers_in_use  # noqa: E402
@@ -123,7 +123,8 @@ def main() -> int:
     print(f"\nSaved {len(gallery)} people, {total} embeddings to {config.GALLERY_PATH.relative_to(config.ROOT_DIR)}")
     inactive = sorted(set(gallery.names) - db.person_ids(conn).keys())
     conn.close()
-    print(f"Synced persons table in {config.DB_PATH.relative_to(config.ROOT_DIR)}")
+    where = dbconn.safe_url(url) if (url := dbconn.server_url()) else config.DB_PATH.relative_to(config.ROOT_DIR)
+    print(f"Synced persons table in {where}")
     if removed:
         print(f"No longer enrolled, marked inactive: {', '.join(removed)}")
     if inactive:

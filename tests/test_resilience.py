@@ -294,6 +294,7 @@ def test_quick_check(tmp_path):
     assert db.quick_check(path)
 
 
+@pytest.mark.sqlite_only  # a damaged SQLite file
 def test_app_refuses_to_start_on_a_damaged_database_or_cameras_file(monkeypatch, capsys):
     monkeypatch.setenv(config.DASHBOARD_PASSWORD_ENV, "first-admin-password")
     monkeypatch.setattr(run, "port_in_use", lambda: False)

@@ -4,7 +4,6 @@ end: camera passes through the worker's Recorder (cool-down, database check), ro
 
 import contextlib
 import io
-import sqlite3
 import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -12,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from app import db
+from app import db, dbconn
 from app.attendance import Event
 from app.gallery import Match
 from app.shifts import (
@@ -283,7 +282,7 @@ def test_one_roster_row_per_person_per_date(conn):
     assert db.set_roster(conn, [(pid, MON, shift_id(conn, "Night"))], "swapped with Ali", "hr1") == 1
     assert db.set_roster(conn, [(pid, MON, shift_id(conn, "Night"))], "again", "hr1") == 0  # no change, no audit
     assert conn.execute("SELECT count(*) FROM roster").fetchone()[0] == 1
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(dbconn.INTEGRITY_ERRORS):
         conn.execute("INSERT INTO roster (person_id, date, shift_id, updated, updated_by) VALUES (?, ?, NULL, '', '')",
                      (pid, MON.isoformat()))
     conn.rollback()

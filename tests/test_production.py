@@ -211,6 +211,7 @@ def test_stop_file_stops_the_server(tmp_path):
 # --- Nightly maintenance ---------------------------------------------------------------------------------
 
 
+@pytest.mark.sqlite_only  # SQLite set files (SQL Server's .bak: tests/test_mssql.py)
 def test_backup_now_is_never_pruned_and_only_the_newest_nightly_sets_are_kept(app, monkeypatch):
     monkeypatch.setattr(config, "BACKUP_KEEP", 2)
     a = as_role(app, "admin")
@@ -257,6 +258,7 @@ def test_snapshot_cleanup_keeps_the_events(app):
     assert rows[paths[60]]["snapshot_path"] is None and rows[paths[0]]["snapshot_path"]  # the events are all still there
 
 
+@pytest.mark.sqlite_only  # the set's database file (SQL Server's .bak: tests/test_mssql.py)
 def test_nightly_run_and_when_it_is_due(app):
     result = maintenance.run_nightly(app.state.db, datetime(2026, 10, 22, 2, 5))
     assert result["ok"] and result["backup"].startswith("attendance-nightly-20261022-0205")

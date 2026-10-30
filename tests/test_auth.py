@@ -4,7 +4,7 @@ A fake clock replaces api.auth.now, so lockout and session expiry are tested wit
 """
 
 import re
-import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
 
 import pytest
@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from api import auth
 from api.main import PUBLIC_PATHS, create_app
 from api.workers import WorkerManager
-from app import config
+from app import config, db
 from app.workers import WorkerManager as AppWorkerManager
 from tests.test_api import CAMERAS, FAKE, wait_for
 
@@ -139,7 +139,7 @@ def test_login_sets_a_strict_httponly_session_cookie(app):
         assert part in cookie
     assert "samesite=strict" in cookie.lower() and "secure" not in cookie.lower()
     token = cookie.split(";")[0].split("=", 1)[1]
-    with sqlite3.connect(config.DB_PATH) as conn:  # only the token's hash is stored
+    with closing(db.connect()) as conn:  # only the token's hash is stored
         stored = [row[0] for row in conn.execute("SELECT token_hash FROM sessions")]
     assert stored == [auth.hash_token(token)] and token not in stored
 

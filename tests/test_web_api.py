@@ -111,11 +111,17 @@ def test_review_and_save(app):
     assert hr.get(person["photo_url"]).status_code == 200
 
 
-def test_system_info_and_backup(app):
+def test_system_info(app):
     a = as_role(app, "admin")
     info = a.get("/api/system").json()
     assert info["version"] == "0.1.0" and info["database_schema"] == 7 and info["events"] == 6 and info["people"] == 4
     assert info["database_bytes"] > 0 and info["backups"] == [] and info["cameras_running"] == 0
+    assert as_role(app, "hr").get("/api/system").status_code == 403
+
+
+@pytest.mark.sqlite_only  # the set's database file (SQL Server's .bak: tests/test_mssql.py)
+def test_backup_now(app):
+    a = as_role(app, "admin")
     r = a.post("/api/system/backup", json={"reason": "before the update"})
     assert r.status_code == 201
     backup = r.json()

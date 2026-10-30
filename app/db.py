@@ -31,6 +31,13 @@ grace and windows into shift_versions (effective_from: NULL = from the start), s
 change applies from a date and never rewrites the days before it. Step 7 adds
 app_settings (key, value, updated, updated_by): settings kept in the database, read
 on every request; the first is "shifts" (on/off, see attendance_days).
+
+With GATESENSE_DB_URL set (config.DATABASE_URL), connect() opens Microsoft SQL Server instead (app/mssql.py): the
+same tables in SQL Server types, created at the current version, and a connection that behaves like sqlite3's, so
+the functions below run unchanged. The few statements SQL Server writes differently (upserts, LIMIT, a subquery
+in VALUES) branch on dbconn.is_mssql(conn), and SQLite keeps its own. Elsewhere the SQL is written once for both:
+"user" and "key" are quoted (reserved words in SQL Server; in SQLite the quotes change nothing), and the rest is
+plain SQL that gives SQLite the same results as before.
 """
 
 import json
@@ -39,7 +46,7 @@ from contextlib import closing
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
-from app import config
+from app import config, dbconn
 from app.attendance import Event, within_cooldown
 from app.camera import mask_source
 from app.shifts import (
@@ -290,8 +297,14 @@ def connect(path: Path | None = None, migrate: bool = True) -> sqlite3.Connectio
     """Open the database (default ``config.DB_PATH``), creating or upgrading the tables.
 
     migrate=False skips the table checks, for callers that already ran them on this file (the API does
-    this once at start, not on every request).
+    this once at start, not on every request). With no `path` and GATESENSE_DB_URL set, SQL Server
+    (app.mssql.connect: tables created in an empty database, or their version checked); an explicit `path`
+    is always that SQLite file.
     """
+    if path is None and (url := dbconn.server_url()):
+        from app import mssql
+
+        return mssql.connect(url, migrate)
     path = path or config.DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=10)
@@ -329,6 +342,36 @@ def quick_check(path: Path | None = None) -> str | None:
     return None if result == "ok" else result
 
 
+def schema_version(conn) -> int:
+    """The schema version: SQLite's PRAGMA user_version, or SQL Server's gatesense_schema (0 = no tables yet)."""
+    if dbconn.is_mssql(conn):
+        from app import mssql
+
+        return mssql.schema_version(conn) or 0
+    return conn.execute("PRAGMA user_version").fetchone()[0]
+
+
+def _row(conn, values: str) -> str:
+    """The end of an INSERT for one row of `values` (SQL expressions): SQL Server allows no subquery (the default
+    site) in VALUES, but does in INSERT ... SELECT."""
+    return f"SELECT {values}" if dbconn.is_mssql(conn) else f"VALUES ({values})"
+
+
+def _merge(table: str, columns: list[str], keys: list[str], update: list[str], computed: dict | None = None) -> str:
+    """SQL Server's form of INSERT ... ON CONFLICT (`keys`) DO UPDATE SET `update` (DO NOTHING if `update` is
+    empty): the parameters are `columns`' values, in order; `computed` = more inserted columns' SQL expressions."""
+    computed = computed or {}
+    q = '"{}"'.format
+    source = ", ".join([f"? AS {q(c)}" for c in columns] + [f"{sql} AS {q(c)}" for c, sql in computed.items()])
+    inserted = [*columns, *computed]
+    sql = (f"MERGE INTO {table} WITH (HOLDLOCK) AS t USING (SELECT {source}) AS s ON "
+           + " AND ".join(f"t.{q(k)} = s.{q(k)}" for k in keys))
+    if update:
+        sql += " WHEN MATCHED THEN UPDATE SET " + ", ".join(f"{q(c)} = s.{q(c)}" for c in update)
+    return (sql + f" WHEN NOT MATCHED THEN INSERT ({', '.join(map(q, inserted))}) "
+            f"VALUES ({', '.join('s.' + q(c) for c in inserted)});")
+
+
 def require_reason(reason: str | None) -> None:
     if not reason or not reason.strip():
         raise ValueError("a reason is required")
@@ -338,7 +381,7 @@ def _audit(conn, user: str, action: str, target: str, details: dict, reason: str
     """Write an audit row; call inside the transaction that makes the change."""
     require_reason(reason)
     conn.execute(
-        "INSERT INTO audit_log (timestamp, user, action, target, details, reason) VALUES (?, ?, ?, ?, ?, ?)",
+        'INSERT INTO audit_log (timestamp, "user", action, target, details, reason) VALUES (?, ?, ?, ?, ?, ?)',
         (_ts(datetime.now()), user, action, target, json.dumps(details, default=str), reason.strip()),
     )
 
@@ -355,13 +398,14 @@ def sync_persons(conn: sqlite3.Connection, codes: list[str], removed: list[str] 
     gallery (their known/ folder is gone); people added on the dashboard who
     have no photos yet are never in it, so they are not deactivated.
     """
+    if dbconn.is_mssql(conn):
+        sql = _merge("persons", ["employee_code", "name"], ["employee_code"], [], {"site_id": DEFAULT_SITE})
+    else:
+        sql = (f"INSERT INTO persons (employee_code, name, site_id) VALUES (?, ?, {DEFAULT_SITE}) "
+               "ON CONFLICT(employee_code) DO NOTHING")
     with conn:
         for code in codes:
-            conn.execute(
-                f"INSERT INTO persons (employee_code, name, site_id) VALUES (?, ?, {DEFAULT_SITE}) "
-                "ON CONFLICT(employee_code) DO NOTHING",
-                (code, code),
-            )
+            conn.execute(sql, (code, code))
         for code in removed:
             conn.execute("UPDATE persons SET active = 0 WHERE employee_code = ?", (code,))
 
@@ -380,8 +424,8 @@ def add_person(conn, code: str, name: str, department: str | None, shift: str | 
         row["site_id"] = site_id
     with conn:
         cur = conn.execute(
-            f"INSERT INTO persons (employee_code, name, department, shift, site_id) "
-            f"VALUES (?, ?, ?, ?, COALESCE(?, {DEFAULT_SITE}))",
+            "INSERT INTO persons (employee_code, name, department, shift, site_id) "
+            + _row(conn, f"?, ?, ?, ?, COALESCE(?, {DEFAULT_SITE})"),
             (code, row["name"], row["department"], row["shift"], site_id))
         _audit(conn, user, "add_person", f"person:{code}", row, reason)
     return cur.lastrowid
@@ -466,24 +510,27 @@ def update_person(conn, person_id: int, name: str, department: str | None, shift
 
 
 def upsert_camera(conn: sqlite3.Connection, name: str, source: str | int, direction: str) -> int:
+    if dbconn.is_mssql(conn):
+        sql = _merge("cameras", ["name", "source", "direction"], ["name"], ["source", "direction"],
+                     {"site_id": DEFAULT_SITE})
+    else:
+        sql = (f"INSERT INTO cameras (name, source, direction, site_id) VALUES (?, ?, ?, {DEFAULT_SITE}) "
+               "ON CONFLICT(name) DO UPDATE SET source = excluded.source, direction = excluded.direction")
     with conn:
-        conn.execute(
-            f"INSERT INTO cameras (name, source, direction, site_id) VALUES (?, ?, ?, {DEFAULT_SITE}) "
-            "ON CONFLICT(name) DO UPDATE SET source = excluded.source, direction = excluded.direction",
-            (name, mask_source(source), direction),  # never store a camera password
-        )
+        conn.execute(sql, (name, mask_source(source), direction))  # never store a camera password
     return conn.execute("SELECT id FROM cameras WHERE name = ?", (name,)).fetchone()["id"]
 
 
 def ensure_cameras(conn: sqlite3.Connection, cameras: list[dict]) -> None:
     """Add configured cameras that aren't in the table yet (keeps sources set by recognize.py)."""
+    if dbconn.is_mssql(conn):
+        sql = _merge("cameras", ["name", "source", "direction"], ["name"], [], {"site_id": DEFAULT_SITE})
+    else:
+        sql = (f"INSERT INTO cameras (name, source, direction, site_id) VALUES (?, ?, ?, {DEFAULT_SITE}) "
+               "ON CONFLICT(name) DO NOTHING")
     with conn:
         for cam in cameras:
-            conn.execute(
-                f"INSERT INTO cameras (name, source, direction, site_id) VALUES (?, ?, ?, {DEFAULT_SITE}) "
-                "ON CONFLICT(name) DO NOTHING",
-                (cam["name"], mask_source(cam["source"]), cam["direction"]),
-            )
+            conn.execute(sql, (cam["name"], mask_source(cam["source"]), cam["direction"]))
 
 
 def list_cameras(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -511,15 +558,30 @@ def add_event(
 
 
 def add_camera_event(conn: sqlite3.Connection, person_id: int, camera_id: int, timestamp: datetime, score: float,
-                     snapshot_path: str | None, cooldown_seconds: float) -> tuple[int | None, datetime | None]:
+                     snapshot_path: str | None, cooldown_seconds: float,
+                     retry: bool = False) -> tuple[int | None, datetime | None]:
     """A camera's event, unless the person already has one in the same direction (from any camera, not voided)
     within `cooldown_seconds` before it (no reset at midnight): then nothing is written. Returns (new event id or
     None, the latest earlier event's time within that window). Checked and written in one transaction (BEGIN
     IMMEDIATE), so two cameras of the same direction that see the person at the same moment, in different worker
-    processes, record it once."""
+    processes, record it once.
+
+    `retry`: an earlier try of this same event failed, maybe after the database had committed it (SQL Server's
+    connection lost during COMMIT). If the identical camera event (person, camera, time, score, snapshot) is there,
+    that is it: its id is returned, with no earlier time, and nothing is written twice."""
     since = timestamp - timedelta(seconds=cooldown_seconds)
     conn.execute("BEGIN IMMEDIATE")
     try:
+        if retry:
+            same = conn.execute(
+                "SELECT id FROM attendance_events WHERE person_id = ? AND camera_id = ? AND timestamp = ? "
+                "AND match_score = ? AND manual = 0 AND "
+                + ("snapshot_path IS NULL" if snapshot_path is None else "snapshot_path = ?"),
+                (person_id, camera_id, _ts(timestamp), score, *(() if snapshot_path is None else (snapshot_path,)))
+            ).fetchone()
+            if same:
+                conn.rollback()
+                return same["id"], None
         row = conn.execute(
             "SELECT MAX(e.timestamp) AS ts FROM attendance_events e JOIN cameras c ON c.id = e.camera_id "
             "WHERE e.person_id = ? AND e.voided = 0 AND c.direction = (SELECT direction FROM cameras WHERE id = ?) "
@@ -557,7 +619,8 @@ def _event(conn, event_id: int) -> sqlite3.Row:
 
 def recent_events(conn: sqlite3.Connection, limit: int = 50) -> list[sqlite3.Row]:
     """Newest events first, including manual and voided ones."""
-    return conn.execute(EVENT_COLUMNS + "ORDER BY e.timestamp DESC, e.id DESC LIMIT ?", (limit,)).fetchall()
+    return conn.execute(EVENT_COLUMNS + "ORDER BY e.timestamp DESC, e.id DESC" + dbconn.limit(conn),
+                        (limit,)).fetchall()
 
 
 def events_on(conn: sqlite3.Connection, day: date) -> list[sqlite3.Row]:
@@ -601,7 +664,7 @@ def set_event_voided(conn, event_id: int, voided: bool, reason: str, user: str) 
 
 
 def audit_entries(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.Row]:
-    return conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return conn.execute("SELECT * FROM audit_log ORDER BY id DESC" + dbconn.limit(conn), (limit,)).fetchall()
 
 
 def last_event_times(conn: sqlite3.Connection, since: datetime) -> dict[tuple[str, str], datetime]:
@@ -656,12 +719,15 @@ def _version_shift(row: sqlite3.Row, name: str) -> Shift:
                  date.fromisoformat(row["effective_from"]) if row["effective_from"] else None)
 
 
+FROM_START_FIRST = "CASE WHEN effective_from IS NULL THEN 0 ELSE 1 END"  # the version from the start sorts first
+
+
 def shift_versions(conn: sqlite3.Connection, shift_id: int | None = None) -> dict[int, list[Shift]]:
     """shift id -> its versions, oldest first (the first one from the start), for one shift or all of them."""
     names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM shifts")}
     only = " WHERE shift_id = ?" if shift_id is not None else ""
-    rows = conn.execute(f"SELECT * FROM shift_versions{only} ORDER BY shift_id, effective_from IS NOT NULL, "
-                        "effective_from", () if shift_id is None else (shift_id,))
+    rows = conn.execute(f"SELECT * FROM shift_versions{only} ORDER BY shift_id, {FROM_START_FIRST}, effective_from",
+                        () if shift_id is None else (shift_id,))
     out: dict[int, list[Shift]] = {}
     for r in rows:
         out.setdefault(r["shift_id"], []).append(_version_shift(r, names[r["shift_id"]]))
@@ -670,7 +736,7 @@ def shift_versions(conn: sqlite3.Connection, shift_id: int | None = None) -> dic
 
 def shift_version_rows(conn: sqlite3.Connection, shift_id: int) -> list[sqlite3.Row]:
     """One shift's version rows (id, effective_from, times, created, created_by), oldest first."""
-    return conn.execute("SELECT * FROM shift_versions WHERE shift_id = ? ORDER BY effective_from IS NOT NULL, "
+    return conn.execute(f"SELECT * FROM shift_versions WHERE shift_id = ? ORDER BY {FROM_START_FIRST}, "
                         "effective_from", (shift_id,)).fetchall()
 
 
@@ -690,7 +756,9 @@ def get_shift(conn: sqlite3.Connection, shift_id: int, on: date | None = None) -
 
 
 def _unique_name(conn, name: str, shift_id: int | None) -> None:
-    if conn.execute("SELECT 1 FROM shifts WHERE name = ? AND id IS NOT ?", (name, shift_id)).fetchone():
+    other = () if shift_id is None else (shift_id,)
+    if conn.execute("SELECT 1 FROM shifts WHERE name = ?" + (" AND id <> ?" if other else ""),
+                    (name, *other)).fetchone():
         raise ValueError(f"a shift named {name!r} already exists")
 
 
@@ -810,6 +878,13 @@ def write_roster(conn: sqlite3.Connection, entries: list[tuple[int, date, int | 
     names = {r["id"]: r["name"] for r in conn.execute("SELECT id, name FROM shifts")}
     codes: dict[int, str] = {}
     changed = 0
+    if dbconn.is_mssql(conn):
+        upsert = _merge("roster", ["person_id", "date", "shift_id", "updated", "updated_by"], ["person_id", "date"],
+                        ["shift_id", "updated", "updated_by"])
+    else:
+        upsert = ("INSERT INTO roster (person_id, date, shift_id, updated, updated_by) VALUES (?, ?, ?, ?, ?) "
+                  "ON CONFLICT(person_id, date) DO UPDATE SET shift_id = excluded.shift_id, updated = excluded.updated, "
+                  "updated_by = excluded.updated_by")
     for person_id, day, shift_id in entries:
         if person_id not in codes:
             codes[person_id] = _person(conn, person_id)["employee_code"]
@@ -820,11 +895,7 @@ def write_roster(conn: sqlite3.Connection, entries: list[tuple[int, date, int | 
         old = _roster_entry(conn, person_id, day)
         if old == new:
             continue
-        conn.execute(
-            "INSERT INTO roster (person_id, date, shift_id, updated, updated_by) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(person_id, date) DO UPDATE SET shift_id = excluded.shift_id, updated = excluded.updated, "
-            "updated_by = excluded.updated_by",
-            (person_id, day, shift_id, _ts(datetime.now()), user))
+        conn.execute(upsert, (person_id, day, shift_id, _ts(datetime.now()), user))
         _audit(conn, user, "set_roster", f"roster:{codes[person_id]}:{day}",
                {"person": codes[person_id], "date": day, "shift": [old, new]}, reason)
         changed += 1
@@ -922,7 +993,7 @@ def roster_repeat_event_ids(conn: sqlite3.Connection, first: date, last: date,
 
 def shift_mode(conn: sqlite3.Connection) -> dict:
     """{"enabled": bool, "updated": text or None, "updated_by": text or None}, read from the database each time."""
-    row = conn.execute("SELECT value, updated, updated_by FROM app_settings WHERE key = 'shifts'").fetchone()
+    row = conn.execute('SELECT value, updated, updated_by FROM app_settings WHERE "key" = \'shifts\'').fetchone()
     if row is None:
         return {"enabled": config.SHIFTS_ENABLED_DEFAULT, "updated": None, "updated_by": None}
     return {"enabled": row["value"] == "on", "updated": row["updated"], "updated_by": row["updated_by"]}
@@ -938,9 +1009,14 @@ def set_shifts_enabled(conn: sqlite3.Connection, enabled: bool, reason: str, use
     with conn:
         if shifts_enabled(conn) == enabled:
             return False
-        conn.execute("INSERT INTO app_settings (key, value, updated, updated_by) VALUES ('shifts', ?, ?, ?) "
-                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated = excluded.updated, "
-                     "updated_by = excluded.updated_by", ("on" if enabled else "off", _ts(datetime.now()), user))
+        values = ("on" if enabled else "off", _ts(datetime.now()), user)
+        if dbconn.is_mssql(conn):
+            conn.execute(_merge("app_settings", ["key", "value", "updated", "updated_by"], ["key"],
+                                ["value", "updated", "updated_by"]), ("shifts", *values))
+        else:
+            conn.execute('INSERT INTO app_settings ("key", value, updated, updated_by) VALUES (\'shifts\', ?, ?, ?) '
+                         'ON CONFLICT("key") DO UPDATE SET value = excluded.value, updated = excluded.updated, '
+                         "updated_by = excluded.updated_by", values)
         _audit(conn, user, "enable_shifts" if enabled else "disable_shifts", "settings:shifts",
                {"shifts": ["off" if enabled else "on", "on" if enabled else "off"]}, reason)
     return True

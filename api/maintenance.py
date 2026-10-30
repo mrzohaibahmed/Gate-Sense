@@ -4,7 +4,9 @@ While the app runs, a lifespan task checks every MAINTENANCE_CHECK_SECONDS wheth
 day, at or after BACKUP_HOUR). The job:
 
 - makes a backup set in <data>/backups/, every file named "<part>-nightly-<time>": the database (SQLite's online
-  backup: consistent while the cameras keep writing, then checked with PRAGMA integrity_check), the face gallery,
+  backup: consistent while the cameras keep writing, then checked with PRAGMA integrity_check; on SQL Server
+  <database>-nightly-<time>.bak, a COPY_ONLY backup with checksums written by the SQL Server service, then checked
+  with RESTORE VERIFYONLY), the face gallery,
   the enrollment photos (known/ as a zip), cameras.json and settings.json. Never .env: it holds passwords. Each
   file is written under a .partial name, checked and flushed to disk before it gets its real name, so a set that
   looks complete is complete;
@@ -21,13 +23,15 @@ caught up at the first check after the next start (only once, not once per misse
 
 restore_set() puts a set back (scripts/restore.py stops GateSense first): the current files are moved aside to
 backups/before-restore-<time>/, the database's -wal and -shm files go with them, and the restored files are
-checked afterwards.
+checked afterwards. A SQL Server backup (.bak) is put back by an administrator (restore_commands: the app's login
+can't replace its own database); restore_set restores the other parts and refuses that one.
 """
 
 import asyncio
 import json
 import os
 import re
+import hashlib
 import shutil
 import sqlite3
 import zipfile
@@ -39,7 +43,7 @@ from pathlib import Path, PurePosixPath
 from starlette.concurrency import run_in_threadpool
 
 from api.db import Database
-from app import config
+from app import config, dbconn
 from app.fileutil import atomic_write_bytes, replace_retry, sync_dir
 
 NIGHTLY = "nightly"
@@ -69,14 +73,33 @@ def read_state() -> dict:
 
 
 def part_names() -> dict[str, tuple[str, str]]:
-    """part -> (file stem, extension) of its file in a set, e.g. database -> ("attendance", "db")."""
-    return {"database": (config.DB_PATH.stem, "db"), "gallery": (config.GALLERY_PATH.stem, "npz"),
+    """part -> (file stem, extension) of its file in a set, e.g. database -> ("attendance", "db"), or on SQL Server
+    ("GateSense", "bak")."""
+    if url := dbconn.server_url():
+        from app import mssql
+
+        database = (mssql.database_name(url), "bak")
+    else:
+        database = (config.DB_PATH.stem, "db")
+    return {"database": database, "gallery": (config.GALLERY_PATH.stem, "npz"),
             "known": ("known", "zip"), "cameras": (config.CAMERAS_FILE.stem, "json"),
             "settings": (config.SETTINGS_FILE.stem, "json")}
 
 
+def is_server_backup(path: Path) -> bool:
+    """A SQL Server backup file (.bak, also while it is a .partial), not a SQLite database."""
+    return ".bak" in path.suffixes
+
+
 def integrity(path: Path) -> str:
-    """PRAGMA integrity_check of a database file, read-only: "ok" or SQLite's description of the damage."""
+    """PRAGMA integrity_check of a database file, read-only: "ok" or SQLite's description of the damage. A SQL
+    Server backup is checked by the server (RESTORE VERIFYONLY)."""
+    if is_server_backup(path):
+        if not (url := dbconn.server_url()):
+            return f"{path.name} is a SQL Server backup: set {config.DATABASE_URL_ENV} to check or restore it"
+        from app import mssql
+
+        return mssql.verify_backup(url, path)
     try:
         with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=10)) as conn:
             rows = conn.execute("PRAGMA integrity_check").fetchall()
@@ -108,9 +131,22 @@ def zip_folder(folder: Path, dest: Path) -> int:
     return count
 
 
-def _check_file(part: str, path: Path) -> None:
-    """Raise BackupError if a written backup file can't be read back."""
-    if part == "database":
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while chunk := f.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _check_file(part: str, path: Path, source: Path | None = None) -> None:
+    """Raise BackupError if a written backup file can't be read back. A copy of a SQL Server backup (`source` =
+    the checked original) is compared byte for byte: the SQL Server service may not be allowed to read the copy
+    folder (a USB drive)."""
+    if part == "database" and source is not None and is_server_backup(path):
+        if sha256(path) != sha256(source):
+            raise BackupError(f"the copy {path.name} differs from {source}")
+    elif part == "database":
         if (result := integrity(path)) != "ok":
             raise BackupError(f"the database copy {path.name} failed the integrity check: {result}")
     elif part == "gallery":
@@ -178,7 +214,11 @@ def make_backup(db: Database, kind: str, now: datetime | None = None, folder: Pa
             if source is not None and not source.exists():
                 continue  # nothing of this part yet (no one enrolled, no settings changed)
             made.append(partial)  # first, so a failure below removes it too
-            if part == "database":
+            if part == "database" and db.backend == dbconn.MSSQL:
+                from app import mssql
+
+                mssql.backup_database(db.url, partial)
+            elif part == "database":
                 with closing(db.connect()) as src, closing(sqlite3.connect(partial)) as dst:
                     src.backup(dst)
             elif part == "known":
@@ -220,7 +260,7 @@ def copy_set(backup: BackupSet, target: Path) -> None:
         partial = final.with_name(final.name + ".partial")
         try:
             shutil.copy2(path, partial)
-            _check_file(part, partial)
+            _check_file(part, partial, source=path)
             _finish(partial, final)
         except BaseException:
             partial.unlink(missing_ok=True)
@@ -292,8 +332,9 @@ def clean_snapshots(db: Database, today: date, days: int | None = None) -> dict:
     if removed:
         prefix = config.SNAPSHOT_DIR.relative_to(config.DATA_DIR).as_posix()
         with db.transaction() as conn:
+            column = dbconn.like(dbconn.dialect(conn), "snapshot_path")
             for day in removed:
-                cleared += conn.execute("UPDATE attendance_events SET snapshot_path = NULL WHERE snapshot_path LIKE ?",
+                cleared += conn.execute(f"UPDATE attendance_events SET snapshot_path = NULL WHERE {column} LIKE ?",
                                         (f"{prefix}/{day}/%",)).rowcount
     return {"days": removed, "files": files, "events": cleared, "retention_days": days}
 
@@ -388,6 +429,9 @@ def restore_set(backup: BackupSet, parts: tuple[str, ...] = PARTS, now: datetime
     from app.gallery import LOAD_ERRORS, Gallery
 
     parts = tuple(p for p in parts if p in backup.files)
+    if "database" in parts and is_server_backup(backup.database):
+        raise BackupError(f"{backup.database.name} is a SQL Server backup: an administrator restores it (see "
+                          "scripts/restore.py); restore the other parts with --only")
     if "database" in parts and (result := integrity(backup.database)) != "ok":
         raise BackupError(f"the backup {backup.database.name} failed the integrity check ({result}); "
                           "choose another backup")
@@ -430,11 +474,14 @@ def restore_set(backup: BackupSet, parts: tuple[str, ...] = PARTS, now: datetime
 
     checks: dict = {}
     problems: list[str] = []
-    if config.DB_PATH.is_file():
-        with closing(app_db.connect(config.DB_PATH)) as conn:  # upgrades an older backup's schema (copy first)
-            checks["database"] = integrity(config.DB_PATH)
-            if checks["database"] != "ok":
-                problems.append(f"database: {checks['database']}")
+    server = dbconn.server_url()
+    if server or config.DB_PATH.is_file():
+        # SQLite: upgrades an older backup's schema (copy first). SQL Server: the database in use (not restored here).
+        with closing(app_db.connect(None if server else config.DB_PATH)) as conn:
+            if not server:
+                checks["database"] = integrity(config.DB_PATH)
+                if checks["database"] != "ok":
+                    problems.append(f"database: {checks['database']}")
             checks["events"] = conn.execute("SELECT count(*) FROM attendance_events").fetchone()[0]
             checks["people"] = conn.execute("SELECT count(*) FROM persons").fetchone()[0]
             checks["users"] = conn.execute("SELECT count(*) FROM users").fetchone()[0]

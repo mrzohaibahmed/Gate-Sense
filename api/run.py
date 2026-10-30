@@ -21,12 +21,13 @@ import threading
 import time
 import urllib.request
 import webbrowser
+from contextlib import closing
 
 import uvicorn
 
 from api import web
 from api.workers import api_pid
-from app import config, workers
+from app import config, dbconn, workers
 from app.env import admin_password_source
 
 ALREADY_RUNNING = 3
@@ -63,6 +64,16 @@ def https_problem() -> tuple[str | None, str | None]:
 
 def needs_admin_password() -> bool:
     """No users yet (first start): the first admin is created from GATESENSE_ADMIN_PASSWORD."""
+    if url := dbconn.server_url():
+        from app import mssql
+
+        try:
+            with closing(mssql.Connection(url)) as conn:
+                if mssql.schema_version(conn) is None:
+                    return True  # an empty database: the tables are created at the start
+                return conn.execute("SELECT count(*) FROM users").fetchone()[0] == 0
+        except dbconn.ERRORS:
+            return True
     if not config.DB_PATH.is_file():
         return True
     try:

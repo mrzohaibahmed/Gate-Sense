@@ -1,18 +1,18 @@
 """The API's only way to the database.
 
 Routes never import sqlite3 or app.db directly; they go through ``Database``,
-which picks a backend from ``config.DATABASE_URL`` (None = SQLite at
-``config.DB_PATH``). The SQLite backend reuses app.db, so the API, the
-dashboard and the camera workers share one schema and one set of queries
-(corrections and their audit rows included). Users and sessions (Phase 2)
-are queried here; every change to a user writes its audit row in the same
-transaction. The data endpoints (Phase 3) call app.db's functions wherever
-the dashboard has one, and page events and the audit log in SQL.
+which picks a backend from ``config.DATABASE_URL`` (GATESENSE_DB_URL; None =
+SQLite at ``config.DB_PATH``): SQLite, or Microsoft SQL Server for an
+mssql+pyodbc:// URL (app/mssql.py, a connection that behaves like sqlite3's).
+Both reuse app.db, so the API, the dashboard and the camera workers share one
+schema and one set of queries (corrections and their audit rows included).
+Users and sessions (Phase 2) are queried here; every change to a user writes
+its audit row in the same transaction. The data endpoints (Phase 3) call
+app.db's functions wherever the dashboard has one, and page events and the
+audit log in SQL (the few differences: app.dbconn).
 
-Moving to PostgreSQL later means adding a backend here (and porting app.db's
-queries, which the camera workers use too); the API code stays as it is and
-the switch is the URL. A postgresql:// URL is recognised now and reported as
-not supported, rather than silently using SQLite.
+A postgresql:// URL is recognised and reported as not supported, rather than
+silently using SQLite.
 """
 
 import sqlite3
@@ -20,12 +20,10 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from app import config
+from app import config, dbconn
 from app import db as app_db
 
-
-class UnsupportedDatabase(RuntimeError):
-    pass
+UnsupportedDatabase = dbconn.DatabaseConfigError
 
 
 def ts(dt: datetime | None) -> str | None:
@@ -49,16 +47,20 @@ USER_COLUMNS = ("id, username, full_name, email, role, password_hash, active, cr
 class Database:
     def __init__(self, url: str | None = None):
         self._url = url  # None = config.DATABASE_URL, read each time (tests change config)
-        self._ready: set[Path] = set()  # files whose tables were checked/upgraded by this process
+        self._ready: set[Path | str] = set()  # files / URLs whose tables were checked/upgraded by this process
 
     @property
     def url(self) -> str:
-        return self._url or config.DATABASE_URL or f"sqlite:///{config.DB_PATH.as_posix()}"
+        """The database URL (it may hold a password: show dbconn.safe_url(url) only)."""
+        if self._url:
+            return self._url
+        dbconn.server_url()  # refuses the old variable on its own (it would otherwise mean SQLite)
+        return config.DATABASE_URL or f"sqlite:///{config.DB_PATH.as_posix()}"
 
     @property
     def backend(self) -> str:
-        scheme = self.url.split(":", 1)[0].lower()
-        return "postgresql" if scheme in ("postgres", "postgresql") or scheme.startswith("postgresql+") else scheme
+        """"sqlite", "mssql", "postgresql" (refused) or another URL scheme (refused)."""
+        return dbconn.backend_of(self.url)
 
     @property
     def path(self) -> Path:
@@ -69,16 +71,19 @@ class Database:
         return path if path.is_absolute() else config.ROOT_DIR / path
 
     def _check_supported(self) -> None:
-        if self.backend == "postgresql":
-            raise UnsupportedDatabase("PostgreSQL is not supported yet: set GATESENSE_DATABASE_URL to a sqlite:/// "
-                                      "URL, or leave it unset to use data/attendance.db")
-        if self.backend != "sqlite":
-            raise UnsupportedDatabase(f"unknown database type {self.backend!r} in the database URL")
+        dbconn.check_url(self.url)  # raises for PostgreSQL and unknown URLs
 
     def connect(self) -> sqlite3.Connection:
-        """A new connection. The first one per file creates or upgrades the tables, like the dashboard and the
-        workers do; later ones skip that (one connection per request)."""
+        """A new connection. The first one per file (or SQL Server URL) creates or upgrades the tables, like the
+        dashboard and the workers do; later ones skip that (one connection per request)."""
         self._check_supported()
+        if self.backend == dbconn.MSSQL:
+            from app import mssql
+
+            url = self.url
+            conn = mssql.connect(url, migrate=url not in self._ready)
+            self._ready.add(url)
+            return conn
         path = self.path
         conn = app_db.connect(path, migrate=path not in self._ready or not path.is_file())
         self._ready.add(path)
@@ -107,9 +112,17 @@ class Database:
         """{"status": "ok" | "missing" | "error", "backend": ..., "detail": ...}; never creates the database."""
         try:
             self._check_supported()
+            if self.backend == dbconn.MSSQL:
+                from app import mssql
+
+                return mssql.status(self.url)
             path = self.path
         except UnsupportedDatabase as e:
-            return {"status": "error", "backend": self.backend, "detail": str(e)}
+            try:
+                backend = self.backend
+            except UnsupportedDatabase:
+                backend = "unknown"
+            return {"status": "error", "backend": backend, "detail": str(e)}
         if not path.is_file():
             return {"status": "missing", "backend": "sqlite",
                     "detail": "no database yet: it is created when the dashboard or a camera first starts"}
@@ -133,7 +146,7 @@ class Database:
         with self.transaction() as conn:
             return [dict(r) for r in app_db.audit_entries(conn, limit)]
 
-    AUDIT_SORT = {"timestamp": "timestamp", "id": "id", "user": "user", "action": "action", "target": "target"}
+    AUDIT_SORT = {"timestamp": "timestamp", "id": "id", "user": '"user"', "action": "action", "target": "target"}
 
     def audit_page(self, params, start: datetime | None = None, end: datetime | None = None,
                    user: str | None = None, action: str | None = None) -> tuple[list[dict], int]:
@@ -141,17 +154,18 @@ class Database:
         from api.paging import limit_offset, order_by
 
         where, args = [], []
-        for cond, value in (("timestamp >= ?", ts(start)), ("timestamp < ?", ts(end)), ("user = ?", user),
+        kind = self.backend
+        for cond, value in (("timestamp >= ?", ts(start)), ("timestamp < ?", ts(end)), ('"user" = ?', user),
                             ("action = ?", action)):
             if value is not None:
                 where.append(cond)
                 args.append(value)
         if params.q:
-            where.append("(" + " OR ".join(f"{col} LIKE ? ESCAPE '!'" for col in ("user", "target", "details",
-                                                                                   "reason")) + ")")
+            where.append("(" + " OR ".join(f"{dbconn.like(kind, col)} LIKE ? ESCAPE '!'"
+                                           for col in ('"user"', "target", "details", "reason")) + ")")
             args += [like(params.q)] * 4
         clause = ("WHERE " + " AND ".join(where) + " ") if where else ""
-        limit, page = limit_offset(params)
+        limit, page = limit_offset(params, kind)
         order = order_by(params, self.AUDIT_SORT, "-timestamp", "id DESC")
         with self.conn() as conn:
             total = conn.execute("SELECT count(*) FROM audit_log " + clause, args).fetchone()[0]
@@ -174,15 +188,20 @@ class Database:
 
     def preference(self, user_id: int, key: str) -> str | None:
         with self.transaction() as conn:
-            row = conn.execute("SELECT value FROM user_preferences WHERE user_id = ? AND key = ?",
+            row = conn.execute('SELECT value FROM user_preferences WHERE user_id = ? AND "key" = ?',
                                (user_id, key)).fetchone()
         return row[0] if row else None
 
     def set_preference(self, user_id: int, key: str, value: str | None) -> None:
         with self.transaction() as conn:
-            conn.execute("INSERT INTO user_preferences (user_id, key, value, updated) VALUES (?, ?, ?, ?) "
-                         "ON CONFLICT (user_id, key) DO UPDATE SET value = excluded.value, updated = excluded.updated",
-                         (user_id, key, value, datetime.now().isoformat(timespec="seconds")))
+            values = (user_id, key, value, datetime.now().isoformat(timespec="seconds"))
+            if dbconn.is_mssql(conn):
+                conn.execute(app_db._merge("user_preferences", ["user_id", "key", "value", "updated"],
+                                           ["user_id", "key"], ["value", "updated"]), values)
+            else:
+                conn.execute('INSERT INTO user_preferences (user_id, "key", value, updated) VALUES (?, ?, ?, ?) '
+                             'ON CONFLICT (user_id, "key") DO UPDATE SET value = excluded.value, '
+                             "updated = excluded.updated", values)
 
     def users(self) -> list[dict]:
         with self.transaction() as conn:
@@ -218,7 +237,9 @@ class Database:
                 actor, action, details, reason = audit
                 app_db.write_audit(conn, actor, action, f"user:{username}", details, reason)
             if end_sessions:
-                conn.execute("DELETE FROM sessions WHERE user_id = ? AND id IS NOT ?", (user_id, keep_session))
+                keep = () if keep_session is None else (keep_session,)
+                conn.execute("DELETE FROM sessions WHERE user_id = ?" + (" AND id <> ?" if keep else ""),
+                             (user_id, *keep))
 
     # --- Sessions ------------------------------------------------------------------
 
@@ -474,12 +495,13 @@ class Database:
             if value is not None:
                 where.append(cond)
                 args.append(value)
+        kind = self.backend
         if params.q:
-            where.append("(" + " OR ".join(f"{col} LIKE ? ESCAPE '!'" for col in ("p.name", "p.employee_code",
-                                                                                   "c.name")) + ")")
+            where.append("(" + " OR ".join(f"{dbconn.like(kind, col)} LIKE ? ESCAPE '!'"
+                                           for col in ("p.name", "p.employee_code", "c.name")) + ")")
             args += [like(params.q)] * 3
         clause = ("WHERE " + " AND ".join(where) + " ") if where else ""
-        limit, page = limit_offset(params)
+        limit, page = limit_offset(params, kind)
         order = order_by(params, self.EVENT_SORT, "-timestamp", "e.id DESC")
         with self.conn() as conn:
             total = conn.execute("SELECT count(*) FROM attendance_events e JOIN persons p ON p.id = e.person_id "
@@ -521,8 +543,8 @@ class Database:
     def events_after(self, event_id: int, limit: int = 200) -> list[dict]:
         """Events added since `event_id` (by the camera workers or as corrections), oldest first."""
         with self.conn() as conn:
-            return [dict(r) for r in conn.execute(app_db.EVENT_COLUMNS + "WHERE e.id > ? ORDER BY e.id LIMIT ?",
-                                                  (event_id, limit))]
+            return [dict(r) for r in conn.execute(app_db.EVENT_COLUMNS + "WHERE e.id > ? ORDER BY e.id"
+                                                  + dbconn.limit(conn), (event_id, limit))]
 
     def audit_after(self, audit_id: int, actions: tuple[str, ...], limit: int = 200) -> tuple[list[dict], int]:
         """Audit rows with one of `actions` since `audit_id` (from the API or the dashboard), and the newest id seen."""
@@ -531,7 +553,7 @@ class Database:
                                   (audit_id, audit_id)).fetchone()[0]
             marks = ", ".join("?" * len(actions))
             rows = conn.execute(f"SELECT * FROM audit_log WHERE id > ? AND id <= ? AND action IN ({marks}) "
-                                "ORDER BY id LIMIT ?", (audit_id, newest, *actions, limit)).fetchall()
+                                "ORDER BY id" + dbconn.limit(conn), (audit_id, newest, *actions, limit)).fetchall()
         return [dict(r) for r in rows], newest
 
     def sessions_alive(self, session_ids: list[int], now: datetime) -> set[int]:

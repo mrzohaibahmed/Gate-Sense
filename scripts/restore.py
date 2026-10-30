@@ -14,6 +14,10 @@ What it does:
    which must never be left next to a restored database), then copies the backup in.
 4. Checks the result (integrity, counts, gallery, cameras) and writes the restore to the audit log.
 Then start GateSense again with start.bat. .env (passwords) is never in a backup: keep your own copy of it.
+
+On SQL Server (GATESENSE_DB_URL) the database part is a .bak file that an administrator restores (GateSense's own
+login can't replace its database): this checks it (RESTORE VERIFYONLY) and prints the T-SQL to run, then the
+command for the other parts (--only gallery,known,cameras,settings).
 """
 
 import argparse
@@ -26,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from api import maintenance  # noqa: E402
 from api.workers import api_pid  # noqa: E402
-from app import config, workers  # noqa: E402
+from app import config, dbconn, workers  # noqa: E402
 
 import stop  # noqa: E402  scripts/stop.py, next to this file
 
@@ -70,6 +74,32 @@ def choose(sets: list[maintenance.BackupSet], which: str) -> maintenance.BackupS
     return next((s for s in sets if s.stamp == which or which in {p.name for p in s.files.values()}), None)
 
 
+def server_restore(chosen: maintenance.BackupSet, parts: tuple[str, ...]) -> int:
+    """A SQL Server backup: check it and print what an administrator runs (nothing is changed here)."""
+    from app import mssql
+
+    url = dbconn.server_url()
+    if not url:
+        print(f"{chosen.database.name} is a SQL Server backup: set {config.DATABASE_URL_ENV} to restore it.")
+        return 1
+    if (result := maintenance.integrity(chosen.database)) != "ok":
+        print(f"ERROR: this backup's database fails RESTORE VERIFYONLY ({result}). Choose another one.")
+        return 1
+    others = [p for p in parts if p != "database"]
+    print(f"{chosen.database.name} is a SQL Server backup (checked: RESTORE VERIFYONLY ok). An administrator restores "
+          "it; GateSense's own login can't replace its database.")
+    print("1. Stop GateSense: stop.bat")
+    print("2. In SQL Server Management Studio or sqlcmd, as an administrator of the SQL Server instance, run:\n")
+    print(mssql.restore_commands(url, chosen.database.resolve()))
+    print("\n   (The SQL Server service must be able to read that file: it wrote it, unless it was copied from the "
+          "second backup folder: then copy it back to data\\backups first.)")
+    if others:
+        print("3. Then restore the other parts of the set:\n"
+              f"   .venv\\Scripts\\python scripts\\restore.py {chosen.stamp} --only {','.join(others)}")
+    print("Then start GateSense again with start.bat.")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="python scripts\\restore.py", description=__doc__.splitlines()[0])
     parser.add_argument("backup", nargs="?", help='"latest", or a set\'s time (as --list shows it) or file name')
@@ -103,6 +133,8 @@ def main(argv=None) -> int:
     parts = tuple(p for p in parts if p in chosen.files)
 
     print(f"Backup {describe(chosen)}")
+    if "database" in parts and maintenance.is_server_backup(chosen.database):
+        return server_restore(chosen, parts)
     if "database" in parts and (result := maintenance.integrity(chosen.database)) != "ok":
         print(f"ERROR: this backup's database fails the integrity check ({result}). Choose another one.")
         return 1

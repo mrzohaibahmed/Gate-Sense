@@ -45,7 +45,6 @@ Press Q or Esc in the window to quit.
 """
 
 import argparse
-import sqlite3
 import sys
 import time
 import traceback
@@ -57,7 +56,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import cv2  # noqa: E402
 
-from app import config, db, frame_source, logfile, sources, workers  # noqa: E402
+from app import config, db, dbconn, frame_source, logfile, sources, workers  # noqa: E402
 from app.attendance import Cooldown  # noqa: E402
 from app.camera import is_live, mask_source, open_capture, parse_source  # noqa: E402
 from app.detector import (  # noqa: E402
@@ -133,8 +132,10 @@ class Recorder:
     camera's events.
 
     A snapshot that can't be saved never costs the event (it is recorded without one). An event the database
-    can't take right now (locked for too long, disk full) waits in `pending`, in order, and is written by the
-    next flush() (each event and every housekeeping round); at most EVENT_QUEUE_MAX wait, the oldest go first.
+    can't take right now (locked for too long, disk full, SQL Server restarting) waits in `pending`, in order, and
+    is written by the next flush() (each event and every housekeeping round); at most EVENT_QUEUE_MAX wait, the
+    oldest go first. A lost SQL Server connection is replaced by the connection itself (app/mssql.py), at most
+    every DB_RECONNECT_SECONDS; an event that failed once is looked for before it is written again (retry).
     """
 
     def __init__(self, cam: dict, source, use_db: bool):
@@ -189,8 +190,12 @@ class Recorder:
                 person_id = db.active_person_id(self.conn, ev["code"])  # each time: dashboard changes apply live
                 if person_id is not None:
                     event_id, previous = db.add_camera_event(self.conn, person_id, self.camera_id, ev["time"],
-                                                             ev["score"], ev["snapshot"], config.COOLDOWN_SECONDS)
-            except sqlite3.Error as e:
+                                                             ev["score"], ev["snapshot"], config.COOLDOWN_SECONDS,
+                                                             ev.get("retry", False))
+            except dbconn.ERRORS as e:
+                # Kept for the next flush. It may have been written before the error (SQL Server's connection lost
+                # during COMMIT): the next try looks for it first, so it is never recorded twice.
+                ev["retry"] = True
                 self.db_errors(e)
                 return
             self.pending.popleft()

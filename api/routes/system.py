@@ -10,7 +10,8 @@ from starlette.concurrency import run_in_threadpool
 
 from api import __version__, auth, maintenance
 from api.auth import CurrentUser, require_permission
-from app import config, enrollment
+from app import config, dbconn, enrollment
+from app import db as app_db
 
 router = APIRouter(prefix="/api/system", tags=["system"], responses=auth.PROTECTED_RESPONSES)
 manage = require_permission("settings:manage")
@@ -57,8 +58,9 @@ class SystemInfo(BaseModel):
     started: datetime
     uptime_seconds: float
     python: str
-    database_bytes: int = Field(description="the database file plus its write-ahead log")
-    database_schema: int = Field(description="schema version (PRAGMA user_version)")
+    database_bytes: int = Field(description="the database file plus its write-ahead log (SQL Server: its data and "
+                                            "log files)")
+    database_schema: int = Field(description="schema version (SQLite: PRAGMA user_version)")
     events: int
     people: int
     gallery_bytes: int
@@ -73,7 +75,8 @@ class SystemInfo(BaseModel):
 
 def backups() -> list[Backup]:
     folder = maintenance.backup_dir()
-    files = sorted(folder.glob("*.db"), key=lambda p: p.stat().st_mtime, reverse=True) if folder.is_dir() else []
+    files = sorted((p for ext in ("*.db", "*.bak") for p in folder.glob(ext)), key=lambda p: p.stat().st_mtime,
+                   reverse=True) if folder.is_dir() else []
     return [Backup(file=p.name, size_bytes=p.stat().st_size, created=datetime.fromtimestamp(p.stat().st_mtime))
             for p in files]
 
@@ -89,10 +92,16 @@ def size(path) -> int:
 def system_info(request: Request, _: CurrentUser = Depends(manage)) -> SystemInfo:
     db = auth.db_of(request)
     with db.conn() as conn:
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        version = app_db.schema_version(conn)
         events = conn.execute("SELECT count(*) FROM attendance_events").fetchone()[0]
         people = conn.execute("SELECT count(*) FROM persons").fetchone()[0]
-    wal = config.DB_PATH.with_name(config.DB_PATH.name + "-wal")
+        if dbconn.is_mssql(conn):
+            from app import mssql
+
+            database_bytes = mssql.database_bytes(conn)
+        else:
+            wal = config.DB_PATH.with_name(config.DB_PATH.name + "-wal")
+            database_bytes = size(config.DB_PATH) + size(wal)
     started = request.app.state.started
     config.refresh_settings()
     last = maintenance.read_state().get("last") or {}
@@ -102,7 +111,7 @@ def system_info(request: Request, _: CurrentUser = Depends(manage)) -> SystemInf
     workers = request.app.state.workers.statuses()
     return SystemInfo(
         version=__version__, started=datetime.fromtimestamp(started), uptime_seconds=round(time.time() - started, 1),
-        python=sys.version.split()[0], database_bytes=size(config.DB_PATH) + size(wal), database_schema=version,
+        python=sys.version.split()[0], database_bytes=database_bytes, database_schema=version,
         events=events, people=people, gallery_bytes=size(config.GALLERY_PATH),
         enrolled=len(enrollment.load_gallery().counts()), backups=backups(),
         cameras_running=sum(w.state != "stopped" for w in workers),
