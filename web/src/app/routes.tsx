@@ -12,6 +12,7 @@ import { PeoplePage, PersonProfilePage } from "@/pages/People";
 import { ReportsPage } from "@/pages/Reports";
 import { RosterPage } from "@/pages/Roster";
 import { SettingsPage } from "@/pages/Settings";
+import { VisitorsPage } from "@/pages/Visitors";
 
 import { AppShell } from "./AppShell";
 import { NAV } from "./nav";
@@ -19,6 +20,7 @@ import { NAV } from "./nav";
 const pages: Record<string, React.ReactNode> = {
   "/": <OverviewPage />,
   "/live": <LiveCamerasPage />,
+  "/visitors": <VisitorsPage />,
   "/attendance": <AttendancePage />,
   "/roster": <RosterPage />,
   "/people": <PeoplePage />,

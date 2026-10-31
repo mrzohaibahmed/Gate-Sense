@@ -409,6 +409,64 @@ class Database:
         with self.conn() as conn:
             return app_db.set_shifts_enabled(conn, enabled, reason, actor)
 
+    # --- Unknown visitors (app/visitors.py) ------------------------------------------------------------------------
+
+    UNKNOWN_SORT = {"first_seen": "v.first_seen", "last_seen": "v.last_seen", "camera": "c.name",
+                    "score": "v.best_score", "tracks": "v.tracks", "status": "v.status", "id": "v.id"}
+
+    def unknown_log_mode(self) -> dict:
+        """The visitor log on or off (app_settings, read on every call): {"enabled", "updated", "updated_by"}."""
+        with self.conn() as conn:
+            return app_db.unknown_log_mode(conn)
+
+    def set_unknown_log_enabled(self, enabled: bool, actor: str, reason: str) -> bool:
+        with self.conn() as conn:
+            return app_db.set_unknown_log_enabled(conn, enabled, reason, actor)
+
+    def unknown_visits(self, params, start: datetime | None = None, end: datetime | None = None,
+                       camera_id: int | None = None, status: str | None = None) -> tuple[list[dict], int]:
+        """One page of unknown visits first seen in [start, end); site = the camera's site."""
+        from api.paging import limit_offset, order_by
+
+        where, args = [], []
+        for cond, value in (("v.first_seen >= ?", ts(start)), ("v.first_seen < ?", ts(end)),
+                            ("v.camera_id = ?", camera_id), ("v.status = ?", status),
+                            ("c.site_id = ?", params.site_id)):
+            if value is not None:
+                where.append(cond)
+                args.append(value)
+        kind = self.backend
+        if params.q:
+            columns = ("c.name", "v.closest_code", "cp.name", "p.name", "p.employee_code", "v.note")
+            where.append("(" + " OR ".join(f"{dbconn.like(kind, col)} LIKE ? ESCAPE '!'" for col in columns) + ")")
+            args += [like(params.q)] * len(columns)
+        clause = ("WHERE " + " AND ".join(where) + " ") if where else ""
+        limit, page = limit_offset(params, kind)
+        order = order_by(params, self.UNKNOWN_SORT, "-first_seen", "v.id DESC")
+        with self.conn() as conn:
+            total = conn.execute("SELECT count(*) " + app_db.UNKNOWN_FROM + clause, args).fetchone()[0]
+            rows = conn.execute(f"{app_db.UNKNOWN_COLUMNS}{clause}{order} {limit}", (*args, *page)).fetchall()
+        return [dict(r) for r in rows], total
+
+    def unknown_visit(self, visit_id: int) -> dict | None:
+        with self.conn() as conn:
+            row = app_db.unknown_visit(conn, visit_id)
+        return dict(row) if row else None
+
+    def unknown_counts(self, today: date) -> dict:
+        """{"enabled", "new" (not reviewed), "today" (first seen today)}."""
+        start, end = today.isoformat(), (today + timedelta(days=1)).isoformat()
+        with self.conn() as conn:
+            waiting = conn.execute("SELECT count(*) FROM unknown_visits WHERE status = 'new'").fetchone()[0]
+            seen = conn.execute("SELECT count(*) FROM unknown_visits WHERE first_seen >= ? AND first_seen < ?",
+                                (start, end)).fetchone()[0]
+            return {"enabled": app_db.unknown_log_enabled(conn), "new": waiting, "today": seen}
+
+    def review_unknown(self, visit_id: int, status: str, person_id: int | None, note: str | None, actor: str,
+                       reason: str) -> bool:
+        with self.conn() as conn:
+            return app_db.review_unknown_visit(conn, visit_id, status, person_id, note, reason, actor)
+
     # --- Shifts (effective-dated versions) and the roster ---------------------------------------------------------
 
     def shifts(self, on: date | None = None) -> list[dict]:
@@ -534,11 +592,12 @@ class Database:
 
     # --- Live updates (/api/ws) ----------------------------------------------------------
 
-    def last_ids(self) -> tuple[int, int]:
-        """(newest event id, newest audit id): where a new WebSocket feed starts."""
+    def last_ids(self) -> tuple[int, int, int]:
+        """(newest event id, newest audit id, newest unknown visit id): where a new WebSocket feed starts."""
         with self.conn() as conn:
             return (conn.execute("SELECT COALESCE(MAX(id), 0) FROM attendance_events").fetchone()[0],
-                    conn.execute("SELECT COALESCE(MAX(id), 0) FROM audit_log").fetchone()[0])
+                    conn.execute("SELECT COALESCE(MAX(id), 0) FROM audit_log").fetchone()[0],
+                    conn.execute("SELECT COALESCE(MAX(id), 0) FROM unknown_visits").fetchone()[0])
 
     def events_after(self, event_id: int, limit: int = 200) -> list[dict]:
         """Events added since `event_id` (by the camera workers or as corrections), oldest first."""
@@ -555,6 +614,12 @@ class Database:
             rows = conn.execute(f"SELECT * FROM audit_log WHERE id > ? AND id <= ? AND action IN ({marks}) "
                                 "ORDER BY id" + dbconn.limit(conn), (audit_id, newest, *actions, limit)).fetchall()
         return [dict(r) for r in rows], newest
+
+    def unknowns_after(self, visit_id: int, limit: int = 200) -> list[dict]:
+        """Unknown visits added since `visit_id` (by the camera workers), oldest first."""
+        with self.conn() as conn:
+            return [dict(r) for r in conn.execute(app_db.UNKNOWN_COLUMNS + "WHERE v.id > ? ORDER BY v.id"
+                                                  + dbconn.limit(conn), (visit_id, limit))]
 
     def sessions_alive(self, session_ids: list[int], now: datetime) -> set[int]:
         """Which of these sessions still exist, haven't expired and belong to an active user."""

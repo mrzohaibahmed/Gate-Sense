@@ -59,6 +59,8 @@ class Sample:
     quality: float
     match: Match
     snapshot: np.ndarray  # small face crop, saved if this sample backs an event
+    embedding: np.ndarray | None = None  # the frame's face embedding (memory only: an unknown visitor's is matched
+    # against the strangers seen recently, app/visitors.py)
 
 
 @dataclass

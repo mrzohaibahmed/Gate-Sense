@@ -37,6 +37,8 @@ class Maintenance(BaseModel):
     backup_copy_dir: str | None = Field(description="second backup folder (GATESENSE_BACKUP_COPY_DIR), if set")
     snapshot_retention_days: int = Field(description="event snapshots are kept this long (setting)")
     snapshots_bytes: int
+    unknown_retention_days: int = Field(description="unknown visitors and their snapshots are kept this long "
+                                                    "(setting)")
 
 
 class DeviceInfo(BaseModel):
@@ -124,7 +126,8 @@ def system_info(request: Request, _: CurrentUser = Depends(manage)) -> SystemInf
             last_error=last.get("error"), backup_hour=config.BACKUP_HOUR,
             backup_keep=config.BACKUP_KEEP,
             backup_copy_dir=str(config.BACKUP_COPY_DIR) if config.BACKUP_COPY_DIR else None,
-            snapshot_retention_days=config.SNAPSHOT_RETENTION_DAYS, snapshots_bytes=maintenance.snapshot_bytes()))
+            snapshot_retention_days=config.SNAPSHOT_RETENTION_DAYS, snapshots_bytes=maintenance.snapshot_bytes(),
+            unknown_retention_days=config.UNKNOWN_RETENTION_DAYS))
 
 
 class BackupIn(BaseModel):

@@ -198,6 +198,23 @@ SNAPSHOT_RETENTION_DAYS = 30  # the nightly job deletes event snapshots older th
 COOLDOWN_SECONDS = 5 * 60
 SNAPSHOT_SIZE = 160  # longest side of saved face snapshots, in pixels
 
+# --- Unknown visitors (app/visitors.py): faces that match nobody enrolled, kept for review -------------------------
+# Off by default: the switch (Settings > System > Unknown visitors) is kept in the database (app_settings), and the
+# camera workers read it every UNKNOWN_SWITCH_SECONDS (no restart). A tracked face is recorded once UNKNOWN_MIN_FRAMES of
+# its kept frames are embedded and every kept frame scores below UNKNOWN_MAX_SCORE against every enrolled person: lower
+# than MATCH_THRESHOLD, so a face scoring between the two (probably an employee at a bad angle) isn't listed as a
+# stranger. With liveness on, LIVENESS_MIN_FRAMES of its frames must pass too. Visitors' face embeddings stay in the
+# worker's memory for UNKNOWN_MERGE_SECONDS only (one record for someone waiting at the gate), never on disk.
+UNKNOWN_LOG_ENABLED_DEFAULT = False
+UNKNOWN_MIN_FRAMES = 3  # at most BEST_FRAMES_PER_TRACK
+UNKNOWN_MAX_SCORE = 0.35  # at most MATCH_THRESHOLD
+UNKNOWN_RETENTION_DAYS = 30  # the nightly job deletes visits (and their snapshots) first seen longer ago
+UNKNOWN_MERGE_SECONDS = 300  # a stranger seen again on the same camera within this long is the same visit...
+UNKNOWN_SAME_PERSON = 0.45  # ...when their faces match at least this well (cosine)
+UNKNOWN_SWITCH_SECONDS = 5.0  # how often a worker reads the switch
+UNKNOWN_SNAPSHOT_FOLDER = "unknown"  # snapshots in data/snapshots/unknown/<day>/ (not the events' day folders)
+UNKNOWN_SNAPSHOT_SIZE = 320  # longest side of a visitor's snapshot (the face with some background)
+
 # --- Shifts and roster (app/shifts.py) ------------------------------------------------
 # Each shift in the shifts table has its own grace and windows; these are the defaults for a new one. The IN window
 # runs from in_window_before_min before the start to the shift's midpoint, the OUT window from the midpoint to
@@ -326,6 +343,11 @@ EDITABLE_SETTINGS = {
     "ONNX_THREADS": (int, 0, 64, "threads per camera worker for face detection and recognition; 0 = automatic "
                                  "(CPU cores / cameras)"),
     "SNAPSHOT_RETENTION_DAYS": (int, 1, 3650, "face snapshots of events are deleted after this many days"),
+    "UNKNOWN_MIN_FRAMES": (int, 1, 20, "unknown visitors: a tracked face is recorded once this many of its kept "
+                                       "frames match nobody (at most BEST_FRAMES_PER_TRACK)"),
+    "UNKNOWN_MAX_SCORE": (float, 0.0, 0.9, "unknown visitors: every kept frame must score below this against every "
+                                           "enrolled person (at most MATCH_THRESHOLD)"),
+    "UNKNOWN_RETENTION_DAYS": (int, 1, 90, "unknown visitors and their snapshots are deleted after this many days"),
 }
 SETTINGS_FILE = Path(os.environ.get("GATESENSE_SETTINGS_FILE") or ROOT_DIR / "settings.json")
 DEFAULT_SETTINGS = {name: globals()[name] for name in EDITABLE_SETTINGS}  # the values written above
@@ -374,6 +396,11 @@ def load_settings(path: Path | None = None) -> dict:
         print("WARNING: VOTE_MIN_AGREE is more than BEST_FRAMES_PER_TRACK; using the defaults for both")
         for name in ("VOTE_MIN_AGREE", "BEST_FRAMES_PER_TRACK"):
             values[name] = DEFAULT_SETTINGS[name]
+            overrides.pop(name, None)
+    for name, limit in (("UNKNOWN_MIN_FRAMES", "BEST_FRAMES_PER_TRACK"), ("UNKNOWN_MAX_SCORE", "MATCH_THRESHOLD")):
+        if values[name] > values[limit]:
+            print(f"WARNING: {name} is more than {limit}; using {min(DEFAULT_SETTINGS[name], values[limit])}")
+            values[name] = min(DEFAULT_SETTINGS[name], values[limit])
             overrides.pop(name, None)
     globals().update(values)
     return overrides

@@ -4,6 +4,10 @@ Also the Shifts switch (/api/settings/shifts): on = attendance by roster day (sh
 before the shift module. It is kept in the database (app_settings) and read on every request: no restart needed.
 Everyone logged in can read it (the dashboard hides the roster when off); only admins change it, with a reason.
 
+And the unknown visitor log switch (/api/settings/unknowns, app/visitors.py): on = the camera workers record faces that
+match nobody enrolled, for review; off (the default) = nothing is recorded. Kept in the database too; the workers read
+it every UNKNOWN_SWITCH_SECONDS (no restart). Admins and guards can read it (unknowns:read); only admins change it.
+
 The values live in app/config.py; changes are saved to settings.json and applied over them
 (config.EDITABLE_SETTINGS lists what can be changed). Camera workers read them when they start.
 """
@@ -85,6 +89,11 @@ def update_settings(body: SettingsPatch, request: Request, admin: CurrentUser = 
             raise HTTPException(422, str(e).replace(names[k], k)) from None
     if new["VOTE_MIN_AGREE"] > new["BEST_FRAMES_PER_TRACK"]:
         raise HTTPException(422, "vote_min_agree can't be more than best_frames_per_track")
+    if new["UNKNOWN_MIN_FRAMES"] > new["BEST_FRAMES_PER_TRACK"]:
+        raise HTTPException(422, "unknown_min_frames can't be more than best_frames_per_track (the frames kept per "
+                                 "face)")
+    if new["UNKNOWN_MAX_SCORE"] > new["MATCH_THRESHOLD"]:
+        raise HTTPException(422, "unknown_max_score can't be more than match_threshold (a face above it is a match)")
     changes = {key(n): [getattr(config, n), v] for n, v in new.items() if v != getattr(config, n)}
     if changes:
         overrides = {n: v for n, v in new.items() if v != config.DEFAULT_SETTINGS[n]}
@@ -122,3 +131,32 @@ def set_shift_mode(body: ShiftModeIn, request: Request, admin: CurrentUser = Dep
     db = auth.db_of(request)
     db.set_shifts_enabled(body.enabled, admin.username, body.reason)
     return db.shift_mode()
+
+
+# --- Unknown visitor log on / off -----------------------------------------------------------------------------------
+
+
+class VisitorLogMode(BaseModel):
+    enabled: bool = Field(description="on: the cameras record faces that match nobody enrolled (Unknown visitors)")
+    updated: datetime | None = Field(description="when it was last switched (None: never, the default: off)")
+    updated_by: str | None
+
+
+class VisitorLogModeIn(Reason):
+    enabled: bool
+
+
+@router.get("/unknowns", response_model=VisitorLogMode)
+def get_unknown_log_mode(request: Request, _: CurrentUser = Depends(require_permission("unknowns:read"))) -> dict:
+    """Is the unknown visitor log on? Read from the database on every request."""
+    return auth.db_of(request).unknown_log_mode()
+
+
+@router.put("/unknowns", response_model=VisitorLogMode)
+def set_unknown_log_mode(body: VisitorLogModeIn, request: Request, admin: CurrentUser = Depends(manage)) -> dict:
+    """Switch the unknown visitor log on or off (admin only, with a reason; audited enable_unknown_log /
+    disable_unknown_log). Running cameras follow within UNKNOWN_SWITCH_SECONDS; visits already recorded stay until
+    the retention deletes them."""
+    db = auth.db_of(request)
+    db.set_unknown_log_enabled(body.enabled, admin.username, body.reason)
+    return db.unknown_log_mode()

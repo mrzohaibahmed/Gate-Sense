@@ -10,6 +10,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from api.db import Database, parse_ts
+from app.db import VISIT_STATUSES
 from app.shifts import ALL_STATUSES
 
 # A day's status (app/shifts.py). Shifts on: on time, late, early leave, missing IN, missing OUT, absent, not in yet
@@ -136,3 +137,47 @@ def day_range(date_from: date | None, date_to: date | None, max_days: int = 366)
     if (last - first).days >= max_days:
         raise ValueError(f"at most {max_days} days at a time")
     return first, last
+
+
+# --- Unknown visitors (app/visitors.py) ------------------------------------------------------------------------------
+
+VisitStatus = Literal["new", "dismissed", "identified"]
+assert set(VisitStatus.__args__) == set(VISIT_STATUSES)
+
+
+class UnknownVisit(BaseModel):
+    id: int
+    camera_id: int
+    camera: str
+    direction: Direction
+    site_id: int | None = Field(description="the camera's site")
+    first_seen: datetime
+    last_seen: datetime = Field(description="when the face was last seen (written when its track ended)")
+    tracks: int = Field(description="tracked passes of this stranger merged into the visit (they waited, or came "
+                                    "back within a few minutes)")
+    score: float = Field(description="the best similarity to any enrolled person (cosine, 0-1): below "
+                                     "UNKNOWN_MAX_SCORE")
+    closest_code: str | None = Field(description="the enrolled person the face came closest to")
+    closest_name: str | None
+    liveness: float | None = Field(description="the snapshot frame's live score (None: not checked)")
+    face_px: int | None = Field(description="face width in camera pixels")
+    snapshot_url: str | None = Field(description="GET it with the session cookie; None if there is no snapshot")
+    status: VisitStatus
+    person_id: int | None = Field(description="identified as this person")
+    person_code: str | None
+    person_name: str | None
+    note: str | None
+    reviewed: datetime | None
+    reviewed_by: str | None
+
+
+def visit_out(row: dict) -> UnknownVisit:
+    return UnknownVisit(
+        id=row["id"], camera_id=row["camera_id"], camera=row["camera"], direction=row["direction"],
+        site_id=row["site_id"], first_seen=parse_ts(row["first_seen"]), last_seen=parse_ts(row["last_seen"]),
+        tracks=row["tracks"], score=round(row["best_score"], 3), closest_code=row["closest_code"],
+        closest_name=row["closest_name"], liveness=None if row["liveness"] is None else round(row["liveness"], 3),
+        face_px=row["face_px"], snapshot_url=f"/api/unknowns/{row['id']}/snapshot" if row["snapshot_path"] else None,
+        status=row["status"], person_id=row["person_id"], person_code=row["person_code"],
+        person_name=row["person_name"], note=row["note"], reviewed=parse_ts(row["reviewed"]),
+        reviewed_by=row["reviewed_by"])

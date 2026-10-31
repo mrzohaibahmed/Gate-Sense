@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 
 import { NAV } from "./nav";
 import { useShiftsEnabled } from "./shiftMode";
+import { useVisitorLog } from "./visitorLog";
 
 /** Left navigation: only the items the role may open. Collapses to icons on a desktop; a drawer on a phone. */
 export function Sidebar({
@@ -22,7 +23,13 @@ export function Sidebar({
 }) {
   const { data: me } = useMe();
   const shifts = useShiftsEnabled();
-  const items = NAV.filter((item) => canAny(me, item.permissions) && (shifts || !item.shifts));
+  const visitors = useVisitorLog();
+  const items = NAV.filter(
+    (item) =>
+      canAny(me, item.permissions) &&
+      (shifts || !item.shifts) &&
+      (visitors.enabled || visitors.waiting > 0 || !item.visitors),
+  );
   return (
     <>
       {mobileOpen && <div className="fixed inset-0 z-30 bg-black/40 md:hidden" onClick={onNavigate} aria-hidden />}
@@ -58,6 +65,17 @@ export function Sidebar({
               >
                 <item.icon className="size-4 shrink-0" aria-hidden />
                 <span className={cn(collapsed && "md:sr-only")}>{item.label}</span>
+                {item.visitors && visitors.waiting > 0 && (
+                  <span
+                    className={cn(
+                      "ml-auto rounded-full bg-warn/15 px-1.5 text-[11px] leading-4 font-semibold text-warn tabular-nums",
+                      collapsed && "md:hidden",
+                    )}
+                    aria-label={`${visitors.waiting} not reviewed`}
+                  >
+                    {visitors.waiting > 99 ? "99+" : visitors.waiting}
+                  </span>
+                )}
               </NavLink>
             );
             return collapsed ? (

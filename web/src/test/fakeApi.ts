@@ -4,11 +4,14 @@ type Handler = (url: URL, body: unknown) => unknown;
 
 /**
  * A fake API for fetch: handlers keyed by "METHOD /path" (the path without the query). Unknown calls answer an
- * empty page, except GET /api/settings/shifts: shifts on, like the Python tests (pass a handler to change it).
+ * empty page, except GET /api/settings/shifts: shifts on, like the Python tests, and the visitor log (off, nothing
+ * waiting); pass a handler to change them.
  * Every call is recorded with its parsed URL and JSON body.
  */
 const DEFAULTS: Record<string, Handler> = {
   "GET /api/settings/shifts": () => ({ enabled: true, updated: null, updated_by: null }),
+  "GET /api/settings/unknowns": () => ({ enabled: false, updated: null, updated_by: null }),
+  "GET /api/unknowns/counts": () => ({ enabled: false, new: 0, today: 0 }),
 };
 
 export function fakeApi(handlers: Record<string, Handler>) {

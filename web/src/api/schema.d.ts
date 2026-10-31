@@ -1122,6 +1122,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/settings/unknowns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Unknown Log Mode
+         * @description Is the unknown visitor log on? Read from the database on every request.
+         */
+        get: operations["get_unknown_log_mode"];
+        /**
+         * Set Unknown Log Mode
+         * @description Switch the unknown visitor log on or off (admin only, with a reason; audited enable_unknown_log /
+         *     disable_unknown_log). Running cameras follow within UNKNOWN_SWITCH_SECONDS; visits already recorded stay until
+         *     the retention deletes them.
+         */
+        put: operations["set_unknown_log_mode"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/system": {
         parameters: {
             query?: never;
@@ -1379,6 +1405,90 @@ export interface paths {
          *     their day as it is. Each change is audited (set_roster), plus one import_roster row for the file.
          */
         post: operations["import_roster"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/unknowns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Unknowns
+         * @description Unknown visitors first seen on these days, newest first by default. q searches the camera, the closest
+         *     person, the identified person and the note; site_id = the camera's site. Sort: first_seen, last_seen, camera,
+         *     score, tracks, status.
+         */
+        get: operations["list_unknowns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/unknowns/counts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Unknown Counts
+         * @description For the menu's badge: visits waiting for review, and today's.
+         */
+        get: operations["unknown_counts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/unknowns/{visit_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Unknown */
+        get: operations["get_unknown"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Review Unknown
+         * @description Review a visit: dismiss it, identify it as a person, put it back to new, or change its note. Audited
+         *     (review_unknown, the old and new values) with the reason; nothing else changes (attendance stays as it is).
+         */
+        patch: operations["review_unknown"];
+        trace?: never;
+    };
+    "/api/unknowns/{visit_id}/snapshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Unknown Snapshot
+         * @description The visit's snapshot, for logged-in admins and guards only (never a public URL).
+         */
+        get: operations["unknown_snapshot"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2504,6 +2614,11 @@ export interface components {
             snapshot_retention_days: number;
             /** Snapshots Bytes */
             snapshots_bytes: number;
+            /**
+             * Unknown Retention Days
+             * @description unknown visitors and their snapshots are kept this long (setting)
+             */
+            unknown_retention_days: number;
         };
         /** MonthlyReport */
         MonthlyReport: {
@@ -2724,6 +2839,17 @@ export interface components {
         Page_Site_: {
             /** Items */
             items: components["schemas"]["Site"][];
+            /** Total */
+            total: number;
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+        };
+        /** Page[UnknownVisit] */
+        Page_UnknownVisit_: {
+            /** Items */
+            items: components["schemas"]["UnknownVisit"][];
             /** Total */
             total: number;
             /** Page */
@@ -3661,12 +3787,12 @@ export interface components {
             python: string;
             /**
              * Database Bytes
-             * @description the database file plus its write-ahead log
+             * @description the database file plus its write-ahead log (SQL Server: its data and log files)
              */
             database_bytes: number;
             /**
              * Database Schema
-             * @description schema version (PRAGMA user_version)
+             * @description schema version (SQLite: PRAGMA user_version)
              */
             database_schema: number;
             /** Events */
@@ -3716,6 +3842,106 @@ export interface components {
              * @description why there was no picture (passwords masked)
              */
             error: string | null;
+        };
+        /** UnknownCounts */
+        UnknownCounts: {
+            /**
+             * Enabled
+             * @description the visitor log is on (Settings > System)
+             */
+            enabled: boolean;
+            /**
+             * New
+             * @description visits not reviewed yet (status new)
+             */
+            new: number;
+            /**
+             * Today
+             * @description visits first seen today
+             */
+            today: number;
+        };
+        /** UnknownVisit */
+        UnknownVisit: {
+            /** Id */
+            id: number;
+            /** Camera Id */
+            camera_id: number;
+            /** Camera */
+            camera: string;
+            /**
+             * Direction
+             * @enum {string}
+             */
+            direction: "IN" | "OUT";
+            /**
+             * Site Id
+             * @description the camera's site
+             */
+            site_id: number | null;
+            /**
+             * First Seen
+             * Format: date-time
+             */
+            first_seen: string;
+            /**
+             * Last Seen
+             * Format: date-time
+             * @description when the face was last seen (written when its track ended)
+             */
+            last_seen: string;
+            /**
+             * Tracks
+             * @description tracked passes of this stranger merged into the visit (they waited, or came back within a few minutes)
+             */
+            tracks: number;
+            /**
+             * Score
+             * @description the best similarity to any enrolled person (cosine, 0-1): below UNKNOWN_MAX_SCORE
+             */
+            score: number;
+            /**
+             * Closest Code
+             * @description the enrolled person the face came closest to
+             */
+            closest_code: string | null;
+            /** Closest Name */
+            closest_name: string | null;
+            /**
+             * Liveness
+             * @description the snapshot frame's live score (None: not checked)
+             */
+            liveness: number | null;
+            /**
+             * Face Px
+             * @description face width in camera pixels
+             */
+            face_px: number | null;
+            /**
+             * Snapshot Url
+             * @description GET it with the session cookie; None if there is no snapshot
+             */
+            snapshot_url: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "new" | "dismissed" | "identified";
+            /**
+             * Person Id
+             * @description identified as this person
+             */
+            person_id: number | null;
+            /** Person Code */
+            person_code: string | null;
+            /** Person Name */
+            person_name: string | null;
+            /** Note */
+            note: string | null;
+            /** Reviewed */
+            reviewed: string | null;
+            /** Reviewed By */
+            reviewed_by: string | null;
         };
         /** UploadPhoto */
         UploadPhoto: {
@@ -3780,6 +4006,55 @@ export interface components {
             input?: unknown;
             /** Context */
             ctx?: Record<string, never>;
+        };
+        /** VisitReview */
+        VisitReview: {
+            /**
+             * Reason
+             * @description why (goes to the audit log)
+             */
+            reason: string;
+            /**
+             * Status
+             * @description new (not reviewed), dismissed, or identified (needs person_id)
+             * @enum {string}
+             */
+            status: "new" | "dismissed" | "identified";
+            /**
+             * Person Id
+             * @description for identified: who it was
+             */
+            person_id?: number | null;
+            /**
+             * Note
+             * @description leave out to keep the note; empty to clear it
+             */
+            note?: string | null;
+        };
+        /** VisitorLogMode */
+        VisitorLogMode: {
+            /**
+             * Enabled
+             * @description on: the cameras record faces that match nobody enrolled (Unknown visitors)
+             */
+            enabled: boolean;
+            /**
+             * Updated
+             * @description when it was last switched (None: never, the default: off)
+             */
+            updated: string | null;
+            /** Updated By */
+            updated_by: string | null;
+        };
+        /** VisitorLogModeIn */
+        VisitorLogModeIn: {
+            /**
+             * Reason
+             * @description why (goes to the audit log)
+             */
+            reason: string;
+            /** Enabled */
+            enabled: boolean;
         };
         /** WebcamClaim */
         WebcamClaim: {
@@ -6985,6 +7260,87 @@ export interface operations {
             };
         };
     };
+    get_unknown_log_mode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VisitorLogMode"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    set_unknown_log_mode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VisitorLogModeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VisitorLogMode"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     system_info: {
         parameters: {
             query?: never;
@@ -7857,6 +8213,245 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    list_unknowns: {
+        parameters: {
+            query?: {
+                /** @description first day (default today) */
+                from?: string | null;
+                /** @description last day, inclusive */
+                to?: string | null;
+                /** @description camera id */
+                camera?: number | null;
+                status?: ("new" | "dismissed" | "identified") | null;
+                page?: number;
+                page_size?: number;
+                /** @description field to sort by; prefix with "-" for descending, e.g. "-date" */
+                sort?: string | null;
+                /** @description text search (case-insensitive) */
+                q?: string | null;
+                /** @description only rows of this site */
+                site_id?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_UnknownVisit_"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unknown_counts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnknownCounts"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_unknown: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                visit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnknownVisit"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    review_unknown: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                visit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VisitReview"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnknownVisit"];
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unknown_snapshot: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                visit_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description the visitor's snapshot (the face with some background) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": unknown;
+                };
+            };
+            /** @description Not logged in, or the session expired (log in with POST /api/auth/login) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Your role lacks the permission, or you must change your password first */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description no such visit, or it has no snapshot */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
             };
         };
     };

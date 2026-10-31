@@ -17,6 +17,13 @@ screen or a printed photo (live score below LIVENESS_THRESHOLD) is skipped
 review snapshot per track in data/snapshots/<day>/spoof/; a won vote is recorded
 only after LIVENESS_MIN_FRAMES of the track's frames passed.
 
+Unknown visitors (app/visitors.py), while the visitor log is on (Settings > System, read from the
+database every UNKNOWN_SWITCH_SECONDS): a track whose kept frames all match nobody (below
+UNKNOWN_MAX_SCORE) is recorded once, with a snapshot in data/snapshots/unknown/<day>/, while the person
+is still in view; its last-seen time when the track ends; withdrawn if the track is recognised after all.
+Their face embeddings stay in memory (UNKNOWN_MERGE_SECONDS), so a stranger who waits or comes back is one
+visit. Never with --no-db.
+
 The worker reports its status in data/run/<camera>.json and exits cleanly when
 data/run/<camera>.stop appears (see app/workers.py), so the dashboard's
 Cameras page can show and stop it whether it was started there or here. It
@@ -70,6 +77,7 @@ from app.liveness import SOURCE as LIVENESS_SOURCE, Liveness, LivenessUnavailabl
 from app.models import device, onnx_threads, providers_in_use  # noqa: E402
 from app.recognizer import Recognizer  # noqa: E402
 from app.tracker import FaceTracker, Sample, TrackState  # noqa: E402
+from app.visitors import StrangerMemory, Visit, closest, qualifies, track_embedding  # noqa: E402
 
 GREEN, RED, GRAY, YELLOW, ORANGE = (0, 200, 0), (0, 0, 255), (160, 160, 160), (0, 220, 220), (0, 140, 255)
 FAILURES = {"no gallery", "could not open source", "video file not found", "lost the camera",
@@ -243,6 +251,179 @@ class Recorder:
         return "event", f"{self.direction} saved ({ev['votes']})"
 
 
+class VisitorLog:
+    """Unknown visitors (app/visitors.py) seen by this camera, recorded while the visitor log is on (the switch in the
+    database, read at most every UNKNOWN_SWITCH_SECONDS), each with one snapshot in data/snapshots/unknown/<day>/.
+
+    A qualifying track is written at once, so the dashboard's alert comes while the person is still in view; its
+    last-seen time and pass count when the track ends; a track recognised after all withdraws its visit (unless someone
+    reviewed it meanwhile). A stranger seen again within UNKNOWN_MERGE_SECONDS (their embeddings are kept in memory
+    only) adds a pass to the same visit. Writes the database can't take now wait in `pending`, in order (at most
+    EVENT_QUEUE_MAX), like the Recorder's events; a visit not written yet when the log is switched off is dropped
+    with its snapshot.
+    """
+
+    def __init__(self, recorder: Recorder, liveness: bool):
+        self.conn, self.camera_id, self.cam_name = recorder.conn, recorder.camera_id, recorder.cam_name
+        self.live_needed = config.LIVENESS_MIN_FRAMES if liveness else 0
+        self.memory = StrangerMemory()
+        self.open: dict[int, Visit] = {}  # track id -> its visit
+        self.pending: deque[Visit] = deque()
+        self._enabled: bool | None = None  # None until the switch was read once
+        self._checked = float("-inf")
+        self.errors = ErrorLog(f"{self.cam_name}: unknown visitors in the database (kept, will retry)")
+        self.snapshot_errors = ErrorLog(f"{self.cam_name}: saving an unknown visitor's snapshot (recorded without it)")
+
+    def enabled(self) -> bool:
+        """The switch (a read that fails keeps the last answer: off until one succeeds)."""
+        mono = time.monotonic()
+        if mono - self._checked >= config.UNKNOWN_SWITCH_SECONDS:
+            self._checked = mono
+            try:
+                on = db.unknown_log_enabled(self.conn)
+            except dbconn.ERRORS as e:
+                self.errors(e)
+            else:
+                if on != self._enabled:
+                    print(f"{datetime.now():%H:%M:%S}  Unknown visitor log " + (
+                        f"ON (Settings > System): a face is recorded once {config.UNKNOWN_MIN_FRAMES} kept frames "
+                        f"all score below {config.UNKNOWN_MAX_SCORE}" if on else "OFF (Settings > System)"))
+                self._enabled = on
+        return bool(self._enabled)
+
+    def check(self, stamp: str, now: datetime, track: TrackState, frame, full, live_score: float | None) -> str | None:
+        """Record the track as an unknown visitor if it qualifies now (once per track); the live view's detail, or
+        None."""
+        tid = track.track_id
+        if tid in self.open or not qualifies(track, config.UNKNOWN_MIN_FRAMES, config.UNKNOWN_MAX_SCORE,
+                                             self.live_needed):
+            return None
+        if not self.enabled():
+            return None
+        embedding = track_embedding(track.samples)
+        code, score = closest(track.samples)
+        visit = self.memory.find(embedding, now)
+        if visit is not None:  # the same stranger again (waited, or came back): one more pass of that visit
+            visit.tracks += 1
+            visit.last_seen = max(visit.last_seen, now)
+            self.open[tid] = visit
+            self.memory.remember(embedding, now, visit)
+            self._queue(visit)
+            self.flush()
+            print(f"{stamp}  track{tid:<4} unknown visitor again: "
+                  f"{f'visit #{visit.id}' if visit.id else 'the visit waiting for the database'}, pass {visit.tracks}")
+            return f"same unknown visitor (pass {visit.tracks})"
+        snapshot = self.save_snapshot(now, tid, context_crop(frame, full.bbox, size=config.UNKNOWN_SNAPSHOT_SIZE))
+        visit = Visit(first_seen=now, last_seen=now, score=score, closest=code, liveness=live_score,
+                      face_px=int(full.width), snapshot=snapshot)
+        self.open[tid] = visit
+        self.memory.remember(embedding, now, visit)
+        self._queue(visit)
+        self.flush()
+        print(f"{stamp}  track{tid:<4} UNKNOWN VISITOR {f'#{visit.id}' if visit.id else '(waiting for the database)'}"
+              f"  closest={fmt_score(code, score)}  frames {len(track.samples)}  snapshot={snapshot or 'none'}")
+        return f"unknown visitor recorded (closest {code or '-'} {score:.2f})"
+
+    def seen(self, track_id: int, now: datetime) -> None:
+        """The track was in this frame: its visit's last-seen time (written when the track ends)."""
+        visit = self.open.get(track_id)
+        if visit is not None and now > visit.last_seen:
+            visit.last_seen = now
+
+    def close(self, track_id: int) -> None:
+        """The track ended: its visit's last-seen time and passes are written."""
+        visit = self.open.pop(track_id, None)
+        if visit is not None and not visit.deleted:
+            self._queue(visit)
+            self.flush()
+
+    def withdraw(self, stamp: str, track: TrackState, name: str) -> None:
+        """The track was recognised after all: not a stranger. Its visit goes (or, merged with other passes, loses
+        this one)."""
+        visit = self.open.pop(track.track_id, None)
+        if visit is None:
+            return
+        if visit.tracks > 1:
+            visit.tracks -= 1
+        else:
+            visit.deleted = True
+            self.memory.forget(visit)
+        self._queue(visit)
+        self.flush()
+        print(f"{stamp}  track{track.track_id:<4} recognised as {name} after all: unknown visitor "
+              + ("withdrawn" if visit.deleted else f"pass removed (visit #{visit.id})"))
+
+    def save_snapshot(self, now: datetime, track_id: int, image) -> str | None:
+        """The visitor's snapshot (the face with some background); its path relative to data/, or None."""
+        snap = (config.SNAPSHOT_DIR / config.UNKNOWN_SNAPSHOT_FOLDER / f"{now:%Y-%m-%d}"
+                / f"{now:%H%M%S-%f}_track{track_id}_{self.cam_name}.jpg")
+        try:
+            write_image(snap, image)
+        except Exception as e:  # noqa: BLE001  a review aid: never stop the camera for it
+            self.snapshot_errors(e)
+            return None
+        return snap.relative_to(config.DATA_DIR).as_posix()
+
+    def drop_snapshot(self, rel: str | None) -> None:
+        if rel:
+            try:
+                (config.DATA_DIR / rel).unlink(missing_ok=True)
+            except OSError as e:
+                self.snapshot_errors(e)
+
+    def _queue(self, visit: Visit) -> None:
+        if visit.queued:
+            return  # its waiting write will use the latest values
+        visit.queued = True
+        self.pending.append(visit)
+        if len(self.pending) > config.EVENT_QUEUE_MAX:
+            lost = self.pending.popleft()
+            lost.queued = False
+            if lost.id is None:
+                self.drop_snapshot(lost.snapshot)
+            print(f"UNKNOWN VISITOR LOST: {config.EVENT_QUEUE_MAX} visitor writes were waiting for the database")
+
+    def flush(self) -> None:
+        """Write the waiting visits, oldest first; stops at the first database error (tried again later)."""
+        while self.pending:
+            visit = self.pending[0]
+            try:
+                if visit.deleted:
+                    if visit.id is None or db.delete_unknown_visit(self.conn, visit.id):
+                        self.drop_snapshot(visit.snapshot)  # kept if someone reviewed it meanwhile (the row stays)
+                elif visit.id is None:
+                    if self.enabled():
+                        visit.id = db.add_unknown_visit(
+                            self.conn, self.camera_id, visit.first_seen, visit.last_seen, visit.tracks, visit.score,
+                            visit.closest, visit.liveness, visit.face_px, visit.snapshot, visit.retry)
+                    else:  # switched off before it could be written: never written
+                        visit.deleted = True
+                        self.memory.forget(visit)
+                        self.drop_snapshot(visit.snapshot)
+                else:
+                    db.update_unknown_visit(self.conn, visit.id, visit.last_seen, visit.tracks)
+            except dbconn.ERRORS as e:
+                if visit.id is None:
+                    visit.retry = True  # it may have been written before the error: looked for first next time
+                self.errors(e)
+                return
+            self.pending.popleft()
+            visit.queued = False
+
+    def housekeeping(self) -> None:
+        """Every housekeeping round: the switch (so a change is logged at once) and the waiting writes."""
+        self.enabled()
+        if self.pending:
+            self.flush()
+
+    def finish(self) -> None:
+        """At the worker's stop: every open visit's last-seen time written."""
+        for track_id in list(self.open):
+            self.close(track_id)
+        if self.pending:
+            print(f"{len(self.pending)} unknown visitor write(s) could not be saved before the stop")
+
+
 class Pipeline:
     """Detect, track, check quality, embed, match, vote and record one frame; returns the annotated view.
 
@@ -254,14 +435,18 @@ class Pipeline:
 
     `liveness` (app.liveness.Liveness, or None = no check): each quality-passing face of an undecided track is
     checked before it is embedded, while the track wants the frame or still needs live frames; a spoof is skipped.
+
+    `visitors` (VisitorLog, or None = no visitor log, e.g. --no-db): an undecided track that qualifies as an unknown
+    visitor is recorded once; a track recognised after all withdraws it; a track that ends writes its last-seen time.
     """
 
     def __init__(self, gallery: Gallery, detector, recognizer, recorder: Recorder, live: LiveWriter,
-                 mirror: bool = False, liveness=None):
+                 mirror: bool = False, liveness=None, visitors: VisitorLog | None = None):
         self.gallery, self.detector, self.recognizer = gallery, detector, recognizer
         self.recorder, self.live = recorder, live
         self.mirror = mirror
         self.liveness = liveness
+        self.visitors = visitors
         self.tracker = FaceTracker(config.PROCESS_FPS)
         self.tracks: dict[int, TrackState] = {}
         self.times = deque(maxlen=20)
@@ -305,6 +490,8 @@ class Pipeline:
         for tid, det in tracked:
             track = self.tracks.setdefault(tid, TrackState(tid))
             track.last_seen = t
+            if self.visitors is not None:
+                self.visitors.seen(tid, now)
             if track.decided:
                 mark(det, GREEN, f"#{tid} {track.decided}")
                 continue
@@ -330,10 +517,12 @@ class Pipeline:
             if not wants:
                 mark(det, YELLOW, f"#{tid} ...")
                 self.decide(stamp, now, track)  # a live frame may be what a won vote was waiting for
+                self.visitor(stamp, now, track, frame, full, live)  # ... or an unknown visitor's live frames
                 continue
-            m = self.gallery.match(self.recognizer.embed(frame, full))
+            embedding = self.recognizer.embed(frame, full)
+            m = self.gallery.match(embedding)
             log_match(stamp, tid, m)
-            track.add(Sample(q, m, crop_face(frame, full.bbox, config.SNAPSHOT_SIZE)))
+            track.add(Sample(q, m, crop_face(frame, full.bbox, config.SNAPSHOT_SIZE), embedding))
             score = None if live is None else live.score
             if m.name:
                 self.stats["matched"] += 1
@@ -349,6 +538,7 @@ class Pipeline:
                                    face_px=full.width, liveness=score)
             mark(det, GREEN if m.name else RED, f"#{tid} {m.name or 'unknown'} {m.score:.2f}")
             self.decide(stamp, now, track)
+            self.visitor(stamp, now, track, frame, full, live)
 
         for tid, track in list(self.tracks.items()):
             if t - track.last_seen > config.TRACK_LOST_SECONDS:
@@ -358,6 +548,8 @@ class Pipeline:
                         summary += f"; {track.liveness_summary(config.LIVENESS_MIN_FRAMES)}"
                     print(f"{stamp}  track{tid:<4} closed as unknown (votes: {summary})")
                     self.live.decision("closed", tid, detail=f"left without a decision ({summary})")
+                if self.visitors is not None:
+                    self.visitors.close(tid)
                 del self.tracks[tid]
 
         # A new image either way, so the capture's buffer is never drawn on.
@@ -387,9 +579,21 @@ class Pipeline:
                       f"({track.liveness_summary(need)})")
             return
         track.decided = won[0]
+        if self.visitors is not None:
+            self.visitors.withdraw(stamp, track, won[0])  # recorded as a visitor before the vote was won
         kind, detail = self.recorder.record(stamp, now, track, *won)
         self.stats[kind] += 1
         self.live.decision(kind, track.track_id, won[0], track.best_sample(won[0]).match.score, detail=detail)
+
+    def visitor(self, stamp: str, now: datetime, track: TrackState, frame, full, live) -> None:
+        """Record an undecided track that now qualifies as an unknown visitor (VisitorLog.check), once."""
+        if self.visitors is None or track.decided:
+            return
+        detail = self.visitors.check(stamp, now, track, frame, full, None if live is None else live.score)
+        if detail:
+            self.stats["unknown visitor"] += 1
+            self.live.decision("visitor", track.track_id, detail=detail, face_px=full.width,
+                               liveness=None if live is None else live.score)
 
     def spoof(self, stamp: str, now: datetime, track: TrackState, frame, full, score: float) -> None:
         """A frame that looks like a phone screen or a printed photo: logged, shown, never embedded. The track's
@@ -511,8 +715,11 @@ def run(args, cam: dict, source, runtime: "workers.WorkerRuntime", live: LiveWri
     mirror = bool(cam.get("mirror"))
     if mirror:
         print("View mirrored left-right (recognition uses the original frame)")
-    pipeline = Pipeline(gallery, detector, recognizer, Recorder(cam, source, use_db=not args.no_db), live, mirror,
-                        checker)
+    recorder = Recorder(cam, source, use_db=not args.no_db)
+    visitors = VisitorLog(recorder, checker is not None) if recorder.conn is not None else None
+    if visitors is not None:
+        visitors.enabled()  # logs whether the visitor log is on
+    pipeline = Pipeline(gallery, detector, recognizer, recorder, live, mirror, checker, visitors)
     window = f"GateSense {cam['name']} ({cam['direction']})"
     label = f"{cam['name']} ({cam['direction']})"
 
@@ -524,6 +731,8 @@ def run(args, cam: dict, source, runtime: "workers.WorkerRuntime", live: LiveWri
             return stop
         if pipeline.recorder.conn is not None and pipeline.recorder.pending:
             pipeline.recorder.flush()  # events the database couldn't take before
+        if pipeline.visitors is not None:
+            pipeline.visitors.housekeeping()  # the visitor log switch, and visits the database couldn't take
         mono = time.monotonic()
         if mono - last_gallery_check >= config.GALLERY_RELOAD_SECONDS:
             last_gallery_check = mono
@@ -551,6 +760,11 @@ def run(args, cam: dict, source, runtime: "workers.WorkerRuntime", live: LiveWri
         return "interrupted"
     finally:
         cv2.destroyAllWindows()
+        if pipeline.visitors is not None:
+            try:
+                pipeline.visitors.finish()
+            except Exception as e:  # noqa: BLE001  the stop goes on
+                print(f"WARNING: unknown visitors at the stop: {type(e).__name__}: {e}")
         if pipeline.recorder.conn:
             pipeline.recorder.conn.close()
         if pipeline.times:

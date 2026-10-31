@@ -137,6 +137,28 @@ describe("useLiveEvents", () => {
   });
 });
 
+describe("unknown visitors", () => {
+  it("refreshes the visitor lists and calls onVisitor for a new visit; a review refreshes them too", () => {
+    const client = testQueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    const onVisitor = vi.fn();
+    renderHook(() => useLiveEvents({ url: "ws://test/api/ws", createSocket: create, onVisitor }), {
+      wrapper: withClient(client),
+    });
+    act(() => latest().open());
+    const visit = { type: "unknown", id: 4, camera: "gate", closest_name: "Ayesha", score: 0.31 };
+    act(() => latest().send(visit));
+    expect(onVisitor).toHaveBeenCalledWith(visit);
+    expect(invalidated(invalidate)).toEqual(['["unknowns"]']); // not the attendance queries: no event
+    invalidate.mockClear();
+    act(() =>
+      latest().send({ type: "unknowns_changed", action: "review_unknown", target: "unknown:4", user: "guard" }),
+    );
+    expect(invalidated(invalidate)).toEqual(['["unknowns"]', '["features"]']);
+    expect(onVisitor).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("live decisions", () => {
   it("keeps the latest decisions per camera, replacing the previous list", () => {
     const { hook } = setup();

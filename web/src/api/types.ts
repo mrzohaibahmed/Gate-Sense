@@ -39,3 +39,5 @@ export type RosterRow = S["RosterRow"];
 export type RosterCell = S["RosterCell"];
 export type RosterEntry = S["RosterEntry"];
 export type RosterImportPreview = S["RosterImportPreview"];
+export type UnknownVisit = S["UnknownVisit"];
+export type UnknownCounts = S["UnknownCounts"];

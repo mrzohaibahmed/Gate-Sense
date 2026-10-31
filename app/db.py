@@ -30,7 +30,10 @@ events by app/shifts.py, so nothing derived is stored. Step 6 moves a shift's ti
 grace and windows into shift_versions (effective_from: NULL = from the start), so a
 change applies from a date and never rewrites the days before it. Step 7 adds
 app_settings (key, value, updated, updated_by): settings kept in the database, read
-on every request; the first is "shifts" (on/off, see attendance_days).
+on every request; the first is "shifts" (on/off, see attendance_days). Step 8 adds
+unknown_visits: the faces a camera saw that matched nobody enrolled (app/visitors.py),
+recorded while the "unknown_visitors" setting is on, reviewed on the dashboard and deleted
+after UNKNOWN_RETENTION_DAYS; never attendance.
 
 With GATESENSE_DB_URL set (config.DATABASE_URL), connect() opens Microsoft SQL Server instead (app/mssql.py): the
 same tables in SQL Server types, created at the current version, and a connection that behaves like sqlite3's, so
@@ -251,8 +254,33 @@ def _v7_app_settings(conn: sqlite3.Connection) -> None:
     )""")
 
 
+def _v8_unknown_visits(conn: sqlite3.Connection) -> None:
+    """Unknown visitors (app/visitors.py): one row per visit of a face that matched nobody, written by the camera
+    worker (first_seen while the person is in view, last_seen when the track ends; `tracks` = passes merged into it)
+    with its snapshot and the closest enrolled person (`closest_code`, `best_score`). Reviewed on the dashboard
+    (status new / dismissed / identified with person_id, note, reviewed, reviewed_by). No embedding is stored."""
+    conn.execute("""CREATE TABLE IF NOT EXISTS unknown_visits (
+        id            INTEGER PRIMARY KEY,
+        camera_id     INTEGER NOT NULL REFERENCES cameras(id),
+        first_seen    TEXT NOT NULL,
+        last_seen     TEXT NOT NULL,
+        tracks        INTEGER NOT NULL DEFAULT 1,
+        best_score    REAL NOT NULL,
+        closest_code  TEXT,
+        liveness      REAL,
+        face_px       INTEGER,
+        snapshot_path TEXT,
+        status        TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'dismissed', 'identified')),
+        person_id     INTEGER REFERENCES persons(id),
+        note          TEXT,
+        reviewed      TEXT,
+        reviewed_by   TEXT
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_unknown_first_seen ON unknown_visits(first_seen)")
+
+
 VERSIONS = [_v1_users_sessions_sites, _v2_person_sites_original_times, _v3_user_preferences, _v4_drop_unused,
-            _v5_shifts_roster, _v6_shift_versions, _v7_app_settings]  # PRAGMA user_version = how many have run
+            _v5_shifts_roster, _v6_shift_versions, _v7_app_settings, _v8_unknown_visits]  # PRAGMA user_version
 
 
 def _has_data(conn) -> bool:
@@ -991,12 +1019,29 @@ def roster_repeat_event_ids(conn: sqlite3.Connection, first: date, last: date,
 # switching back shows the shift results again, recalculated from the raw events.
 
 
+def _switch(conn, key: str, default: bool) -> dict:
+    """An on/off setting in app_settings: {"enabled", "updated", "updated_by"} (no row: `default`, None, None)."""
+    row = conn.execute('SELECT value, updated, updated_by FROM app_settings WHERE "key" = ?', (key,)).fetchone()
+    if row is None:
+        return {"enabled": default, "updated": None, "updated_by": None}
+    return {"enabled": row["value"] == "on", "updated": row["updated"], "updated_by": row["updated_by"]}
+
+
+def _set_switch(conn, key: str, enabled: bool, user: str) -> None:
+    """Write an on/off setting inside the caller's transaction."""
+    values = (key, "on" if enabled else "off", _ts(datetime.now()), user)
+    if dbconn.is_mssql(conn):
+        conn.execute(_merge("app_settings", ["key", "value", "updated", "updated_by"], ["key"],
+                            ["value", "updated", "updated_by"]), values)
+    else:
+        conn.execute('INSERT INTO app_settings ("key", value, updated, updated_by) VALUES (?, ?, ?, ?) '
+                     'ON CONFLICT("key") DO UPDATE SET value = excluded.value, updated = excluded.updated, '
+                     "updated_by = excluded.updated_by", values)
+
+
 def shift_mode(conn: sqlite3.Connection) -> dict:
     """{"enabled": bool, "updated": text or None, "updated_by": text or None}, read from the database each time."""
-    row = conn.execute('SELECT value, updated, updated_by FROM app_settings WHERE "key" = \'shifts\'').fetchone()
-    if row is None:
-        return {"enabled": config.SHIFTS_ENABLED_DEFAULT, "updated": None, "updated_by": None}
-    return {"enabled": row["value"] == "on", "updated": row["updated"], "updated_by": row["updated_by"]}
+    return _switch(conn, "shifts", config.SHIFTS_ENABLED_DEFAULT)
 
 
 def shifts_enabled(conn: sqlite3.Connection) -> bool:
@@ -1009,14 +1054,7 @@ def set_shifts_enabled(conn: sqlite3.Connection, enabled: bool, reason: str, use
     with conn:
         if shifts_enabled(conn) == enabled:
             return False
-        values = ("on" if enabled else "off", _ts(datetime.now()), user)
-        if dbconn.is_mssql(conn):
-            conn.execute(_merge("app_settings", ["key", "value", "updated", "updated_by"], ["key"],
-                                ["value", "updated", "updated_by"]), ("shifts", *values))
-        else:
-            conn.execute('INSERT INTO app_settings ("key", value, updated, updated_by) VALUES (\'shifts\', ?, ?, ?) '
-                         'ON CONFLICT("key") DO UPDATE SET value = excluded.value, updated = excluded.updated, '
-                         "updated_by = excluded.updated_by", values)
+        _set_switch(conn, "shifts", enabled, user)
         _audit(conn, user, "enable_shifts" if enabled else "disable_shifts", "settings:shifts",
                {"shifts": ["off" if enabled else "on", "on" if enabled else "off"]}, reason)
     return True
@@ -1035,3 +1073,123 @@ def attendance_repeat_event_ids(conn: sqlite3.Connection, first: date, last: dat
     if shifts_enabled(conn):
         return roster_repeat_event_ids(conn, first, last)
     return calendar_repeat_ids(events_between(conn, first, last))
+
+
+# --- Unknown visitors (app/visitors.py; the "unknown_visitors" setting in app_settings) ------------------------------
+#
+# The camera worker adds a visit while the person is in view, writes its last-seen time when the track ends and
+# withdraws its own record if the track is recognised after all; people review visits on the dashboard (audited); the
+# nightly job deletes them after UNKNOWN_RETENTION_DAYS. Attendance never changes here.
+
+UNKNOWN_LOG = "unknown_visitors"
+VISIT_STATUSES = ("new", "dismissed", "identified")
+UNKNOWN_FROM = ("FROM unknown_visits v JOIN cameras c ON c.id = v.camera_id "
+                "LEFT JOIN persons cp ON cp.employee_code = v.closest_code LEFT JOIN persons p ON p.id = v.person_id ")
+UNKNOWN_COLUMNS = (
+    "SELECT v.id, v.camera_id, c.name AS camera, c.direction, c.site_id, v.first_seen, v.last_seen, v.tracks, "
+    "v.best_score, v.closest_code, cp.name AS closest_name, v.liveness, v.face_px, v.snapshot_path, v.status, "
+    "v.person_id, p.employee_code AS person_code, p.name AS person_name, v.note, v.reviewed, v.reviewed_by "
+    + UNKNOWN_FROM)
+
+
+def unknown_log_mode(conn: sqlite3.Connection) -> dict:
+    """Is the visitor log on? {"enabled", "updated", "updated_by"}, read from the database each time."""
+    return _switch(conn, UNKNOWN_LOG, config.UNKNOWN_LOG_ENABLED_DEFAULT)
+
+
+def unknown_log_enabled(conn: sqlite3.Connection) -> bool:
+    return unknown_log_mode(conn)["enabled"]
+
+
+def set_unknown_log_enabled(conn: sqlite3.Connection, enabled: bool, reason: str, user: str) -> bool:
+    """Switch the visitor log on or off; audited (enable_unknown_log / disable_unknown_log). False if it already was.
+    The camera workers notice within UNKNOWN_SWITCH_SECONDS; visits already recorded stay."""
+    require_reason(reason)
+    with conn:
+        if unknown_log_enabled(conn) == enabled:
+            return False
+        _set_switch(conn, UNKNOWN_LOG, enabled, user)
+        _audit(conn, user, "enable_unknown_log" if enabled else "disable_unknown_log", f"settings:{UNKNOWN_LOG}",
+               {UNKNOWN_LOG: ["off" if enabled else "on", "on" if enabled else "off"]}, reason)
+    return True
+
+
+def add_unknown_visit(conn: sqlite3.Connection, camera_id: int, first_seen: datetime, last_seen: datetime,
+                      tracks: int, score: float, closest_code: str | None, liveness: float | None,
+                      face_px: int | None, snapshot_path: str | None, retry: bool = False) -> int:
+    """A camera worker's new visit; returns its id. `retry`: an earlier try failed, maybe after the database had
+    committed it (SQL Server's connection lost during COMMIT); the identical visit (camera, first seen, score,
+    snapshot) is looked for first and, if there, brought up to date instead of written twice."""
+    with conn:
+        if retry:
+            same = conn.execute(
+                "SELECT id FROM unknown_visits WHERE camera_id = ? AND first_seen = ? AND best_score = ? AND "
+                + ("snapshot_path IS NULL" if snapshot_path is None else "snapshot_path = ?"),
+                (camera_id, _ts(first_seen), score, *(() if snapshot_path is None else (snapshot_path,)))).fetchone()
+            if same:
+                conn.execute("UPDATE unknown_visits SET last_seen = ?, tracks = ? WHERE id = ?",
+                             (_ts(last_seen), tracks, same["id"]))
+                return same["id"]
+        cur = conn.execute(
+            "INSERT INTO unknown_visits (camera_id, first_seen, last_seen, tracks, best_score, closest_code, liveness, "
+            "face_px, snapshot_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (camera_id, _ts(first_seen), _ts(last_seen), tracks, score, closest_code, liveness, face_px,
+             snapshot_path))
+    return cur.lastrowid
+
+
+def update_unknown_visit(conn: sqlite3.Connection, visit_id: int, last_seen: datetime, tracks: int) -> None:
+    """A visit's latest last-seen time and pass count (the worker, when a track ends or merges into it)."""
+    with conn:
+        conn.execute("UPDATE unknown_visits SET last_seen = ?, tracks = ? WHERE id = ?",
+                     (_ts(last_seen), tracks, visit_id))
+
+
+def delete_unknown_visit(conn: sqlite3.Connection, visit_id: int) -> bool:
+    """The worker withdraws its own visit (the track was recognised after all): only while nobody has reviewed it.
+    Not audited: no one has acted on it. True if it was deleted."""
+    with conn:
+        cur = conn.execute("DELETE FROM unknown_visits WHERE id = ? AND status = 'new' AND reviewed IS NULL",
+                           (visit_id,))
+    return cur.rowcount == 1
+
+
+def unknown_visit(conn: sqlite3.Connection, visit_id: int) -> sqlite3.Row | None:
+    return conn.execute(UNKNOWN_COLUMNS + "WHERE v.id = ?", (visit_id,)).fetchone()
+
+
+def review_unknown_visit(conn: sqlite3.Connection, visit_id: int, status: str, person_id: int | None,
+                         note: str | None, reason: str, user: str) -> bool:
+    """Review a visit: its status (new, dismissed, or identified with the person it was), and its note (None =
+    unchanged, blank = cleared). Audited (review_unknown, the old and new values). False if nothing changes."""
+    require_reason(reason)
+    if status not in VISIT_STATUSES:
+        raise ValueError(f"status must be one of {', '.join(VISIT_STATUSES)}")
+    if (status == "identified") != (person_id is not None):
+        raise ValueError("a person goes with status identified, and only with it")
+    with conn:
+        old = unknown_visit(conn, visit_id)
+        if old is None:
+            raise LookupError(f"no unknown visitor with id {visit_id}")
+        person = None if person_id is None else _person(conn, person_id)["employee_code"]
+        new_note = old["note"] if note is None else (note.strip() or None)
+        changes = {k: [before, after] for k, before, after in (
+            ("status", old["status"], status), ("person", old["person_code"], person), ("note", old["note"], new_note))
+            if before != after}
+        if not changes:
+            return False
+        conn.execute("UPDATE unknown_visits SET status = ?, person_id = ?, note = ?, reviewed = ?, reviewed_by = ? "
+                     "WHERE id = ?", (status, person_id, new_note, _ts(datetime.now()), user, visit_id))
+        _audit(conn, user, "review_unknown", f"unknown:{visit_id}",
+               {"camera": old["camera"], "first_seen": old["first_seen"], **changes}, reason)
+    return True
+
+
+def delete_unknown_visits_before(conn: sqlite3.Connection, before: datetime) -> list[str | None]:
+    """Delete the visits first seen before `before` (the nightly retention), whatever their status, in one
+    transaction; returns their snapshot paths (None: no snapshot) for the caller to delete the files."""
+    with conn:
+        rows = conn.execute("SELECT snapshot_path FROM unknown_visits WHERE first_seen < ?", (_ts(before),)).fetchall()
+        if rows:
+            conn.execute("DELETE FROM unknown_visits WHERE first_seen < ?", (_ts(before),))
+    return [r["snapshot_path"] for r in rows]

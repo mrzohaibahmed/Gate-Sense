@@ -21,7 +21,9 @@ they are on SQLite:
 The schema is the SQLite schema at version SCHEMA_VERSION (len(app.db.VERSIONS)) in SQL Server types: IDENTITY
 keys, DATETIME2(3) times, DATE, TIME(0), BIT flags, FLOAT scores, NVARCHAR text (bounded only where indexed), the
 same unique constraints and indexes, and the version in gatesense_schema. Schema steps after it need a SQL Server
-version too (tests/test_mssql.py checks that the two schemas match).
+version too (tests/test_mssql.py checks that the two schemas match). A database made at an older version is brought up
+to date at the first connection (upgrade_schema: the UPGRADES steps, which only add tables, in one transaction under
+the write lock).
 """
 
 import threading
@@ -42,7 +44,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 from app import config
 from app.dbconn import CI, CS, MSSQL, DatabaseConfigError, safe_url
 
-SCHEMA_VERSION = 7  # = len(app.db.VERSIONS)
+SCHEMA_VERSION = 8  # = len(app.db.VERSIONS)
 WRITE_LOCK = "gatesense-write"
 VERSION_TABLE = "gatesense_schema"
 
@@ -151,9 +153,28 @@ Table("app_settings", metadata,
       Column("value", _text(), nullable=False),
       Column("updated", _time(), nullable=False),
       Column("updated_by", _text(), nullable=False))
+Table("unknown_visits", metadata, _id(),
+      Column("camera_id", Integer, ForeignKey("cameras.id"), nullable=False),
+      Column("first_seen", _time(), nullable=False),
+      Column("last_seen", _time(), nullable=False),
+      Column("tracks", Integer, nullable=False, server_default=text("1")),
+      Column("best_score", FLOAT(53), nullable=False),
+      Column("closest_code", _text(100)),
+      Column("liveness", FLOAT(53)),
+      Column("face_px", Integer),
+      Column("snapshot_path", _text()),
+      Column("status", _text(20), nullable=False, server_default=text("N'new'")),
+      Column("person_id", Integer, ForeignKey("persons.id")),
+      Column("note", _text()),
+      Column("reviewed", _time()),
+      Column("reviewed_by", _text()),
+      CheckConstraint("status IN ('new', 'dismissed', 'identified')", name="status"),
+      Index("idx_unknown_first_seen", "first_seen"))
 Table(VERSION_TABLE, metadata, Column("version", Integer, nullable=False))
 
 TABLES = [t.name for t in metadata.sorted_tables if t.name != VERSION_TABLE]  # parents before children
+# The tables each schema step after the first SQL Server schema (version 7) adds: upgrade_schema creates them.
+UPGRADES = {8: ["unknown_visits"]}
 
 
 # --- Engine and connection -----------------------------------------------------------------------------------------
@@ -447,11 +468,43 @@ def schema_version(conn: Connection) -> int | None:
     return row[0]
 
 
-def _ddl(conn: Connection) -> list[str]:
+def _ddl(conn: Connection, names: list[str] | None = None) -> list[str]:
+    """CREATE TABLE and CREATE INDEX for every table (or only `names`), parents first."""
     dialect = conn._engine.dialect
-    out = [str(CreateTable(t).compile(dialect=dialect)).strip() for t in metadata.sorted_tables]
-    out += [str(CreateIndex(i).compile(dialect=dialect)).strip() for t in metadata.sorted_tables for i in t.indexes]
+    tables = [t for t in metadata.sorted_tables if names is None or t.name in names]
+    out = [str(CreateTable(t).compile(dialect=dialect)).strip() for t in tables]
+    out += [str(CreateIndex(i).compile(dialect=dialect)).strip() for t in tables for i in t.indexes]
     return out
+
+
+def upgradable(version: int) -> bool:
+    """Can a database at `version` be brought up to SCHEMA_VERSION (an UPGRADES step for every version after it)?"""
+    return version < SCHEMA_VERSION and all(v in UPGRADES for v in range(version + 1, SCHEMA_VERSION + 1))
+
+
+def upgrade_schema(conn: Connection) -> int | None:
+    """Run the UPGRADES steps a database made at an older version hasn't had, in one transaction under the write
+    lock (two processes starting at once upgrade it once). Returns the version it had, or None if nothing ran."""
+    conn.begin()
+    try:
+        version = schema_version(conn)
+        if version is None or version >= SCHEMA_VERSION:
+            conn.rollback()
+            return None
+        if not upgradable(version):
+            raise DatabaseConfigError(f"the SQL Server database has schema version {version}; this GateSense runs "
+                                      f"version {SCHEMA_VERSION} and has no SQL Server upgrade step from it")
+        for step in range(version + 1, SCHEMA_VERSION + 1):
+            for statement in _ddl(conn, UPGRADES[step]):
+                conn.execute(statement)
+        conn.execute(f"UPDATE {VERSION_TABLE} SET version = ?", (SCHEMA_VERSION,))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    print(f"SQL Server database {database_name(conn.url)} upgraded from schema version {version} to "
+          f"{SCHEMA_VERSION}", flush=True)
+    return version
 
 
 def create_schema(conn: Connection, seed: bool) -> bool:
@@ -498,13 +551,16 @@ def _seed(conn: Connection) -> None:
                       config.SHIFT_IN_WINDOW_BEFORE_MIN, config.SHIFT_OUT_WINDOW_AFTER_MIN, now))
 
 
-def check_version(conn: Connection) -> None:
-    """Raise DatabaseConfigError unless the schema is the one this version of GateSense runs."""
+def check_version(conn: Connection, allow_upgrade: bool = False) -> None:
+    """Raise DatabaseConfigError unless the schema is the one this version of GateSense runs (`allow_upgrade`: or
+    an older one upgrade_schema can bring up to date, as the first connection will)."""
     version = schema_version(conn)
     if version is None:
         if found := existing_tables(conn):
             raise DatabaseConfigError(f"the database has GateSense tables ({', '.join(found)}) but no "
                                       f"{VERSION_TABLE}: use an empty database")
+        return
+    if allow_upgrade and upgradable(version):
         return
     if version != SCHEMA_VERSION:
         raise DatabaseConfigError(
@@ -518,8 +574,11 @@ def connect(url: str, migrate: bool = True) -> Connection:
     conn = Connection(url)
     if migrate:
         try:
-            if schema_version(conn) is None:
+            version = schema_version(conn)
+            if version is None:
                 create_schema(conn, seed=True)
+            elif version < SCHEMA_VERSION:
+                upgrade_schema(conn)
             check_version(conn)
         except BaseException:
             conn.close()
@@ -540,7 +599,7 @@ def startup_problem(url: str) -> str | None:
     except pyodbc.Error as e:
         return f"can't connect to SQL Server ({safe_url(url)}): {first_line(e)}"
     try:
-        check_version(conn)
+        check_version(conn, allow_upgrade=True)  # an older schema is upgraded when the app first connects
         if not read_committed_snapshot(conn):
             print(f"WARNING: READ_COMMITTED_SNAPSHOT is off for database {database_name(url)}: readers wait for "
                   "writers. Turn it on (see README).", flush=True)

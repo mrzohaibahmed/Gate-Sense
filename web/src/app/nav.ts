@@ -7,6 +7,7 @@ import {
   ScanFace,
   ScrollText,
   Settings,
+  UserX,
   Users,
   Video,
 } from "lucide-react";
@@ -21,6 +22,8 @@ export type NavItem = {
   permissions: readonly Permission[];
   /** Only while shifts are on (Settings > System > Shifts). */
   shifts?: boolean;
+  /** Only while the visitor log is on (Settings > System), or visits still wait for review. */
+  visitors?: boolean;
 };
 
 export const SETTINGS_PERMISSIONS = [
@@ -34,6 +37,7 @@ export const SETTINGS_PERMISSIONS = [
 export const NAV: NavItem[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, permissions: ["attendance:read"] },
   { to: "/live", label: "Live cameras", icon: Video, permissions: ["live:view"] },
+  { to: "/visitors", label: "Unknown visitors", icon: UserX, permissions: ["unknowns:read"], visitors: true },
   { to: "/attendance", label: "Attendance", icon: ClipboardList, permissions: ["attendance:read"] },
   { to: "/roster", label: "Roster", icon: CalendarDays, permissions: ["roster:read"], shifts: true },
   { to: "/people", label: "People", icon: Users, permissions: ["people:read"] },

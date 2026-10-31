@@ -16,7 +16,9 @@ day, at or after BACKUP_HOUR). The job:
 - keeps the newest BACKUP_KEEP nightly sets in each folder (manual "Back up now" sets and the copies made before
   a database upgrade are never deleted automatically);
 - deletes event snapshots (data/snapshots/<day>/) older than SNAPSHOT_RETENTION_DAYS and clears those events'
-  snapshot_path, so the dashboard shows "no snapshot" instead of a broken picture. The events themselves stay.
+  snapshot_path, so the dashboard shows "no snapshot" instead of a broken picture. The events themselves stay;
+- deletes unknown visitors (app/visitors.py) first seen more than UNKNOWN_RETENTION_DAYS ago, rows and snapshots
+  (data/snapshots/unknown/<day>/), whatever their review status: they are not attendance and aren't kept longer.
 
 Each run is audited (user "system"); the last run is kept in data/run/_maintenance.json. A day the app was off is
 caught up at the first check after the next start (only once, not once per missed day).
@@ -37,13 +39,14 @@ import sqlite3
 import zipfile
 from contextlib import closing
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path, PurePosixPath
 
 from starlette.concurrency import run_in_threadpool
 
 from api.db import Database
 from app import config, dbconn
+from app import db as app_db
 from app.fileutil import atomic_write_bytes, replace_retry, sync_dir
 
 NIGHTLY = "nightly"
@@ -339,8 +342,37 @@ def clean_snapshots(db: Database, today: date, days: int | None = None) -> dict:
     return {"days": removed, "files": files, "events": cleared, "retention_days": days}
 
 
+def clean_unknown_visits(db: Database, today: date, days: int | None = None) -> dict:
+    """Delete the unknown visits first seen before the day `days` ago, with their snapshots, and any leftover
+    snapshot folder of those days (data/snapshots/unknown/<day>/: e.g. a visit the camera never got to write)."""
+    days = config.UNKNOWN_RETENTION_DAYS if days is None else days
+    cutoff = today - timedelta(days=days)
+    with db.conn() as conn:
+        paths = app_db.delete_unknown_visits_before(conn, datetime.combine(cutoff, time()))
+    folder = config.SNAPSHOT_DIR / config.UNKNOWN_SNAPSHOT_FOLDER
+    base, files = folder.resolve(), 0
+    for rel in filter(None, paths):
+        path = (config.DATA_DIR / rel).resolve()
+        if base in path.parents and path.is_file():  # only ever a visitor snapshot
+            path.unlink(missing_ok=True)
+            files += 1
+    removed = []
+    if folder.is_dir():
+        for day_folder in sorted(p for p in folder.iterdir() if p.is_dir()):
+            try:
+                day = date.fromisoformat(day_folder.name)
+            except ValueError:
+                continue
+            if day < cutoff:
+                files += sum(1 for f in day_folder.rglob("*") if f.is_file())
+                shutil.rmtree(day_folder, ignore_errors=True)
+                removed.append(day_folder.name)
+    return {"visits": len(paths), "files": files, "days": removed, "retention_days": days}
+
+
 def run_nightly(db: Database, now: datetime | None = None) -> dict:
-    """Backup set (and its copy), pruning, snapshot cleanup; audited; the result is also saved as the last run."""
+    """Backup set (and its copy), pruning, snapshot and unknown visitor cleanup; audited; the result is also saved
+    as the last run."""
     now = now or datetime.now()
     result: dict = {"time": now.isoformat(timespec="seconds")}
     try:
@@ -354,6 +386,7 @@ def run_nightly(db: Database, now: datetime | None = None) -> dict:
         if backup.copied_to:
             result["pruned"] += prune_backups(backup.copied_to)
         result["snapshots"] = clean_snapshots(db, now.date())
+        result["unknowns"] = clean_unknown_visits(db, now.date())
         db.audit("system", "backup", "database", {"file": result["backup"], "files": result["files"],
                                                   "copied_to": result["copied_to"], "copy_error": backup.copy_error,
                                                   "skipped": backup.skipped,
@@ -361,6 +394,9 @@ def run_nightly(db: Database, now: datetime | None = None) -> dict:
         if result["snapshots"]["days"]:
             db.audit("system", "snapshot_cleanup", "snapshots", result["snapshots"],
                      f"older than {result['snapshots']['retention_days']} days")
+        if result["unknowns"]["visits"] or result["unknowns"]["days"]:
+            db.audit("system", "unknown_cleanup", "unknown_visits", result["unknowns"],
+                     f"older than {result['unknowns']['retention_days']} days")
         problems = [backup.copy_error] if backup.copy_error else []
         problems += [f"{part} not backed up: {why}" for part, why in backup.skipped.items()]
         result["ok"] = not problems

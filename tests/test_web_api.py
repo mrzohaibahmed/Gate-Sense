@@ -114,7 +114,7 @@ def test_review_and_save(app):
 def test_system_info(app):
     a = as_role(app, "admin")
     info = a.get("/api/system").json()
-    assert info["version"] == "0.1.0" and info["database_schema"] == 7 and info["events"] == 6 and info["people"] == 4
+    assert info["version"] == "0.1.0" and info["database_schema"] == 8 and info["events"] == 6 and info["people"] == 4
     assert info["database_bytes"] > 0 and info["backups"] == [] and info["cameras_running"] == 0
     assert as_role(app, "hr").get("/api/system").status_code == 403
 

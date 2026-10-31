@@ -573,7 +573,7 @@ def test_camera_passwords_never_appear_in_responses(app, monkeypatch, tmp_path):
 def test_openapi_lists_every_endpoint_with_a_response_model(app):
     spec = TestClient(app).get("/openapi.json").json()
     ops = [(m, p, o) for p, ms in spec["paths"].items() for m, o in ms.items()]
-    assert len(ops) == 82 and len({o["operationId"] for _, _, o in ops}) == 82  # ... people import, shifts, roster
+    assert len(ops) == 89 and len({o["operationId"] for _, _, o in ops}) == 89  # ... shifts, roster, unknown visitors
     expected = {("get", "/api/overview"), ("get", "/api/attendance"), ("get", "/api/events"),
                 ("get", "/api/snapshots/{event_id}"), ("post", "/api/attendance/corrections"), ("get", "/api/people"),
                 ("post", "/api/people"), ("get", "/api/people/{person_id}"), ("patch", "/api/people/{person_id}"),
@@ -582,7 +582,9 @@ def test_openapi_lists_every_endpoint_with_a_response_model(app):
                 ("post", "/api/cameras/{camera_id}/start"), ("post", "/api/cameras/{camera_id}/stop"),
                 ("post", "/api/cameras/test"), ("get", "/api/sites"), ("post", "/api/sites"),
                 ("patch", "/api/sites/{site_id}"), ("delete", "/api/sites/{site_id}"), ("get", "/api/audit"),
-                ("get", "/api/settings"), ("patch", "/api/settings")}
+                ("get", "/api/settings"), ("patch", "/api/settings"), ("get", "/api/unknowns"),
+                ("get", "/api/unknowns/{visit_id}"), ("patch", "/api/unknowns/{visit_id}"),
+                ("get", "/api/unknowns/{visit_id}/snapshot"), ("get", "/api/settings/unknowns")}
     assert expected <= {(m, p) for m, p, _ in ops}
     for method, path, op in ops:
         ok = next(code for code in op["responses"] if code.startswith("2"))
@@ -595,5 +597,5 @@ def test_openapi_lists_every_endpoint_with_a_response_model(app):
         schema = content["application/json"]["schema"]
         assert schema and schema != {}, (method, path)  # a declared model, not "any"
     for name in ("Page_Event_", "Page_AttendanceRow_", "Overview", "Camera", "PersonDetail", "Settings",
-                 "AuditEntry", "Site"):
+                 "AuditEntry", "Site", "Page_UnknownVisit_"):
         assert name in spec["components"]["schemas"], name

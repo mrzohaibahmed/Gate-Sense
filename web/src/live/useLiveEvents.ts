@@ -1,7 +1,7 @@
 import { type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
-import type { AttendanceEvent } from "@/api/types";
+import type { AttendanceEvent, UnknownVisit } from "@/api/types";
 import { meKey } from "@/auth/auth";
 
 export type LiveStatus = "connecting" | "open" | "closed";
@@ -28,7 +28,7 @@ export type ChangedMessage = {
 /** One recognition decision of a camera worker (admins only: live:decisions). */
 export type Decision = {
   time: string;
-  kind: string; // match, unknown, skip, event, cool-down, not saved, closed
+  kind: string; // match, unknown, skip, event, cool-down, not saved, closed, visitor
   track: number | null;
   name: string | null;
   score: number | null;
@@ -39,8 +39,18 @@ export type Decision = {
   detail: string;
 };
 export type DecisionsMessage = { type: "decisions"; camera: string; id: number | null; decisions: Decision[] };
+/** A new unknown visitor, sent while they are still in view (admins and guards only: unknowns:read). */
+export type UnknownMessage = { type: "unknown" } & UnknownVisit;
+/** A visit was reviewed, the visitor log switched, or old visits deleted (unknowns:read only). */
+export type UnknownsChangedMessage = { type: "unknowns_changed"; action: string; target: string; user: string };
 export type LiveMessage =
-  { type: "hello"; user: string; role: string } | EventMessage | CameraMessage | ChangedMessage | DecisionsMessage;
+  | { type: "hello"; user: string; role: string }
+  | EventMessage
+  | CameraMessage
+  | ChangedMessage
+  | DecisionsMessage
+  | UnknownMessage
+  | UnknownsChangedMessage;
 
 /** Reconnect delays (ms): 1, 2, 4, 8, then every 15 s. Reset after a connection opens. */
 export const BACKOFF = [1000, 2000, 4000, 8000, 15000];
@@ -81,14 +91,20 @@ type Options = {
   url?: string;
   /** Injectable for tests. */
   createSocket?: (url: string) => WebSocket;
+  /** Called for each new unknown visitor (the shell shows an alert). */
+  onVisitor?: (visit: UnknownMessage) => void;
 };
 
 /**
  * The live feed (WebSocket /api/ws): keeps itself connected, keeps the recent events and camera statuses, and
  * refreshes the queries a message affects. Use it once, through <LiveProvider>; screens read it with useLive().
  */
-export function useLiveEvents({ enabled = true, url, createSocket }: Options = {}): LiveState {
+export function useLiveEvents({ enabled = true, url, createSocket, onVisitor }: Options = {}): LiveState {
   const queryClient = useQueryClient();
+  const visitorHandler = useRef(onVisitor);
+  useEffect(() => {
+    visitorHandler.current = onVisitor; // the latest, without reconnecting when it changes
+  }, [onVisitor]);
   const [status, setStatus] = useState<LiveStatus>("connecting");
   const [events, setEvents] = useState<EventMessage[]>([]);
   const [cameras, setCameras] = useState<Record<string, CameraMessage>>({});
@@ -121,6 +137,13 @@ export function useLiveEvents({ enabled = true, url, createSocket }: Options = {
         case "decisions":
           setDecisions((all) => ({ ...all, [message.camera]: message.decisions }));
           break;
+        case "unknown":
+          refresh([["unknowns"]]);
+          visitorHandler.current?.(message);
+          break;
+        case "unknowns_changed":
+          refresh([["unknowns"], ["features"]]);
+          break;
         case "camera": {
           setCameras((all) => ({ ...all, [message.name]: message }));
           const before = cameraStatus.current[message.name];
@@ -138,7 +161,7 @@ export function useLiveEvents({ enabled = true, url, createSocket }: Options = {
       const ws = open(target);
       socket = ws;
       ws.onopen = () => {
-        if (everOpened) refresh([...ATTENDANCE_QUERIES, ["cameras"]]); // anything missed while away
+        if (everOpened) refresh([...ATTENDANCE_QUERIES, ["cameras"], ["unknowns"]]); // anything missed while away
         everOpened = true;
         attempt = 0;
         setStatus("open");

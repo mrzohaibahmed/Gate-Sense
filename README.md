@@ -286,6 +286,18 @@ A phone screen or a printed photo held up to the camera is refused. Each face is
 
 No software check stops every attack (a good mask, a high-resolution screen at the right distance). For stronger protection use an IR or depth camera.
 
+## Unknown visitors
+
+Off by default. An admin switches it on in **Settings > System > Unknown visitors** (with a reason; audited). While it is on, every camera records faces that match nobody enrolled, so admins and guards can review who came to the gate:
+
+- a face is recorded once `UNKNOWN_MIN_FRAMES` (3) of its kept frames all score below `UNKNOWN_MAX_SCORE` (0.35) against every enrolled person. That is lower than the match threshold on purpose: a face scoring 0.35-0.45 is probably an employee seen at a bad angle, and is left out. With liveness on, a photo or a phone screen is never recorded;
+- the record is made while the person is still in view: admins and guards get an alert on the dashboard. It keeps one snapshot (`data/snapshots/unknown/<day>/`), the time first and last seen, the camera and the enrolled person the face came closest to. Someone waiting at the gate, or coming back within 5 minutes, is one visit, not one per pass;
+- if the cameras recognise the person a moment later after all, the record is withdrawn;
+- the **Unknown visitors** page lists them (the menu shows how many wait for review). Admins and guards dismiss a visit or add a note; admins can mark it as a person ("identified": an employee the camera missed, or someone enrolled since). Every review needs a reason and goes to the audit log. Visits never count as attendance;
+- visits and their snapshots are deleted after `UNKNOWN_RETENTION_DAYS` (30, at most 90) by the nightly job, whatever their status. Visitors' face data (embeddings) is never stored: only in the camera's memory for a few minutes.
+
+Switching it off stops the recording within a few seconds (no restart). The three settings are in Settings > Recognition. Storing pictures of visitors may need a notice at the gate where you are: check your local rules before switching it on.
+
 ## Today's attendance
 
 ```

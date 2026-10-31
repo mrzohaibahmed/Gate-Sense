@@ -11,9 +11,10 @@ EventHub: the WebSocket clients of /api/ws. While any are connected, one task
 looks for new events and corrections (in the database, so those from the camera
 workers and scripts are seen too) every WS_POLL_SECONDS, sends each
 camera's latest recognition decisions (from data/live/<camera>.json) when they
-change, only to clients with live:decisions (admins), and sends
-every camera's status every WS_CAMERA_SECONDS, when it also closes clients whose
-session ended. Each client has a bounded queue; one that falls WS_QUEUE messages
+change, only to clients with live:decisions (admins), new unknown visitors
+(app/visitors.py) and their reviews only to clients with unknowns:read (admins,
+guards), and every camera's status every WS_CAMERA_SECONDS, when it also closes
+clients whose session ended. Each client has a bounded queue; one that falls WS_QUEUE messages
 behind is disconnected instead of slowing the others.
 """
 
@@ -29,7 +30,7 @@ import numpy as np
 from starlette.concurrency import run_in_threadpool
 
 from api.db import Database
-from api.schemas import event_out
+from api.schemas import event_out, visit_out
 from app import config, live
 
 # Audit actions that change attendance days (sent as attendance_changed, so screens refetch): event corrections,
@@ -38,6 +39,9 @@ CORRECTIONS = ("add_event", "edit_event", "void_event", "restore_event", "set_ro
                "import_roster", "add_shift", "edit_shift", "delete_shift", "delete_shift_version", "enable_shifts",
                "disable_shifts")
 DECISIONS = "live:decisions"
+# Audit actions about unknown visitors (sent as unknowns_changed to unknowns:read clients, whose lists then refetch).
+UNKNOWN_ACTIONS = ("review_unknown", "enable_unknown_log", "disable_unknown_log", "unknown_cleanup")
+UNKNOWNS = "unknowns:read"
 SESSION_ENDED = 4401  # WebSocket close code: log in again
 
 
@@ -157,7 +161,7 @@ class EventHub:
     def __init__(self, db: Database, workers):
         self.db, self.workers = db, workers
         self.clients: set[Client] = set()
-        self._last: tuple[int, int] | None = None  # (event id, audit id) already sent; None = start from now
+        self._last: tuple[int, int, int] | None = None  # (event, audit, visit id) already sent; None = from now
         self._camera_due = 0.0
         self._decisions: dict[str, str] = {}  # camera -> the decision list last sent (as JSON)
         self._camera_ids: dict[str, int] = {}
@@ -222,17 +226,24 @@ class EventHub:
             return
         if self._last is None:
             self._last = await run_in_threadpool(self.db.last_ids)
-        event_id, audit_id = self._last
+        event_id, audit_id, visit_id = self._last
         rows = await run_in_threadpool(self.db.events_after, event_id)
         repeats = await run_in_threadpool(self.db.repeat_ids, rows) if rows else set()
         for row in rows:
             self.broadcast({"type": "event", **event_out(row, repeats).model_dump(mode="json")})
             event_id = row["id"]
-        rows, audit_id = await run_in_threadpool(self.db.audit_after, audit_id, CORRECTIONS)
+        rows, audit_id = await run_in_threadpool(self.db.audit_after, audit_id, CORRECTIONS + UNKNOWN_ACTIONS)
         for row in rows:
-            self.broadcast({"type": "attendance_changed", "action": row["action"], "target": row["target"],
-                            "user": row["user"], "reason": row["reason"]})
-        self._last = (event_id, audit_id)
+            if row["action"] in UNKNOWN_ACTIONS:
+                self.broadcast({"type": "unknowns_changed", "action": row["action"], "target": row["target"],
+                                "user": row["user"]}, UNKNOWNS)
+            else:
+                self.broadcast({"type": "attendance_changed", "action": row["action"], "target": row["target"],
+                                "user": row["user"], "reason": row["reason"]})
+        for row in await run_in_threadpool(self.db.unknowns_after, visit_id):
+            self.broadcast({"type": "unknown", **visit_out(row).model_dump(mode="json")}, UNKNOWNS)
+            visit_id = row["id"]
+        self._last = (event_id, audit_id, visit_id)
         if time.monotonic() >= self._camera_due:
             self._camera_due = time.monotonic() + config.WS_CAMERA_SECONDS
             await self.cameras_and_sessions()  # first: it also learns the camera ids the decisions carry

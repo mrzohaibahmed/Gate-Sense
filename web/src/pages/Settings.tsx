@@ -18,6 +18,7 @@ import { ApiError, api, resourceUrl } from "@/api/client";
 import type { Camera, Roi, Setting, Site, TestResult, UserOut } from "@/api/types";
 import { PageHeader } from "@/app/AppShell";
 import { shiftModeKey, useShiftsEnabled } from "@/app/shiftMode";
+import { visitorLogKey } from "@/app/visitorLog";
 import { can, type Permission, useMe } from "@/auth/auth";
 import { CameraStateDot, DirectionBadge } from "@/components/badges";
 import { ReasonDialog } from "@/components/ReasonDialog";
@@ -966,6 +967,9 @@ const LABELS: Record<string, string> = {
   liveness_enabled: "Liveness check (anti-spoofing)",
   liveness_threshold: "Liveness threshold",
   liveness_min_frames: "Live frames needed per person",
+  unknown_min_frames: "Unknown visitor: frames needed",
+  unknown_max_score: "Unknown visitor: highest score",
+  unknown_retention_days: "Keep unknown visitors (days)",
 };
 /** A setting's value for display: on/off for bool settings. */
 const shown = (s: Setting, v: number | string) => (s.type === "bool" ? (Number(v) ? "on" : "off") : String(v));
@@ -1104,6 +1108,7 @@ function SystemTab() {
       </>,
     ]),
     ["Snapshots", `${bytes(s.maintenance.snapshots_bytes)} · kept ${s.maintenance.snapshot_retention_days} days`],
+    ["Unknown visitors", `kept ${s.maintenance.unknown_retention_days} days`],
     [
       "Nightly backup",
       s.maintenance.last_run ? (
@@ -1136,6 +1141,7 @@ function SystemTab() {
         </CardContent>
       </Card>
       <ShiftsSwitch />
+      <VisitorLogSwitch />
       <Card>
         <CardHeader>
           <CardTitle>Backups</CardTitle>
@@ -1218,6 +1224,57 @@ function ShiftsSwitch() {
           ]) {
             void queryClient.invalidateQueries({ queryKey: k });
           }
+        }}
+      />
+    </Card>
+  );
+}
+
+/**
+ * The unknown visitor log on or off (admin, with a reason; audited). On: the cameras record faces that match nobody
+ * enrolled (a snapshot, the time, the closest enrolled person) for admins and guards to review, and alert them while
+ * the person is still at the gate. Off (the default): nothing is recorded; visits already recorded stay until the
+ * retention deletes them.
+ */
+function VisitorLogSwitch() {
+  const queryClient = useQueryClient();
+  const mode = useQuery({ queryKey: visitorLogKey, queryFn: () => api.get("/api/settings/unknowns") });
+  const [asking, setAsking] = useState<boolean | null>(null);
+  if (!mode.data) return null;
+  const on = mode.data.enabled;
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Unknown visitors</CardTitle>
+        <label className="flex items-center gap-2 text-sm">
+          <Switch checked={on} onCheckedChange={(v) => setAsking(v)} aria-label="Unknown visitors" />
+          {on ? "On" : "Off"}
+        </label>
+      </CardHeader>
+      <CardContent className="text-sm text-muted-foreground">
+        {on
+          ? "On: faces that match nobody enrolled are recorded with a snapshot for admins and guards to review (Unknown visitors page), with an alert while the person is still in view. Face data of visitors is never stored."
+          : "Off: the cameras don't record unknown faces. Switch it on to keep a reviewable log of visitors; put up a notice at the gate first if your site's rules ask for one."}
+        {mode.data.updated_by && (
+          <span className="block pt-1 text-xs">
+            Last switched by {mode.data.updated_by}, {mode.data.updated?.replace("T", " ").slice(0, 16)}
+          </span>
+        )}
+      </CardContent>
+      <ReasonDialog
+        open={asking !== null}
+        onOpenChange={(o) => !o && setAsking(null)}
+        title={asking ? "Record unknown visitors?" : "Stop recording unknown visitors?"}
+        description={
+          asking
+            ? "The cameras start recording faces that match nobody enrolled, within a few seconds (no restart). Each record keeps a snapshot; records are deleted after the retention period (Recognition tab)."
+            : "The cameras stop recording unknown faces within a few seconds. Visits already recorded stay until the retention period deletes them."
+        }
+        confirmLabel={asking ? "Switch on" : "Switch off"}
+        onConfirm={async (reason) => {
+          await api.put("/api/settings/unknowns", { body: { enabled: !!asking, reason } });
+          void queryClient.invalidateQueries({ queryKey: visitorLogKey });
+          void queryClient.invalidateQueries({ queryKey: ["unknowns"] });
         }}
       />
     </Card>

@@ -41,6 +41,8 @@ export const PERMISSIONS: Record<string, string[]> = {
     "roster:read",
     "roster:manage",
     "shifts:manage",
+    "unknowns:read",
+    "unknowns:manage",
   ],
   hr: [
     "account:self",
@@ -66,7 +68,16 @@ export const PERMISSIONS: Record<string, string[]> = {
     "reports:read",
     "roster:read",
   ],
-  guard: ["account:self", "sites:read", "cameras:read", "cameras:control", "live:view", "attendance:read"],
+  guard: [
+    "account:self",
+    "sites:read",
+    "cameras:read",
+    "cameras:control",
+    "live:view",
+    "attendance:read",
+    "unknowns:read",
+    "unknowns:manage",
+  ],
 };
 
 export function testQueryClient(me?: Me | null): QueryClient {

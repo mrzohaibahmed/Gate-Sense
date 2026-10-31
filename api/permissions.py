@@ -31,6 +31,8 @@ PERMISSIONS = {
     "roster:read": "see the shifts and the roster",
     "roster:manage": "assign shifts and days off on the roster, copy weeks, import a roster file",
     "shifts:manage": "add shifts and change their times (from a date on; earlier days keep theirs)",
+    "unknowns:read": "see unknown visitors (faces that matched nobody enrolled) and their snapshots, with live alerts",
+    "unknowns:manage": "review unknown visitors: dismiss, identify, add a note",
 }
 
 ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
@@ -42,7 +44,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     "viewer": frozenset({"account:self", "sites:read", "cameras:read", "attendance:read", "people:read",
                          "reports:read", "roster:read"}),
     "guard": frozenset({"account:self", "sites:read", "cameras:read", "cameras:control", "live:view",
-                        "attendance:read"}),
+                        "attendance:read", "unknowns:read", "unknowns:manage"}),
 }
 
 assert set(ROLE_PERMISSIONS) == set(ROLES)
