@@ -53,12 +53,13 @@ reason to stop: webcams and IP cameras are opened again by themselves, a frame t
 (counted in the worker's status file), and an event the database can't take right away is written as soon as it can.
 
 GateSense refuses to start (start.bat says why) when `cameras.json` can't be read, rather than guessing which
-cameras to use, or when the database is damaged (`PRAGMA quick_check`). Restore a backup then (below).
+cameras to use, or when it can't use the database (`GATESENSE_DB_URL` missing or wrong, SQL Server unreachable, another
+schema version).
 
 ### Backups and restore
 
 Every night (after 02:00, while GateSense runs), and with "Back up now" on Settings > System, GateSense makes a
-backup set in `data/backups/`: the database (checked with `PRAGMA integrity_check`), the face data, the enrollment
+backup set in `data/backups/`: the database (`GateSense-….bak`, checked with `RESTORE VERIFYONLY`), the face data, the enrollment
 photos (`known-….zip`), `cameras.json` and `settings.json`. **Never `.env`**: keep your own copy of it (it holds the
 camera passwords), somewhere safe. The newest 14 nightly sets are kept (`BACKUP_KEEP`); "Back up now" sets are kept
 until you delete them. Event snapshots older than 30 days are deleted (the attendance itself is kept; the period is a
@@ -76,23 +77,23 @@ To restore (GateSense is stopped for you, and started again by you afterwards):
 .venv\Scripts\python scripts\restore.py latest                         # restore the newest set
 .venv\Scripts\python scripts\restore.py 20261023-020005                # or one set, by its time from --list
 .venv\Scripts\python scripts\restore.py latest --from E:\GateSense-backups   # from the second folder
-.venv\Scripts\python scripts\restore.py latest --only database,gallery       # only some parts
+.venv\Scripts\python scripts\restore.py latest --only gallery,known          # only some parts
 ```
 
-It checks the backup first, asks, stops GateSense and every camera (like stop.bat), moves the current files to
-`data\backups\before-restore-<time>\` (nothing is deleted; the database's `-wal` and `-shm` files go there too, as
-they must never stay next to a restored database), copies the backup in, checks the result and writes the restore to
-the audit log. Then start GateSense with start.bat. If the backup is from before a GateSense update, its database is
-upgraded at the first start as usual. Try a restore once on a spare PC before you need it.
+The database is put back by an administrator (GateSense's own login can't replace its database): `restore.py` checks
+the `.bak` and prints the T-SQL to run, then the command for the other parts. For those it checks the backup first,
+asks, stops GateSense and every camera (like stop.bat), moves the current files to
+`data\backups\before-restore-<time>\` (nothing is deleted), copies the backup in, checks the result and writes the
+restore to the audit log. Then start GateSense with start.bat. If the backup is from before a GateSense update, its
+database is upgraded at the first start as usual. Try a restore once on a spare PC before you need it.
 
 After updating GateSense's code, restart it (`stop.bat`, then `start.bat`); start.bat rebuilds the web dashboard when it changed.
 
-## SQL Server (optional)
+## SQL Server
 
-GateSense keeps its data in SQLite (`data\attendance.db`) unless the environment variable `GATESENSE_DB_URL` points
-at a Microsoft SQL Server database. It is read from the environment only (never from `.env`), and the password in it
-is never shown or logged. The face embeddings stay in `data\gallery.npz` either way. Everything works the same on
-both: the same tables (in SQL Server types), the same days, statuses and reports.
+GateSense keeps its data in Microsoft SQL Server, in the database the environment variable `GATESENSE_DB_URL` points
+at; without it GateSense refuses to start. It is read from the environment only (never from `.env`), and the password
+in it is never shown or logged. The face embeddings stay in `data\gallery.npz`.
 
 **Once, as an administrator of the SQL Server instance** (here `localhost\SQLEXPRESS01`, SQL Server 2025 Express):
 
@@ -110,7 +111,7 @@ both: the same tables (in SQL Server types), the same days, statuses and reports
    CREATE USER gatesense_app FOR LOGIN gatesense_app;
    ALTER ROLE db_datareader ADD MEMBER gatesense_app;
    ALTER ROLE db_datawriter ADD MEMBER gatesense_app;
-   ALTER ROLE db_ddladmin ADD MEMBER gatesense_app;        -- creates GateSense's tables (migration, first start)
+   ALTER ROLE db_ddladmin ADD MEMBER gatesense_app;        -- creates GateSense's tables (first start)
    ALTER ROLE db_backupoperator ADD MEMBER gatesense_app;  -- the nightly and "Back up now" BACKUP DATABASE
    USE master;
    CREATE USER gatesense_app FOR LOGIN gatesense_app;
@@ -134,21 +135,7 @@ both: the same tables (in SQL Server types), the same days, statuses and reports
    As a Windows service (`install_service.ps1`), add the same variable to the service (the `+` keeps the variables
    the install script set): `nssm set GateSense AppEnvironmentExtra "+GATESENSE_DB_URL=..."`.
 
-**Move the data from SQLite** (the SQLite file is only read, never changed or deleted):
-
-```
-stop.bat
-.venv\Scripts\python scripts\migrate_sqlite_to_mssql.py            # copies every table with its ids, in one transaction
-.venv\Scripts\python scripts\migrate_sqlite_to_mssql.py --check    # compare again: row counts and checksums per table
-start.bat
-```
-
-The migration refuses while GateSense runs, refuses a value it would have to change (it lists them), and refuses if
-the SQL Server tables already have rows (`--force` empties them first, in the same transaction). It prints each
-table's row count in SQLite and in SQL Server with a checksum of its rows, and `gallery.npz`'s SHA-256 before and
-after. Settings > System then shows the SQL Server database's size and schema version.
-
-**On SQL Server, backups** are `GateSense-nightly-<time>.bak` (and `-manual-`) in the same sets as before: a
+**Backups** are `GateSense-nightly-<time>.bak` (and `-manual-`) in the backup sets: a
 COPY_ONLY backup with checksums, checked with `RESTORE VERIFYONLY`, copied to the second backup folder (compared byte
 for byte). `scripts\restore.py` checks a `.bak` and prints the T-SQL an administrator runs to restore it (the app's
 login can't replace its own database), then the command for the other parts of the set.
@@ -157,11 +144,6 @@ login can't replace its own database), then the command for the other parts of t
 whose save was interrupted is looked for first, so none is recorded twice); the dashboard shows the database error
 meanwhile. GateSense refuses to start if it can't reach SQL Server, if only the old variable
 `GATESENSE_DATABASE_URL` is set, or if the database has another schema version.
-
-**Back to SQLite:** `stop.bat`, remove the variable
-(`[Environment]::SetEnvironmentVariable('GATESENSE_DB_URL', $null, 'User')` in PowerShell, then a new terminal), and
-`start.bat`. GateSense then uses `data\attendance.db` as it was at the migration: anything recorded on SQL Server
-after that stays in SQL Server only (it is not copied back).
 
 ## Check the environment
 
@@ -192,7 +174,7 @@ Or capture them from the webcam (SPACE saves when the face passes the quality ch
 .venv\Scripts\python scripts\enroll.py --capture waqas
 ```
 
-It prints, per person, how many photos were accepted and why any were rejected, then saves `data/gallery.npz` and syncs the `persons` table in `data/attendance.db`.
+It prints, per person, how many photos were accepted and why any were rejected, then saves `data/gallery.npz` and syncs the `persons` table in the database.
 
 ### Many people at once from a file
 
@@ -398,10 +380,11 @@ It listens on `http://127.0.0.1:8000` (this PC only; change it with `GATESENSE_H
 cd web && npm test
 ```
 
-The Python tests use SQLite. To run them on SQL Server too, point `GATESENSE_TEST_DB_URL` at a separate, empty
+The Python tests need SQL Server: point `GATESENSE_TEST_DB_URL` at a separate, empty
 database whose name contains "test" (every test empties it; the tests never use `GATESENSE_DB_URL`), e.g.
 `GATESENSE_TEST_DB_URL=mssql+pyodbc://@localhost\SQLEXPRESS01/GateSense_Test?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes&Trusted_Connection=yes`.
-The SQL Server backup tests also need `GATESENSE_TEST_BACKUP_DIR`, a folder the SQL Server service can write.
+The tests of real `.bak` files also need `GATESENSE_TEST_BACKUP_DIR`, a folder the SQL Server service can write
+(skipped without it).
 
 ## Logs, health and long runs
 

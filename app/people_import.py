@@ -22,10 +22,10 @@ error, so the file is imported completely or not at all. Every person added or c
 import csv
 import io
 import re
-import sqlite3
 from dataclasses import dataclass, field
 
 from app import config, db, enrollment
+from app.mssql import Connection
 
 FIELDS = ("employee_code", "name", "department", "shift", "site")
 HEADINGS = {  # a heading, lower case with only letters and digits kept -> field
@@ -159,7 +159,7 @@ def parse(data: bytes, filename: str = "") -> tuple[list[ImportRow], list[str], 
     return rows, [f for f in FIELDS if f in columns], ignored
 
 
-def plan(conn: sqlite3.Connection, data: bytes, filename: str = "") -> ImportPlan:
+def plan(conn: Connection, data: bytes, filename: str = "") -> ImportPlan:
     """What importing the file would do (see the module docstring); changes nothing."""
     rows, columns, ignored = parse(data, filename)
     people = {r["employee_code"]: dict(r) for r in conn.execute("SELECT * FROM persons")}
@@ -217,11 +217,11 @@ def plan(conn: sqlite3.Connection, data: bytes, filename: str = "") -> ImportPla
     return ImportPlan(rows, columns, ignored)
 
 
-def import_people(conn: sqlite3.Connection, data: bytes, filename: str, user: str, reason: str) -> ImportPlan:
+def import_people(conn: Connection, data: bytes, filename: str, user: str, reason: str) -> ImportPlan:
     """Import the file in one transaction: every new person added, every changed one updated, all audited. Raises
     ValueError (nothing changed) if any row has an error."""
     db.require_reason(reason)
-    conn.execute("BEGIN IMMEDIATE")  # planned and written under one write lock: nothing changes in between
+    conn.begin()  # planned and written under one write lock: nothing changes in between
     try:
         result = plan(conn, data, filename)
         if result.errors:
@@ -231,7 +231,7 @@ def import_people(conn: sqlite3.Connection, data: bytes, filename: str, user: st
             if row.action == "new":
                 cur = conn.execute(
                     "INSERT INTO persons (employee_code, name, department, shift, site_id) "
-                    + db._row(conn, f"?, ?, ?, ?, COALESCE(?, {db.DEFAULT_SITE})"),
+                    + f"SELECT ?, ?, ?, ?, COALESCE(?, {db.DEFAULT_SITE})",
                     (row.employee_code, row.name, row.department, row.shift, row.site_id))
                 row.person_id = cur.lastrowid
                 db.write_audit(conn, user, "add_person", f"person:{row.employee_code}",

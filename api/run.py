@@ -15,7 +15,6 @@ it started first, then the server. Ctrl+C does the same.
 
 import argparse
 import socket
-import sqlite3
 import sys
 import threading
 import time
@@ -64,22 +63,14 @@ def https_problem() -> tuple[str | None, str | None]:
 
 def needs_admin_password() -> bool:
     """No users yet (first start): the first admin is created from GATESENSE_ADMIN_PASSWORD."""
-    if url := dbconn.server_url():
-        from app import mssql
+    from app import mssql
 
-        try:
-            with closing(mssql.Connection(url)) as conn:
-                if mssql.schema_version(conn) is None:
-                    return True  # an empty database: the tables are created at the start
-                return conn.execute("SELECT count(*) FROM users").fetchone()[0] == 0
-        except dbconn.ERRORS:
-            return True
-    if not config.DB_PATH.is_file():
-        return True
     try:
-        with sqlite3.connect(f"{config.DB_PATH.resolve().as_uri()}?mode=ro", uri=True) as conn:
+        with closing(mssql.Connection(dbconn.server_url())) as conn:
+            if mssql.schema_version(conn) is None:
+                return True  # an empty database: the tables are created at the start
             return conn.execute("SELECT count(*) FROM users").fetchone()[0] == 0
-    except sqlite3.Error:  # no users table yet: an older database
+    except dbconn.ERRORS:
         return True
 
 

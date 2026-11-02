@@ -10,7 +10,7 @@ from starlette.concurrency import run_in_threadpool
 
 from api import __version__, auth, maintenance
 from api.auth import CurrentUser, require_permission
-from app import config, dbconn, enrollment
+from app import config, enrollment, mssql
 from app import db as app_db
 
 router = APIRouter(prefix="/api/system", tags=["system"], responses=auth.PROTECTED_RESPONSES)
@@ -60,14 +60,13 @@ class SystemInfo(BaseModel):
     started: datetime
     uptime_seconds: float
     python: str
-    database_bytes: int = Field(description="the database file plus its write-ahead log (SQL Server: its data and "
-                                            "log files)")
-    database_schema: int = Field(description="schema version (SQLite: PRAGMA user_version)")
+    database_bytes: int = Field(description="the database's data and log files")
+    database_schema: int = Field(description="schema version")
     events: int
     people: int
     gallery_bytes: int
     enrolled: int = Field(description="people with face embeddings")
-    backups: list[Backup] = Field(description="newest first: data/backups/ (copies made before upgrades, and manual)")
+    backups: list[Backup] = Field(description="newest first: the database backups in data/backups/")
     cameras_running: int
     device: DeviceInfo = Field(description="this app's device (the enrollment models); GATESENSE_DEVICE is read at "
                                            "start, so a change needs a restart")
@@ -77,8 +76,7 @@ class SystemInfo(BaseModel):
 
 def backups() -> list[Backup]:
     folder = maintenance.backup_dir()
-    files = sorted((p for ext in ("*.db", "*.bak") for p in folder.glob(ext)), key=lambda p: p.stat().st_mtime,
-                   reverse=True) if folder.is_dir() else []
+    files = sorted(folder.glob("*.bak"), key=lambda p: p.stat().st_mtime, reverse=True) if folder.is_dir() else []
     return [Backup(file=p.name, size_bytes=p.stat().st_size, created=datetime.fromtimestamp(p.stat().st_mtime))
             for p in files]
 
@@ -97,13 +95,7 @@ def system_info(request: Request, _: CurrentUser = Depends(manage)) -> SystemInf
         version = app_db.schema_version(conn)
         events = conn.execute("SELECT count(*) FROM attendance_events").fetchone()[0]
         people = conn.execute("SELECT count(*) FROM persons").fetchone()[0]
-        if dbconn.is_mssql(conn):
-            from app import mssql
-
-            database_bytes = mssql.database_bytes(conn)
-        else:
-            wal = config.DB_PATH.with_name(config.DB_PATH.name + "-wal")
-            database_bytes = size(config.DB_PATH) + size(wal)
+        database_bytes = mssql.database_bytes(conn)
     started = request.app.state.started
     config.refresh_settings()
     last = maintenance.read_state().get("last") or {}
@@ -136,8 +128,8 @@ class BackupIn(BaseModel):
 
 @router.post("/backup", response_model=Backup, status_code=201)
 async def backup_now(body: BackupIn, request: Request, admin: CurrentUser = Depends(manage)) -> Backup:
-    """Make a backup set in data/backups/: the database (consistent while cameras keep writing: SQLite's online
-    backup, then an integrity check), the face gallery, the enrollment photos, cameras.json and settings.json; and
+    """Make a backup set in data/backups/: the database (consistent while cameras keep writing: a SQL Server
+    backup, then RESTORE VERIFYONLY), the face gallery, the enrollment photos, cameras.json and settings.json; and
     copy it to the second backup folder if one is set. Audited. Manual sets are never deleted automatically
     (only the newest BACKUP_KEEP nightly sets are kept)."""
 

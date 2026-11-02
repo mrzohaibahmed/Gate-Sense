@@ -14,6 +14,8 @@ from api import auth, maintenance, run, web
 from api.main import create_app
 from app import config, db
 from tests.test_data_api import admin, as_role, first_password, items, seed  # noqa: F401  (first_password: fixture)
+from app import mssql
+from tests.conftest import TEST_DB_URL
 
 
 @pytest.fixture
@@ -211,8 +213,8 @@ def test_stop_file_stops_the_server(tmp_path):
 # --- Nightly maintenance ---------------------------------------------------------------------------------
 
 
-@pytest.mark.sqlite_only  # SQLite set files (SQL Server's .bak: tests/test_mssql.py)
-def test_backup_now_is_never_pruned_and_only_the_newest_nightly_sets_are_kept(app, monkeypatch):
+def test_backup_now_is_never_pruned_and_only_the_newest_nightly_sets_are_kept(app, monkeypatch, fake_server_backup):
+    database = mssql.database_name(TEST_DB_URL)
     monkeypatch.setattr(config, "BACKUP_KEEP", 2)
     a = as_role(app, "admin")
     made = a.post("/api/system/backup", json={}).json()
@@ -220,17 +222,17 @@ def test_backup_now_is_never_pruned_and_only_the_newest_nightly_sets_are_kept(ap
     now = datetime(2026, 10, 22, 2, 30)
     stamps = [f"{(now - timedelta(days=d)):%Y%m%d-%H%M%S}" for d in (1, 2, 3, 40)]
     for stamp in stamps:
-        for name in ("attendance", "gallery", "known", "cameras"):
-            ext = {"attendance": "db", "gallery": "npz", "known": "zip", "cameras": "json"}[name]
+        for name in (database, "gallery", "known", "cameras"):
+            ext = {database: "bak", "gallery": "npz", "known": "zip", "cameras": "json"}[name]
             (folder / f"{name}-nightly-{stamp}.{ext}").write_text("old")
-    (folder / "attendance-v0-20260101-000000.db").write_text("before an upgrade")
-    (folder / "attendance-nightly-20261021-020000.db.partial").write_text("an interrupted backup")
+    (folder / "something-else-20260101-000000.db").write_text("not a backup set")
+    (folder / f"{database}-nightly-20261021-020000.bak.partial").write_text("an interrupted backup")
     gone = maintenance.prune_backups()
-    assert "attendance-nightly-20261021-020000.db.partial" in gone
+    assert f"{database}-nightly-20261021-020000.bak.partial" in gone
     pruned = {g.split("-nightly-")[1].split(".")[0] for g in gone if not g.endswith(".partial")}
     assert pruned == set(stamps[2:]) and len(gone) == 1 + 2 * 4  # the two oldest sets, every file of them
     left = {p.name for p in folder.iterdir()}
-    assert made["file"] in left and "attendance-v0-20260101-000000.db" in left
+    assert made["file"] in left and "something-else-20260101-000000.db" in left
     assert all(f in left for f in made["files"])  # the manual set is whole
     assert {s.stamp for s in maintenance.backup_sets() if s.kind == "nightly"} == set(stamps[:2])
 
@@ -258,10 +260,9 @@ def test_snapshot_cleanup_keeps_the_events(app):
     assert rows[paths[60]]["snapshot_path"] is None and rows[paths[0]]["snapshot_path"]  # the events are all still there
 
 
-@pytest.mark.sqlite_only  # the set's database file (SQL Server's .bak: tests/test_mssql.py)
-def test_nightly_run_and_when_it_is_due(app):
+def test_nightly_run_and_when_it_is_due(app, fake_server_backup):
     result = maintenance.run_nightly(app.state.db, datetime(2026, 10, 22, 2, 5))
-    assert result["ok"] and result["backup"].startswith("attendance-nightly-20261022-0205")
+    assert result["ok"] and result["backup"].startswith(f"{mssql.database_name(TEST_DB_URL)}-nightly-20261022-0205")
     state = maintenance.read_state()
     assert state["last_date"] == "2026-10-22"
     audit_rows = [e for e in app.state.db.audit_entries() if e["action"] == "backup"]

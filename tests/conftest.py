@@ -6,15 +6,18 @@ from app import config
 
 SHIPPED_SHIFTS_DEFAULT = config.SHIFTS_ENABLED_DEFAULT  # before any test changes it
 
-# SQL Server run: GATESENSE_TEST_DB_URL = an mssql+pyodbc:// URL of a separate, disposable database (its name must
-# contain "test"); every test starts with it empty. Never GATESENSE_DB_URL: that is the real attendance database.
+# The tests need SQL Server: GATESENSE_TEST_DB_URL = an mssql+pyodbc:// URL of a separate, disposable database (its
+# name must contain "test"); every test starts with it empty. Never GATESENSE_DB_URL: that is the real database.
 TEST_DB_URL = os.environ.get("GATESENSE_TEST_DB_URL") or None
 
 
-def _check_test_database(url: str) -> None:
-    from app import dbconn, mssql
+def _check_test_database(url: str | None) -> None:
+    from app import mssql
 
-    if dbconn.backend_of(url) != dbconn.MSSQL:
+    if not url:
+        pytest.exit("The tests need SQL Server: set GATESENSE_TEST_DB_URL to a separate test database (README.md, "
+                    '"Tests")', 2)
+    if not url.lower().startswith("mssql+pyodbc://"):
         pytest.exit("GATESENSE_TEST_DB_URL must be an mssql+pyodbc:// URL", 2)
     name = mssql.database_name(url)
     real = os.environ.get(config.DATABASE_URL_ENV)
@@ -23,21 +26,7 @@ def _check_test_database(url: str) -> None:
                     f"containing 'test', not the one in {config.DATABASE_URL_ENV}): the tests empty it", 2)
 
 
-if TEST_DB_URL:
-    _check_test_database(TEST_DB_URL)
-
-
-def pytest_configure(config):
-    config.addinivalue_line("markers", "sqlite_only: tests of SQLite itself (files, PRAGMAs, schema steps); "
-                                       "skipped on the SQL Server run")
-
-
-def pytest_collection_modifyitems(config, items):
-    if TEST_DB_URL:
-        skip = pytest.mark.skip(reason="SQLite only (GATESENSE_TEST_DB_URL is set)")
-        for item in items:
-            if "sqlite_only" in item.keywords:
-                item.add_marker(skip)
+_check_test_database(TEST_DB_URL)
 
 
 def empty_test_database(url: str) -> None:
@@ -54,6 +43,17 @@ def empty_test_database(url: str) -> None:
         conn.close()
 
 
+@pytest.fixture
+def fake_server_backup(monkeypatch):
+    """Backup sets without a folder the SQL Server service can write: a small file stands in for the .bak, and only
+    that file passes RESTORE VERIFYONLY. The real thing: tests/test_mssql.py (GATESENSE_TEST_BACKUP_DIR)."""
+    from app import mssql
+
+    monkeypatch.setattr(mssql, "backup_database", lambda url, path: path.write_bytes(b"backup of the database"))
+    monkeypatch.setattr(mssql, "verify_backup",
+                        lambda url, path: "ok" if path.read_bytes() == b"backup of the database" else "damaged")
+
+
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
     """Never touch the real .env, known/ or data/, and undo any variable a test loads from a .env file."""
@@ -62,22 +62,18 @@ def isolated_env(tmp_path, monkeypatch):
     monkeypatch.setenv(config.DASHBOARD_PASSWORD_ENV, "placeholder")
     monkeypatch.delenv(config.DASHBOARD_PASSWORD_ENV)
 
-    # The database: the test's own SQLite file, or the emptied test database on the SQL Server run. Never the real
-    # GATESENSE_DB_URL, here or in a worker a test starts (they inherit the environment).
+    # The database: the emptied test database. Never the real GATESENSE_DB_URL, here or in a worker a test starts
+    # (they inherit the environment).
     monkeypatch.setattr(config, "OLD_DATABASE_URL", None)
     monkeypatch.delenv(config.OLD_DATABASE_URL_ENV, raising=False)
     monkeypatch.setattr(config, "DATABASE_URL", TEST_DB_URL)
-    if TEST_DB_URL:
-        monkeypatch.setenv(config.DATABASE_URL_ENV, TEST_DB_URL)
-        empty_test_database(TEST_DB_URL)
-    else:
-        monkeypatch.delenv(config.DATABASE_URL_ENV, raising=False)
+    monkeypatch.setenv(config.DATABASE_URL_ENV, TEST_DB_URL)
+    empty_test_database(TEST_DB_URL)
 
     data = tmp_path / "data"
     monkeypatch.setattr(config, "DATA_DIR", data)
     monkeypatch.setattr(config, "KNOWN_DIR", tmp_path / "known")
     monkeypatch.setattr(config, "GALLERY_PATH", data / "gallery.npz")
-    monkeypatch.setattr(config, "DB_PATH", data / "attendance.db")
     monkeypatch.setattr(config, "SNAPSHOT_DIR", data / "snapshots")
     monkeypatch.setattr(config, "RUN_DIR", data / "run")
     monkeypatch.setattr(config, "LOG_DIR", data / "logs")

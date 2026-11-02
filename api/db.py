@@ -1,27 +1,23 @@
 """The API's only way to the database.
 
-Routes never import sqlite3 or app.db directly; they go through ``Database``,
-which picks a backend from ``config.DATABASE_URL`` (GATESENSE_DB_URL; None =
-SQLite at ``config.DB_PATH``): SQLite, or Microsoft SQL Server for an
-mssql+pyodbc:// URL (app/mssql.py, a connection that behaves like sqlite3's).
-Both reuse app.db, so the API, the dashboard and the camera workers share one
+Routes never import app.db directly; they go through ``Database``, which uses
+``config.DATABASE_URL`` (GATESENSE_DB_URL): Microsoft SQL Server (app/mssql.py).
+It reuses app.db, so the API, the dashboard and the camera workers share one
 schema and one set of queries (corrections and their audit rows included).
 Users and sessions (Phase 2) are queried here; every change to a user writes
 its audit row in the same transaction. The data endpoints (Phase 3) call
 app.db's functions wherever the dashboard has one, and page events and the
-audit log in SQL (the few differences: app.dbconn).
+audit log in SQL.
 
-A postgresql:// URL is recognised and reported as not supported, rather than
-silently using SQLite.
+Any other URL (postgresql:// included) is reported as not supported.
 """
 
-import sqlite3
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
-from pathlib import Path
 
-from app import config, dbconn
+from app import dbconn, mssql
 from app import db as app_db
+from app.mssql import Connection
 
 UnsupportedDatabase = dbconn.DatabaseConfigError
 
@@ -47,46 +43,19 @@ USER_COLUMNS = ("id, username, full_name, email, role, password_hash, active, cr
 class Database:
     def __init__(self, url: str | None = None):
         self._url = url  # None = config.DATABASE_URL, read each time (tests change config)
-        self._ready: set[Path | str] = set()  # files / URLs whose tables were checked/upgraded by this process
+        self._ready: set[str] = set()  # URLs whose tables were checked/upgraded by this process
 
     @property
     def url(self) -> str:
         """The database URL (it may hold a password: show dbconn.safe_url(url) only)."""
-        if self._url:
-            return self._url
-        dbconn.server_url()  # refuses the old variable on its own (it would otherwise mean SQLite)
-        return config.DATABASE_URL or f"sqlite:///{config.DB_PATH.as_posix()}"
+        return dbconn.check_url(self._url) if self._url else dbconn.server_url()
 
-    @property
-    def backend(self) -> str:
-        """"sqlite", "mssql", "postgresql" (refused) or another URL scheme (refused)."""
-        return dbconn.backend_of(self.url)
-
-    @property
-    def path(self) -> Path:
-        """The SQLite file (sqlite:///relative/path is relative to the project folder)."""
-        if self.backend != "sqlite" or not self.url.lower().startswith("sqlite:///"):
-            raise UnsupportedDatabase(f"not a sqlite:/// URL: {self.backend}")
-        path = Path(self.url[len("sqlite:///"):])
-        return path if path.is_absolute() else config.ROOT_DIR / path
-
-    def _check_supported(self) -> None:
-        dbconn.check_url(self.url)  # raises for PostgreSQL and unknown URLs
-
-    def connect(self) -> sqlite3.Connection:
-        """A new connection. The first one per file (or SQL Server URL) creates or upgrades the tables, like the
-        dashboard and the workers do; later ones skip that (one connection per request)."""
-        self._check_supported()
-        if self.backend == dbconn.MSSQL:
-            from app import mssql
-
-            url = self.url
-            conn = mssql.connect(url, migrate=url not in self._ready)
-            self._ready.add(url)
-            return conn
-        path = self.path
-        conn = app_db.connect(path, migrate=path not in self._ready or not path.is_file())
-        self._ready.add(path)
+    def connect(self) -> Connection:
+        """A new connection. The first one per URL creates or upgrades the tables, like the workers do; later ones
+        skip that (one connection per request)."""
+        url = self.url
+        conn = mssql.connect(url, migrate=url not in self._ready)
+        self._ready.add(url)
         return conn
 
     @contextmanager
@@ -109,32 +78,11 @@ class Database:
             conn.close()
 
     def status(self) -> dict:
-        """{"status": "ok" | "missing" | "error", "backend": ..., "detail": ...}; never creates the database."""
+        """{"status": "ok" | "missing" | "error", "backend": ..., "detail": ...}; never creates the tables."""
         try:
-            self._check_supported()
-            if self.backend == dbconn.MSSQL:
-                from app import mssql
-
-                return mssql.status(self.url)
-            path = self.path
+            return mssql.status(self.url)
         except UnsupportedDatabase as e:
-            try:
-                backend = self.backend
-            except UnsupportedDatabase:
-                backend = "unknown"
-            return {"status": "error", "backend": backend, "detail": str(e)}
-        if not path.is_file():
-            return {"status": "missing", "backend": "sqlite",
-                    "detail": "no database yet: it is created when the dashboard or a camera first starts"}
-        try:
-            conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=2)
-            try:
-                tables = conn.execute("SELECT count(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0]
-            finally:
-                conn.close()
-        except sqlite3.Error as e:
-            return {"status": "error", "backend": "sqlite", "detail": str(e)}
-        return {"status": "ok", "backend": "sqlite", "detail": f"{tables} tables"}
+            return {"status": "error", "backend": dbconn.MSSQL, "detail": str(e)}
 
     # --- Audit ---------------------------------------------------------------------
 
@@ -154,18 +102,17 @@ class Database:
         from api.paging import limit_offset, order_by
 
         where, args = [], []
-        kind = self.backend
         for cond, value in (("timestamp >= ?", ts(start)), ("timestamp < ?", ts(end)), ('"user" = ?', user),
                             ("action = ?", action)):
             if value is not None:
                 where.append(cond)
                 args.append(value)
         if params.q:
-            where.append("(" + " OR ".join(f"{dbconn.like(kind, col)} LIKE ? ESCAPE '!'"
+            where.append("(" + " OR ".join(f"{dbconn.like(col)} LIKE ? ESCAPE '!'"
                                            for col in ('"user"', "target", "details", "reason")) + ")")
             args += [like(params.q)] * 4
         clause = ("WHERE " + " AND ".join(where) + " ") if where else ""
-        limit, page = limit_offset(params, kind)
+        limit, page = limit_offset(params)
         order = order_by(params, self.AUDIT_SORT, "-timestamp", "id DESC")
         with self.conn() as conn:
             total = conn.execute("SELECT count(*) FROM audit_log " + clause, args).fetchone()[0]
@@ -195,13 +142,8 @@ class Database:
     def set_preference(self, user_id: int, key: str, value: str | None) -> None:
         with self.transaction() as conn:
             values = (user_id, key, value, datetime.now().isoformat(timespec="seconds"))
-            if dbconn.is_mssql(conn):
-                conn.execute(app_db._merge("user_preferences", ["user_id", "key", "value", "updated"],
-                                           ["user_id", "key"], ["value", "updated"]), values)
-            else:
-                conn.execute('INSERT INTO user_preferences (user_id, "key", value, updated) VALUES (?, ?, ?, ?) '
-                             'ON CONFLICT (user_id, "key") DO UPDATE SET value = excluded.value, '
-                             "updated = excluded.updated", values)
+            conn.execute(app_db._merge("user_preferences", ["user_id", "key", "value", "updated"],
+                                       ["user_id", "key"], ["value", "updated"]), values)
 
     def users(self) -> list[dict]:
         with self.transaction() as conn:
@@ -435,13 +377,12 @@ class Database:
             if value is not None:
                 where.append(cond)
                 args.append(value)
-        kind = self.backend
         if params.q:
             columns = ("c.name", "v.closest_code", "cp.name", "p.name", "p.employee_code", "v.note")
-            where.append("(" + " OR ".join(f"{dbconn.like(kind, col)} LIKE ? ESCAPE '!'" for col in columns) + ")")
+            where.append("(" + " OR ".join(f"{dbconn.like(col)} LIKE ? ESCAPE '!'" for col in columns) + ")")
             args += [like(params.q)] * len(columns)
         clause = ("WHERE " + " AND ".join(where) + " ") if where else ""
-        limit, page = limit_offset(params, kind)
+        limit, page = limit_offset(params)
         order = order_by(params, self.UNKNOWN_SORT, "-first_seen", "v.id DESC")
         with self.conn() as conn:
             total = conn.execute("SELECT count(*) " + app_db.UNKNOWN_FROM + clause, args).fetchone()[0]
@@ -553,13 +494,12 @@ class Database:
             if value is not None:
                 where.append(cond)
                 args.append(value)
-        kind = self.backend
         if params.q:
-            where.append("(" + " OR ".join(f"{dbconn.like(kind, col)} LIKE ? ESCAPE '!'"
+            where.append("(" + " OR ".join(f"{dbconn.like(col)} LIKE ? ESCAPE '!'"
                                            for col in ("p.name", "p.employee_code", "c.name")) + ")")
             args += [like(params.q)] * 3
         clause = ("WHERE " + " AND ".join(where) + " ") if where else ""
-        limit, page = limit_offset(params, kind)
+        limit, page = limit_offset(params)
         order = order_by(params, self.EVENT_SORT, "-timestamp", "e.id DESC")
         with self.conn() as conn:
             total = conn.execute("SELECT count(*) FROM attendance_events e JOIN persons p ON p.id = e.person_id "
@@ -603,7 +543,7 @@ class Database:
         """Events added since `event_id` (by the camera workers or as corrections), oldest first."""
         with self.conn() as conn:
             return [dict(r) for r in conn.execute(app_db.EVENT_COLUMNS + "WHERE e.id > ? ORDER BY e.id"
-                                                  + dbconn.limit(conn), (event_id, limit))]
+                                                  + dbconn.LIMIT, (event_id, limit))]
 
     def audit_after(self, audit_id: int, actions: tuple[str, ...], limit: int = 200) -> tuple[list[dict], int]:
         """Audit rows with one of `actions` since `audit_id` (from the API or the dashboard), and the newest id seen."""
@@ -612,14 +552,14 @@ class Database:
                                   (audit_id, audit_id)).fetchone()[0]
             marks = ", ".join("?" * len(actions))
             rows = conn.execute(f"SELECT * FROM audit_log WHERE id > ? AND id <= ? AND action IN ({marks}) "
-                                "ORDER BY id" + dbconn.limit(conn), (audit_id, newest, *actions, limit)).fetchall()
+                                "ORDER BY id" + dbconn.LIMIT, (audit_id, newest, *actions, limit)).fetchall()
         return [dict(r) for r in rows], newest
 
     def unknowns_after(self, visit_id: int, limit: int = 200) -> list[dict]:
         """Unknown visits added since `visit_id` (by the camera workers), oldest first."""
         with self.conn() as conn:
             return [dict(r) for r in conn.execute(app_db.UNKNOWN_COLUMNS + "WHERE v.id > ? ORDER BY v.id"
-                                                  + dbconn.limit(conn), (visit_id, limit))]
+                                                  + dbconn.LIMIT, (visit_id, limit))]
 
     def sessions_alive(self, session_ids: list[int], now: datetime) -> set[int]:
         """Which of these sessions still exist, haven't expired and belong to an active user."""

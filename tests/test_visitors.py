@@ -11,11 +11,11 @@ The nightly job deletes old visits and their snapshots.
 
 import argparse
 import json
-import sqlite3
 from datetime import date, datetime, timedelta
 
 import cv2
 import numpy as np
+import pyodbc
 import pytest
 from fastapi.testclient import TestClient
 
@@ -251,7 +251,7 @@ def test_a_visit_the_database_refuses_waits_and_is_written_once(make_pipeline, m
 
     def locked(*args):
         calls.append(args[-1])  # retry
-        raise sqlite3.OperationalError("database is locked")
+        raise pyodbc.OperationalError("database is locked")
 
     monkeypatch.setattr(db, "add_unknown_visit", locked)
     frames(p, STRANGER, 5)
@@ -279,7 +279,7 @@ def test_a_visit_not_written_before_the_log_is_switched_off_is_dropped(make_pipe
     real = db.add_unknown_visit
 
     def locked(*args):
-        raise sqlite3.OperationalError("database is locked")
+        raise pyodbc.OperationalError("database is locked")
 
     monkeypatch.setattr(db, "add_unknown_visit", locked)
     frames(p, STRANGER, 5)
@@ -550,7 +550,7 @@ def test_retention_deletes_old_visits_and_their_snapshots(app):
     assert snaps["days"] == [event_day.name] and today_snapshot.exists()
 
 
-def test_nightly_run_audits_the_visitor_cleanup(app, monkeypatch):
+def test_nightly_run_audits_the_visitor_cleanup(app, monkeypatch, fake_server_backup):
     monkeypatch.setattr(config, "UNKNOWN_RETENTION_DAYS", 1)
     conn = db.connect()
     cam = db.upsert_camera(conn, "gate", 0, "IN")

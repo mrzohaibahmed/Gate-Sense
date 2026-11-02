@@ -3,7 +3,6 @@ folder, keeping the newest N, and restoring a set (api/maintenance.py, scripts/r
 
 import json
 import os
-import sqlite3
 import sys
 import zipfile
 from datetime import datetime
@@ -13,17 +12,20 @@ import pytest
 
 from api import maintenance
 from api.db import Database
-from app import camera_settings, config, db
+from app import camera_settings, config, db, mssql
 from app.gallery import Gallery
+from tests.conftest import TEST_DB_URL
 from tests.test_pipeline import unit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import restore as restore_script  # noqa: E402
 import stop as stop_script  # noqa: E402
 
-# The SQLite database file in a set (online backup, integrity check, -wal/-shm, restore by copying the file).
-# SQL Server's .bak sets: tests/test_mssql.py.
-pytestmark = pytest.mark.sqlite_only
+# conftest's stand-in for the .bak; the real thing: tests/test_mssql.py.
+pytestmark = pytest.mark.usefixtures("fake_server_backup")
+
+DATABASE = mssql.database_name(TEST_DB_URL)
+FILE_PARTS = ("gallery", "known", "cameras", "settings")  # what restore_set puts back: an administrator restores the .bak
 
 GATE = {"name": "gate1", "direction": "IN", "type": "hikvision", "ip": "192.168.1.101", "port": 554,
         "user": "gatesense", "channel": 1, "stream": "main", "enabled": True}
@@ -64,7 +66,7 @@ def test_a_backup_set_has_every_part_each_checked(site):
     made = maintenance.make_backup(site, maintenance.MANUAL, datetime(2026, 10, 23, 12, 0, 0))
     assert set(made.files) == set(maintenance.PARTS)
     assert sorted(p.name for p in made.files.values()) == [
-        "attendance-manual-20261023-120000.db", "cameras-manual-20261023-120000.json",
+        f"{DATABASE}-manual-20261023-120000.bak", "cameras-manual-20261023-120000.json",
         "gallery-manual-20261023-120000.npz", "known-manual-20261023-120000.zip",
         "settings-manual-20261023-120000.json"]
     assert maintenance.integrity(made.database) == "ok"
@@ -75,7 +77,7 @@ def test_a_backup_set_has_every_part_each_checked(site):
 
 
 def test_a_database_copy_that_fails_its_check_is_not_kept(site, monkeypatch):
-    monkeypatch.setattr(maintenance, "integrity", lambda path: "*** in database main *** Page 3 is never used")
+    monkeypatch.setattr(maintenance, "integrity", lambda path: "the backup set is damaged")
     with pytest.raises(maintenance.BackupError, match="integrity check"):
         maintenance.make_backup(site, maintenance.NIGHTLY)
     assert list(maintenance.backup_dir().iterdir()) == []  # no half set that would look usable
@@ -87,7 +89,7 @@ def test_an_unreadable_cameras_file_is_left_out_not_fatal(site):
     config.CAMERAS_FILE.write_text("{half written")
     result = maintenance.run_nightly(site, datetime(2026, 10, 23, 2, 5))
     assert result["ok"] is False and "cameras not backed up" in result["error"]
-    assert result["backup"] == "attendance-nightly-20261023-020500.db" and len(result["files"]) == 4
+    assert result["backup"] == f"{DATABASE}-nightly-20261023-020500.bak" and len(result["files"]) == 4
 
 
 def test_the_set_is_copied_to_the_second_folder_and_pruned_there(site, tmp_path, monkeypatch):
@@ -118,7 +120,7 @@ def test_a_failed_copy_is_reported_and_the_local_set_stays(site, tmp_path, monke
 
 
 def damage_everything():
-    """What a bad day leaves: more events, a lost photo, changed cameras and settings, and a stale -wal file."""
+    """What a bad day leaves: more events, a lost photo, changed cameras and settings."""
     conn = db.connect()
     db.add_event(conn, db.active_person_id(conn, "1002"), 1, datetime(2026, 10, 23, 9), 0.8, None)
     conn.close()
@@ -128,47 +130,32 @@ def damage_everything():
     Gallery.from_people({"1001": [unit(0)]}).save()
 
 
-def test_restore_puts_every_part_back_and_keeps_the_old_files(site):
+def test_restore_puts_the_files_back_and_keeps_the_old_ones(site):
     made = maintenance.make_backup(site, maintenance.MANUAL, datetime(2026, 10, 23, 12))
     damage_everything()
-    assert event_count() == 2
-    wal = config.DB_PATH.with_name(config.DB_PATH.name + "-wal")
-    report = maintenance.restore_set(made, now=datetime(2026, 10, 23, 13), log=lambda m: None, user="tester",
+    report = maintenance.restore_set(made, FILE_PARTS, now=datetime(2026, 10, 23, 13), log=lambda m: None, user="tester",
                                      reason="test restore")
     assert report["ok"] and report["problems"] == []
-    assert report["restored"] == ["database", "gallery", "known", "cameras", "settings"]
-    assert event_count() == 1
+    assert report["restored"] == ["gallery", "known", "cameras", "settings"]
+    assert event_count() == 2  # the database isn't restored here
     assert (config.KNOWN_DIR / "1001" / "front.jpg").read_bytes() == b"jpeg 1001"
     assert config.parse_cameras(config.CAMERAS_FILE)[0]["enabled"] is True
     assert json.loads(config.SETTINGS_FILE.read_text())["settings"] == {"MATCH_THRESHOLD": 0.5}
     assert Gallery.load().names == ["1001", "1002"]
     aside = Path(report["moved_aside_to"])
     assert aside.name == "before-restore-20261023-130000"
-    assert {"attendance.db", "gallery.npz", "known", "cameras.json", "settings.json"} <= {p.name for p in aside.iterdir()}
+    assert {"gallery.npz", "known", "cameras.json", "settings.json"} <= {p.name for p in aside.iterdir()}
     assert not (aside / "known" / "1001" / "front.jpg").exists()  # the damaged state, kept as it was
-    assert report["checks"]["database"] == "ok" and report["checks"]["people"] == 2
+    assert report["checks"]["people"] == 2
     conn = db.connect()
     row = dict(db.audit_entries(conn)[0])
     conn.close()
     assert (row["user"], row["action"], row["reason"]) == ("tester", "restore_backup", "test restore")
-    assert not wal.exists() or wal.stat().st_size < 1_000_000  # a fresh one from the checks, not the old one
 
 
-def test_restore_moves_a_stale_wal_aside(site):
-    made = maintenance.make_backup(site, maintenance.MANUAL, datetime(2026, 10, 23, 12))
-    stale = config.DB_PATH.with_name(config.DB_PATH.name + "-wal")
-    stale.write_bytes(b"left by the database before the restore")
-    report = maintenance.restore_set(made, ("database",), log=lambda m: None)
-    assert report["ok"]
-    assert (Path(report["moved_aside_to"]) / "attendance.db-wal").read_bytes().startswith(b"left by")
-
-
-def test_restore_refuses_a_damaged_backup_and_changes_nothing(site):
+def test_restore_leaves_the_database_to_an_administrator(site):
     made = maintenance.make_backup(site, maintenance.MANUAL)
-    data = bytearray(made.database.read_bytes())
-    data[:16] = b"this is not sql!"
-    made.database.write_bytes(bytes(data))
-    with pytest.raises(maintenance.BackupError, match="integrity check"):
+    with pytest.raises(maintenance.BackupError, match="administrator"):
         maintenance.restore_set(made, log=lambda m: None)
     assert event_count() == 1 and not list(maintenance.backup_dir().glob("before-restore-*"))
 
@@ -192,19 +179,37 @@ def test_restore_script_lists_and_restores_the_latest(site, capsys):
     out = capsys.readouterr().out
     assert out.index("20261023-120000") < out.index("20261022-020000") and "database, gallery, known" in out
     damage_everything()
-    assert restore_script.main(["latest", "--yes", "--only", "database,known"]) == 0
+    assert restore_script.main(["latest", "--yes", "--only", "gallery,known"]) == 0
     out = capsys.readouterr().out
-    assert "Restored: database, known." in out and "start.bat" in out
-    assert event_count() == 1 and (config.KNOWN_DIR / "1001" / "front.jpg").exists()
+    assert "Restored: gallery, known." in out and "start.bat" in out
+    assert (config.KNOWN_DIR / "1001" / "front.jpg").exists()
     assert config.parse_cameras(config.CAMERAS_FILE)[0]["enabled"] is False  # not asked for: left alone
+
+
+def test_restore_script_prints_the_commands_for_the_database(site, capsys):
+    made = maintenance.make_backup(site, maintenance.MANUAL, datetime(2026, 10, 23, 12))
+    damage_everything()
+    assert restore_script.main(["latest", "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert f"RESTORE DATABASE [{DATABASE}] FROM DISK" in out and str(made.database.resolve()) in out
+    assert "--only gallery,known,cameras,settings" in out
+    assert not (config.KNOWN_DIR / "1001" / "front.jpg").exists()  # it changed nothing itself
+
+
+def test_restore_script_needs_the_database_setting(monkeypatch, capsys):
+    maintenance.backup_dir().mkdir(parents=True)
+    monkeypatch.setattr(config, "DATABASE_URL", None)
+    assert restore_script.main(["--list"]) == 1
+    assert "GATESENSE_DB_URL is not set" in capsys.readouterr().out
 
 
 def test_restore_script_asks_first(site, monkeypatch, capsys):
     maintenance.make_backup(site, maintenance.MANUAL, datetime(2026, 10, 23, 12))
     damage_everything()
     monkeypatch.setattr("builtins.input", lambda prompt: "n")
-    assert restore_script.main(["20261023-120000"]) == 1
-    assert "Nothing changed." in capsys.readouterr().out and event_count() == 2
+    assert restore_script.main(["20261023-120000", "--only", "known"]) == 1
+    assert "Nothing changed." in capsys.readouterr().out
+    assert not (config.KNOWN_DIR / "1001" / "front.jpg").exists()
 
 
 def test_restore_script_wont_restore_while_gatesense_runs(site, monkeypatch, capsys):
@@ -212,7 +217,7 @@ def test_restore_script_wont_restore_while_gatesense_runs(site, monkeypatch, cap
     monkeypatch.setattr(restore_script, "api_pid", lambda: os.getpid())  # "running" and won't stop
     monkeypatch.setattr(stop_script, "api_pid", lambda: os.getpid())
     monkeypatch.setattr(stop_script, "TIMEOUT", 0.3)
-    assert restore_script.main(["latest", "--yes"]) == 1
+    assert restore_script.main(["latest", "--yes", "--only", "known"]) == 1
     assert "still running" in capsys.readouterr().out
     assert (config.RUN_DIR / "_api.stop").exists()  # it asked GateSense to stop, like stop.bat
     assert not list(maintenance.backup_dir().glob("before-restore-*"))  # and changed nothing
@@ -225,18 +230,5 @@ def test_restore_script_from_the_second_folder(site, tmp_path, monkeypatch, caps
     for path in maintenance.backup_dir().glob("*-nightly-*"):
         path.unlink()  # the local disk lost them
     damage_everything()
-    assert restore_script.main(["latest", "--from", str(usb), "--yes"]) == 0
-    assert event_count() == 1
-
-
-def test_older_backup_is_upgraded_on_restore(site):
-    """A set from before a schema step: restored, then upgraded like any older database (with its own copy)."""
-    made = maintenance.make_backup(site, maintenance.MANUAL, datetime(2026, 10, 23, 12))
-    with sqlite3.connect(made.database) as conn:
-        conn.execute("DROP TABLE user_preferences")
-        conn.execute("PRAGMA user_version = 2")
-    report = maintenance.restore_set(made, ("database",), log=lambda m: None)
-    assert report["ok"]
-    conn = db.connect()
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(db.VERSIONS)
-    conn.close()
+    assert restore_script.main(["latest", "--from", str(usb), "--yes", "--only", "known"]) == 0
+    assert (config.KNOWN_DIR / "1001" / "front.jpg").exists()

@@ -3,7 +3,6 @@ snapshot writes, a database that can't take an event right now, a damaged galler
 damaged database at the start."""
 
 import argparse
-import sqlite3
 import sys
 import threading
 import time
@@ -12,6 +11,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pyodbc
 import pytest
 from fastapi.testclient import TestClient
 
@@ -135,7 +135,7 @@ def test_events_wait_while_the_database_is_locked_then_are_written_in_order(reco
 
     def add_camera_event(*args):
         if locked[0]:
-            raise sqlite3.OperationalError("database is locked")
+            raise pyodbc.OperationalError("database is locked")
         return real(*args)
 
     monkeypatch.setattr(db, "add_camera_event", add_camera_event)
@@ -158,7 +158,7 @@ def test_events_wait_while_the_database_is_locked_then_are_written_in_order(reco
 
 def test_the_waiting_queue_is_bounded(recorder, monkeypatch, capsys):
     monkeypatch.setattr(db, "add_camera_event",
-                        lambda *a: (_ for _ in ()).throw(sqlite3.OperationalError("disk I/O error")))
+                        lambda *a: (_ for _ in ()).throw(pyodbc.OperationalError("disk I/O error")))
     recorder.cooldown.seconds = 0  # the recorder took the cool-down when it was made
     monkeypatch.setattr(config, "COOLDOWN_SECONDS", 0)  # and the database check reads it at each event
     monkeypatch.setattr(config, "EVENT_QUEUE_MAX", 2)
@@ -282,20 +282,7 @@ def test_reload_keeps_the_loaded_gallery_when_the_new_file_is_damaged():
 # --- Refusing to start ------------------------------------------------------------------------------------------
 
 
-def test_quick_check(tmp_path):
-    path = tmp_path / "a.db"
-    assert db.quick_check(path) is None  # no database yet
-    conn = db.connect(path)
-    conn.close()
-    assert db.quick_check(path) is None
-    data = bytearray(path.read_bytes())
-    data[:16] = b"this is not sql!"  # the header a power cut or a bad disk could leave
-    path.write_bytes(bytes(data))
-    assert db.quick_check(path)
-
-
-@pytest.mark.sqlite_only  # a damaged SQLite file
-def test_app_refuses_to_start_on_a_damaged_database_or_cameras_file(monkeypatch, capsys):
+def test_app_refuses_to_start_on_a_broken_cameras_file_or_without_the_database(monkeypatch, capsys):
     monkeypatch.setenv(config.DASHBOARD_PASSWORD_ENV, "first-admin-password")
     monkeypatch.setattr(run, "port_in_use", lambda: False)
     monkeypatch.setattr(web, "build_status", lambda: "ok")
@@ -309,14 +296,19 @@ def test_app_refuses_to_start_on_a_damaged_database_or_cameras_file(monkeypatch,
             pass
     config.CAMERAS_FILE.unlink()
 
-    config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    config.DB_PATH.write_bytes(b"x" * 4096)
+    monkeypatch.setattr(config, "DATABASE_URL", None)
     assert run.preflight(open_browser=False, build=False) == 1
-    out = capsys.readouterr().out
-    assert "is damaged" in out and "restore.py --list" in out
-    with pytest.raises(RuntimeError, match="damaged"):
+    assert "GATESENSE_DB_URL is not set" in capsys.readouterr().out
+    with pytest.raises(RuntimeError, match="GATESENSE_DB_URL is not set"):
         with TestClient(create_app()):
             pass
+
+
+def test_worker_refuses_to_start_without_the_database(monkeypatch, capsys):
+    monkeypatch.setattr(config, "DATABASE_URL", None)
+    monkeypatch.setattr(sys, "argv", ["recognize.py", "--camera", "entrance", "--no-window"])
+    assert recognize.main() == 1
+    assert "GATESENSE_DB_URL is not set" in capsys.readouterr().out
 
 
 def test_worker_refuses_to_start_on_a_broken_cameras_file(monkeypatch, capsys):

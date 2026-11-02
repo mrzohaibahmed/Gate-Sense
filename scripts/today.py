@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import db  # noqa: E402
+from app import db, dbconn  # noqa: E402
 from app.reports import INSIDE  # noqa: E402
 from app.shifts import MISSING_OUT, OFF, OFF_DAY  # noqa: E402
 
@@ -40,7 +40,11 @@ def main() -> int:
     parser.add_argument("--date", type=date.fromisoformat, default=date.today(), help="YYYY-MM-DD (default today)")
     args = parser.parse_args()
 
-    conn = db.connect()
+    try:
+        conn = db.connect()
+    except dbconn.DatabaseConfigError as e:
+        print(f"ERROR: {e}")
+        return 1
     days = db.attendance_days(conn, args.date, args.date)
     shifts = db.shifts_enabled(conn)
     names = {r["employee_code"]: r["name"] for r in conn.execute("SELECT employee_code, name FROM persons")}

@@ -26,7 +26,7 @@ Use Python with InsightFace and OpenCV on an on-premise PC with an NVIDIA GPU, P
 | Video capture | OpenCV (FFmpeg backend) | NVIDIA DeepStream or GStreamer later for many cameras |
 | Face detection and recognition | InsightFace (SCRFD + ArcFace) on ONNX Runtime GPU | OpenCV YuNet + SFace if you need permissive licenses |
 | Face matching | NumPy cosine similarity | FAISS or pgvector beyond about 10,000 people |
-| Database | PostgreSQL | SQLite is fine for the pilot |
+| Database | Microsoft SQL Server | PostgreSQL later, if needed |
 | Backend API | FastAPI | Django if you prefer a built-in admin panel |
 | Dashboard | React, or Streamlit for the pilot | Shows live events, daily reports, Excel export |
 | Deployment | Docker Compose on the local server | Keeps video and biometrics on site |

@@ -26,8 +26,6 @@ data/*
 
 # Databases
 *.db
-*.sqlite
-*.sqlite3
 
 # Model downloads (InsightFace caches in ~/.insightface, but just in case)
 models/

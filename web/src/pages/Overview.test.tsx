@@ -11,7 +11,7 @@ const health = (problems: string[]) => ({
   version: "0.1.0",
   started: "2026-10-24T08:00:00",
   uptime_seconds: 3600,
-  database: { status: "ok", backend: "sqlite", detail: null },
+  database: { status: "ok", backend: "mssql", detail: null },
   cameras: [],
   disk: { path: "D:\\GateSense\\data", free_bytes: 1e9, total_bytes: 1e11, problem: null },
   backup: { last_run: null, ok: null, error: null, problem: null },

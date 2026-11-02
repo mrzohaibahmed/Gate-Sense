@@ -16,7 +16,6 @@ table gets a row for everyone in the gallery.
 import json
 import re
 import shutil
-import sqlite3
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -30,6 +29,7 @@ from app.enroll_quality import QualityResult
 from app.fileutil import atomic_write_bytes
 from app.gallery import Gallery
 from app.images import read_image, write_image
+from app.mssql import Connection
 
 CODE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 WINDOWS_RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(10)), *(f"lpt{i}" for i in range(10))}
@@ -144,7 +144,7 @@ def load_gallery() -> Gallery:
     return Gallery.load() if config.GALLERY_PATH.exists() else Gallery.from_people({})
 
 
-def enroll_all(detector, recognizer, conn: sqlite3.Connection) -> tuple[Gallery, list[PersonResult], list[str]]:
+def enroll_all(detector, recognizer, conn: Connection) -> tuple[Gallery, list[PersonResult], list[str]]:
     """Rebuild the whole gallery from known/ (scripts/enroll.py).
 
     Returns (gallery, per-person results, removed codes). The gallery is only
@@ -167,7 +167,7 @@ def enroll_all(detector, recognizer, conn: sqlite3.Connection) -> tuple[Gallery,
     return gallery, results, removed
 
 
-def enroll_one(code: str, detector, recognizer, conn: sqlite3.Connection,
+def enroll_one(code: str, detector, recognizer, conn: Connection,
                extra: dict[str, dict] | None = None) -> PersonResult:
     """Re-embed one person's folder and replace only their gallery entry (the dashboard).
 
@@ -259,7 +259,7 @@ def decode_image(data: bytes) -> np.ndarray | None:
 
 
 def add_photos(code: str, images: list[tuple[str, np.ndarray | None]], detector, recognizer,
-               conn: sqlite3.Connection) -> tuple[list[tuple[str, PhotoCheck, Path | None]], PersonResult | None]:
+               conn: Connection) -> tuple[list[tuple[str, PhotoCheck, Path | None]], PersonResult | None]:
     """Check each (label, image); save the accepted ones and rebuild the person's embeddings.
 
     Returns ([(label, check, saved path or None)], updated person result or None if nothing was saved).
@@ -272,7 +272,7 @@ def add_photos(code: str, images: list[tuple[str, np.ndarray | None]], detector,
     return results, person
 
 
-def delete_photo(code: str, filename: str, detector, recognizer, conn: sqlite3.Connection) -> PersonResult:
+def delete_photo(code: str, filename: str, detector, recognizer, conn: Connection) -> PersonResult:
     """Delete one photo from the person's folder and rebuild their embeddings."""
     folder = person_dir(code)
     matches = [p for p in photo_paths(folder) if p.name == filename]  # only real photo names, no paths
@@ -282,7 +282,7 @@ def delete_photo(code: str, filename: str, detector, recognizer, conn: sqlite3.C
     return enroll_one(code, detector, recognizer, conn)
 
 
-def delete_face_data(code: str, reason: str, user: str, conn: sqlite3.Connection, deactivate: bool) -> dict:
+def delete_face_data(code: str, reason: str, user: str, conn: Connection, deactivate: bool) -> dict:
     """Remove the person's photos and embeddings; attendance history is kept. Audited."""
     db.require_reason(reason)  # before anything is deleted
     folder = person_dir(code)

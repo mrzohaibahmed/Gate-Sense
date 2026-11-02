@@ -2,7 +2,6 @@
 export (openpyxl)."""
 
 import io
-import sqlite3
 from datetime import date
 
 from app import db
@@ -10,6 +9,7 @@ from app.shifts import (
     ABSENT, CALENDAR_CAME_IN, CAME_IN, CHECK, COMPLETE, EARLY_LEAVE, LATE, MISSING_IN, MISSING_OUT, NOT_IN_YET, OFF_DAY,
     ON_TIME, UNSCHEDULED,
 )
+from app.mssql import Connection
 
 # Both build on db.attendance_days, the same rule as /api/attendance, the overview and scripts/today.py: with shifts on,
 # roster days (app/shifts.py: one day per roster row, plus unscheduled dates with passes; a night shift is dated the day
@@ -62,7 +62,7 @@ def columns(shifts: bool) -> tuple[list, list]:
     return (DAILY_COLUMNS_RANGE, TOTAL_COLUMNS) if shifts else (CALENDAR_DAILY_COLUMNS, CALENDAR_TOTAL_COLUMNS)
 
 
-def range_rows(conn: sqlite3.Connection, first: date, last: date, department: str | None = None,
+def range_rows(conn: Connection, first: date, last: date, department: str | None = None,
                site_id: int | None = None) -> list[dict]:
     """One row per day from `first` to `last` (db.attendance_days), by date then name. Read-only."""
     people = {r["employee_code"]: dict(r) for r in db.list_persons(conn)}

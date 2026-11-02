@@ -89,6 +89,6 @@ def order_by(params: ListParams, columns: dict[str, str], default_sort: str, tie
     return f"ORDER BY {columns[field]} {'DESC' if desc else 'ASC'}, {tiebreak}"
 
 
-def limit_offset(params: ListParams, kind: str = dbconn.SQLITE) -> tuple[str, tuple[int, int]]:
-    """The end of an ordered query for this page, and its parameters, for backend `kind` (dbconn.SQLITE/MSSQL)."""
-    return dbconn.page(kind, params.page_size, (params.page - 1) * params.page_size)
+def limit_offset(params: ListParams) -> tuple[str, tuple[int, int]]:
+    """The end of an ordered query for this page, and its parameters."""
+    return dbconn.page(params.page_size, (params.page - 1) * params.page_size)

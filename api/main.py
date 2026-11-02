@@ -4,8 +4,8 @@ The lifespan creates or upgrades the database (users, sessions, sites), creates
 the first admin if there are no users (api/auth.py), opens the worker manager
 (data/run/_api.json), starts the supervisor that keeps enabled cameras
 recording (api/supervisor.py) and, on shutdown, stops every camera worker this
-API started. It refuses to start on an unreadable cameras.json or a damaged
-database (startup_problems). Browsers may call the API only from config.API_CORS_ORIGINS (the
+API started. It refuses to start on an unreadable cameras.json or a database it
+can't use (startup_problems). Browsers may call the API only from config.API_CORS_ORIGINS (the
 Vite dev server), with the session cookie. Every endpoint except login and
 the health check needs a login and a permission (api/permissions.py).
 
@@ -42,8 +42,7 @@ from api.routes import (
 )
 from api.routes import auth as auth_routes
 from api.workers import WorkerManager
-from app import config, dbconn
-from app import db as app_db
+from app import config, dbconn, mssql
 from app import enrollment as app_enrollment
 from app import liveness as app_liveness
 
@@ -94,9 +93,9 @@ def quiet_access_log() -> None:
 
 
 def startup_problems(database: Database | None = None) -> list[str]:
-    """Why GateSense must not start: an unreadable cameras.json (it would start the wrong cameras), a damaged
-    database (PRAGMA quick_check), or on SQL Server one it can't connect to or whose schema it can't run (a wrong or
-    old database setting too). Checked by start.bat's preflight and again when the app starts."""
+    """Why GateSense must not start: an unreadable cameras.json (it would start the wrong cameras), or a SQL Server
+    database it has no setting for, can't connect to or whose schema it can't run. Checked by start.bat's preflight
+    and again when the app starts."""
     problems = []
     try:
         config.check_cameras()
@@ -104,24 +103,10 @@ def startup_problems(database: Database | None = None) -> list[str]:
         problems.append(str(e))
     database = database or Database()
     try:
-        backend = database.backend
-        if backend == dbconn.MSSQL:
-            from app import mssql
-
-            dbconn.check_url(database.url)
-            if problem := mssql.startup_problem(database.url):
-                problems.append(problem)
-            return problems
+        if problem := mssql.startup_problem(database.url):
+            problems.append(problem)
     except dbconn.DatabaseConfigError as e:
         problems.append(str(e))
-        return problems
-    try:
-        path = database.path
-    except Exception:  # noqa: BLE001  not SQLite: Database.connect reports that itself
-        path = None
-    if path is not None and (damage := app_db.quick_check(path)):
-        problems.append(f"the database {path} is damaged ({damage}). Restore a backup: "
-                        ".venv\\Scripts\\python scripts\\restore.py --list")
     return problems
 
 

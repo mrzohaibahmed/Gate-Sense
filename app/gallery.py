@@ -6,7 +6,7 @@ and the top person is accepted only if their score clears the threshold and
 beats the second-best person by the margin. Otherwise the face is unknown.
 
 Saved to ``data/gallery.npz`` (``app.config.GALLERY_PATH``). That file is
-biometric data and is git-ignored. Later it moves to SQLite, then PostgreSQL.
+biometric data and is git-ignored. Later it moves into the database.
 """
 
 import os

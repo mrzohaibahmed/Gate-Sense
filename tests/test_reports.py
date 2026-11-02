@@ -10,8 +10,8 @@ from app import db, reports
 
 
 @pytest.fixture
-def conn(tmp_path):
-    c = db.connect(tmp_path / "attendance.db")
+def conn():
+    c = db.connect()
     db.sync_persons(c, ["ali", "waqas"])
     ids = db.person_ids(c)
     cin = db.upsert_camera(c, "entrance", 0, "IN")

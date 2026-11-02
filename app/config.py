@@ -13,7 +13,6 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 KNOWN_DIR = ROOT_DIR / "known"  # known/<employee code>/*.jpg enrollment photos
 DATA_DIR = Path(os.environ.get("GATESENSE_DATA_DIR") or ROOT_DIR / "data")  # override for tests or another disk
 GALLERY_PATH = DATA_DIR / "gallery.npz"
-DB_PATH = DATA_DIR / "attendance.db"
 SNAPSHOT_DIR = DATA_DIR / "snapshots"  # one small face crop per attendance event
 RUN_DIR = DATA_DIR / "run"  # worker status (<camera>.json) and stop (<camera>.stop) files
 LOG_DIR = DATA_DIR / "logs"  # worker logs (<camera>.log)
@@ -254,18 +253,16 @@ MAX_REQUEST_BYTES = 10_000_000  # larger request bodies are refused (413): enrol
 LOGIN_RATE_LIMIT = 10  # login attempts per IP address per LOGIN_RATE_WINDOW_SECONDS (on top of the account lockout)
 LOGIN_RATE_WINDOW_SECONDS = 60
 # The database: GATESENSE_DB_URL from the environment only (never .env, never written to a log: it holds the
-# password). Unset = SQLite at DB_PATH. mssql+pyodbc://user:password@host\INSTANCE/GateSense?driver=ODBC+Driver+18+
-# for+SQL+Server&TrustServerCertificate=yes = Microsoft SQL Server (app/mssql.py); sqlite:/// URLs work too; a
-# postgresql:// URL is recognised and refused. The old name GATESENSE_DATABASE_URL alone refuses to start
-# (app/dbconn.py), so a PC set up for it doesn't silently fall back to SQLite.
+# password): mssql+pyodbc://user:password@host\INSTANCE/GateSense?driver=ODBC+Driver+18+for+SQL+Server&
+# TrustServerCertificate=yes = Microsoft SQL Server (app/mssql.py). Without it GateSense refuses to start; so does
+# any other URL, or only the old name GATESENSE_DATABASE_URL (app/dbconn.py).
 DATABASE_URL_ENV = "GATESENSE_DB_URL"
 OLD_DATABASE_URL_ENV = "GATESENSE_DATABASE_URL"
 DATABASE_URL = os.environ.get(DATABASE_URL_ENV) or None
 OLD_DATABASE_URL = os.environ.get(OLD_DATABASE_URL_ENV) or None
-# SQL Server only (SQLite waits up to 10 s for its write lock, as before):
 DB_LOCK_TIMEOUT_MS = 10_000  # one writer at a time (sp_getapplock); a write that waits longer fails and is retried
 DB_LOGIN_TIMEOUT_SECONDS = 5  # connecting while the server is down gives up after this long
-DB_QUERY_TIMEOUT_SECONDS = 30  # a statement the server doesn't answer (backups and the migration have none)
+DB_QUERY_TIMEOUT_SECONDS = 30  # a statement the server doesn't answer (backups have none)
 DB_RECONNECT_SECONDS = 5  # after a lost connection, a long-lived one (a camera worker's) tries again after this long
 
 # --- API users and login (api/auth.py; roles and permissions: api/permissions.py) ----------------
@@ -281,7 +278,7 @@ DEFAULT_SITE_NAME = "Main site"  # every camera belongs to a site; existing ones
 
 # --- Nightly maintenance (api/maintenance.py, while the app runs) -----------------------------------
 BACKUP_HOUR = 2  # the nightly backup runs once a day at or after this hour (local time)
-# A backup set: the database (checked with PRAGMA integrity_check), the face gallery, the enrollment photos
+# A backup set: the database (checked with RESTORE VERIFYONLY), the face gallery, the enrollment photos
 # (known/, as a zip), cameras.json and settings.json. Never .env (passwords): keep a copy of it somewhere safe.
 BACKUP_KEEP = 14  # nightly sets kept in each backup folder (manual and upgrade copies are never deleted)
 # A second folder for a copy of every nightly and manual set: another disk or a USB drive, so one failed disk

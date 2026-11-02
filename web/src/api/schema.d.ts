@@ -1176,8 +1176,8 @@ export interface paths {
         put?: never;
         /**
          * Backup Now
-         * @description Make a backup set in data/backups/: the database (consistent while cameras keep writing: SQLite's online
-         *     backup, then an integrity check), the face gallery, the enrollment photos, cameras.json and settings.json; and
+         * @description Make a backup set in data/backups/: the database (consistent while cameras keep writing: a SQL Server
+         *     backup, then RESTORE VERIFYONLY), the face gallery, the enrollment photos, cameras.json and settings.json; and
          *     copy it to the second backup folder if one is set. Audited. Manual sets are never deleted automatically
          *     (only the newest BACKUP_KEEP nightly sets are kept).
          */
@@ -3787,12 +3787,12 @@ export interface components {
             python: string;
             /**
              * Database Bytes
-             * @description the database file plus its write-ahead log (SQL Server: its data and log files)
+             * @description the database's data and log files
              */
             database_bytes: number;
             /**
              * Database Schema
-             * @description schema version (SQLite: PRAGMA user_version)
+             * @description schema version
              */
             database_schema: number;
             /** Events */
@@ -3808,7 +3808,7 @@ export interface components {
             enrolled: number;
             /**
              * Backups
-             * @description newest first: data/backups/ (copies made before upgrades, and manual)
+             * @description newest first: the database backups in data/backups/
              */
             backups: components["schemas"]["Backup"][];
             /** Cameras Running */

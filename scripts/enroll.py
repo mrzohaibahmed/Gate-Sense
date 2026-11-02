@@ -3,7 +3,7 @@
 Every photo is detected, quality-checked and embedded. Photos with no face,
 more than one face, or a face that fails the quality filter are rejected.
 All accepted embeddings are kept per person and saved to data/gallery.npz,
-and the persons table in data/attendance.db is synced to match.
+and the persons table in the database is synced to match.
 A summary per person lists accepted photos and why the others were rejected.
 The same code (app/enrollment.py) backs the dashboard's Enrollment page.
 
@@ -80,6 +80,11 @@ def main() -> int:
     parser.add_argument("--source", default=str(config.CAMERAS[0]["source"]), help="webcam index for --capture")
     args = parser.parse_args()
 
+    try:
+        dbconn.server_url()
+    except dbconn.DatabaseConfigError as e:
+        print(f"ERROR: {e}")
+        return 1
     if args.capture:
         try:
             args.capture = enrollment.validate_code(args.capture)
@@ -123,8 +128,7 @@ def main() -> int:
     print(f"\nSaved {len(gallery)} people, {total} embeddings to {config.GALLERY_PATH.relative_to(config.ROOT_DIR)}")
     inactive = sorted(set(gallery.names) - db.person_ids(conn).keys())
     conn.close()
-    where = dbconn.safe_url(url) if (url := dbconn.server_url()) else config.DB_PATH.relative_to(config.ROOT_DIR)
-    print(f"Synced persons table in {where}")
+    print(f"Synced persons table in {dbconn.safe_url(dbconn.server_url())}")
     if removed:
         print(f"No longer enrolled, marked inactive: {', '.join(removed)}")
     if inactive:

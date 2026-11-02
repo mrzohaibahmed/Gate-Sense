@@ -7,17 +7,15 @@ cameras.json and settings.json.
     .venv\\Scripts\\python scripts\\restore.py latest --from E:\\GateSense   # from the second backup folder
     .venv\\Scripts\\python scripts\\restore.py latest --only database,gallery
 
-What it does:
-1. Checks the backup (the database with PRAGMA integrity_check, the photos zip) before touching anything.
-2. Stops GateSense and every camera worker cleanly (like stop.bat), and refuses if any is still running.
-3. Moves the current files aside to data/backups/before-restore-<time>/ (with the database's -wal and -shm files,
-   which must never be left next to a restored database), then copies the backup in.
-4. Checks the result (integrity, counts, gallery, cameras) and writes the restore to the audit log.
-Then start GateSense again with start.bat. .env (passwords) is never in a backup: keep your own copy of it.
+The database is a .bak file that an administrator restores (GateSense's own login can't replace its database): this
+checks it (RESTORE VERIFYONLY) and prints the T-SQL to run, then the command for the other parts (--only
+gallery,known,cameras,settings).
 
-On SQL Server (GATESENSE_DB_URL) the database part is a .bak file that an administrator restores (GateSense's own
-login can't replace its database): this checks it (RESTORE VERIFYONLY) and prints the T-SQL to run, then the
-command for the other parts (--only gallery,known,cameras,settings).
+For the other parts:
+1. Stops GateSense and every camera worker cleanly (like stop.bat), and refuses if any is still running.
+2. Moves the current files aside to data/backups/before-restore-<time>/, then copies the backup in.
+3. Checks the result (counts, gallery, cameras) and writes the restore to the audit log.
+Then start GateSense again with start.bat. .env (passwords) is never in a backup: keep your own copy of it.
 """
 
 import argparse
@@ -79,9 +77,6 @@ def server_restore(chosen: maintenance.BackupSet, parts: tuple[str, ...]) -> int
     from app import mssql
 
     url = dbconn.server_url()
-    if not url:
-        print(f"{chosen.database.name} is a SQL Server backup: set {config.DATABASE_URL_ENV} to restore it.")
-        return 1
     if (result := maintenance.integrity(chosen.database)) != "ok":
         print(f"ERROR: this backup's database fails RESTORE VERIFYONLY ({result}). Choose another one.")
         return 1
@@ -112,7 +107,11 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
 
     folder = args.folder or maintenance.backup_dir()
-    sets = maintenance.backup_sets(folder)
+    try:
+        sets = maintenance.backup_sets(folder)
+    except dbconn.DatabaseConfigError as e:
+        print(f"ERROR: {e}")
+        return 1
     if args.list or not args.backup:
         print(f"Backup sets in {folder} (newest first):" if sets else f"No backup sets in {folder}.")
         for s in sets:
@@ -133,11 +132,8 @@ def main(argv=None) -> int:
     parts = tuple(p for p in parts if p in chosen.files)
 
     print(f"Backup {describe(chosen)}")
-    if "database" in parts and maintenance.is_server_backup(chosen.database):
+    if "database" in parts:
         return server_restore(chosen, parts)
-    if "database" in parts and (result := maintenance.integrity(chosen.database)) != "ok":
-        print(f"ERROR: this backup's database fails the integrity check ({result}). Choose another one.")
-        return 1
     print(f"This replaces: {', '.join(parts)}. The current files are moved to {maintenance.backup_dir()}"
           f"\\before-restore-<time>\\ first, so nothing is lost.")
     if not args.yes and input("Restore it now? GateSense is stopped first. [y/N] ").strip().lower() not in ("y", "yes"):

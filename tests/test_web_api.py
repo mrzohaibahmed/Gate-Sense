@@ -119,18 +119,13 @@ def test_system_info(app):
     assert as_role(app, "hr").get("/api/system").status_code == 403
 
 
-@pytest.mark.sqlite_only  # the set's database file (SQL Server's .bak: tests/test_mssql.py)
-def test_backup_now(app):
+def test_backup_now(app, fake_server_backup):
     a = as_role(app, "admin")
     r = a.post("/api/system/backup", json={"reason": "before the update"})
     assert r.status_code == 201
     backup = r.json()
-    path = config.DB_PATH.parent / "backups" / backup["file"]
-    assert path.is_file() and backup["size_bytes"] == path.stat().st_size
-    import sqlite3
-
-    with sqlite3.connect(path) as conn:  # a working copy with the events in it
-        assert conn.execute("SELECT count(*) FROM attendance_events").fetchone()[0] == 6
+    path = config.DATA_DIR / "backups" / backup["file"]
+    assert path.is_file() and path.suffix == ".bak" and backup["size_bytes"] == path.stat().st_size
     assert [b["file"] for b in a.get("/api/system").json()["backups"]] == [backup["file"]]
     entry = items(a.get("/api/audit", params={"action": "backup"}))[0]
     assert entry["reason"] == "before the update" and entry["details"]["file"] == backup["file"]

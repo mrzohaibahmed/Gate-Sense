@@ -20,7 +20,6 @@ from api.main import create_app
 from api.workers import CameraBusy, WorkerManager, api_pid
 from app import config, db, workers
 from app.workers import WorkerManager as AppWorkerManager
-from tests.conftest import TEST_DB_URL
 
 FAKE = Path(__file__).with_name("fake_worker.py")
 CAMERAS = [
@@ -102,37 +101,33 @@ def sleeper(procs) -> subprocess.Popen:
 
 
 def test_health_ok():
-    db.connect(config.DB_PATH).close()
+    db.connect().close()
     with TestClient(create_app()) as client:
         r = client.get("/api/health")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok" and body["version"] == __version__ == "0.1.0"
-    assert body["database"]["status"] == "ok" and body["database"]["backend"] == ("mssql" if TEST_DB_URL else "sqlite")
+    assert body["database"]["status"] == "ok" and body["database"]["backend"] == "mssql"
     assert 0 <= body["uptime_seconds"] < 60
     assert abs((datetime.now() - datetime.fromisoformat(body["started"])).total_seconds()) < 60
 
 
-@pytest.mark.sqlite_only  # the database file
-def test_status_of_a_missing_database_does_not_create_it():
+def test_status_of_an_empty_database_does_not_create_the_tables():
     status = Database().status()
-    assert status["status"] == "missing" and status["backend"] == "sqlite"
-    assert not config.DB_PATH.exists()
+    assert status["status"] == "missing" and status["backend"] == "mssql"
+    assert Database().status()["status"] == "missing"
 
 
-@pytest.mark.sqlite_only  # the database file
-def test_the_api_creates_the_database_on_start():
+def test_the_api_creates_the_tables_on_start():
     with TestClient(create_app()) as client:
         assert client.get("/api/health").json()["database"]["status"] == "ok"
-    assert config.DB_PATH.is_file()
 
 
-@pytest.mark.sqlite_only  # a damaged database file
-def test_health_unreadable_database_is_503():
+def test_health_unreadable_database_is_503(monkeypatch):
+    from app import mssql
+
     with TestClient(create_app()) as client:
-        config.DB_PATH.write_bytes(b"this is not a database" * 100)  # broken while running
-        for suffix in ("-wal", "-shm"):
-            config.DB_PATH.with_name(config.DB_PATH.name + suffix).unlink(missing_ok=True)
+        monkeypatch.setattr(mssql, "status", lambda url: {"status": "error", "backend": "mssql", "detail": "down"})
         r = client.get("/api/health")
     assert r.status_code == 503
     assert r.json()["status"] == "degraded" and r.json()["database"]["status"] == "error"
@@ -140,7 +135,6 @@ def test_health_unreadable_database_is_503():
 
 def test_postgresql_url_is_recognised_but_not_supported_yet():
     database = Database("postgresql://gatesense@localhost/gatesense")
-    assert database.backend == "postgresql"
     status = database.status()
     assert status["status"] == "error" and "PostgreSQL is not supported yet" in status["detail"]
     with pytest.raises(RuntimeError, match="not supported"):
@@ -148,17 +142,6 @@ def test_postgresql_url_is_recognised_but_not_supported_yet():
     with pytest.raises(RuntimeError, match="PostgreSQL is not supported yet"):
         with TestClient(create_app(database=database)):
             pass  # the API refuses to start rather than use another database
-
-
-@pytest.mark.sqlite_only  # a sqlite:/// URL
-def test_database_url_from_config(tmp_path, monkeypatch):
-    path = tmp_path / "other.db"
-    monkeypatch.setattr(config, "DATABASE_URL", f"sqlite:///{path.as_posix()}")
-    database = Database()
-    assert database.path == path and database.status()["status"] == "missing"
-    database.connect().close()  # creates the schema, like the dashboard and the workers
-    assert database.status() == {"status": "ok", "backend": "sqlite", "detail": "13 tables"}  # 5-8: shifts...
-    assert not config.DB_PATH.exists()  # the default database was not touched
 
 
 # --- CORS ------------------------------------------------------------------------------

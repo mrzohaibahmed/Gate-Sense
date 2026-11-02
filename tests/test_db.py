@@ -8,16 +8,15 @@ from app.shifts import LATE, MISSING_OUT, ON_TIME
 
 
 @pytest.fixture
-def conn(tmp_path):
-    c = db.connect(tmp_path / "attendance.db")
+def conn():
+    c = db.connect()
     yield c
     c.close()
 
 
 def test_tables_created(conn):
-    names = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    names = {r["name"] for r in conn.execute("SELECT name FROM sys.tables")}
     assert {"persons", "cameras", "attendance_events"} <= names
-    assert "daily_attendance" not in names  # removed in schema step 4: summaries are computed from the events
 
 
 def test_sync_persons_deactivates_removed(conn):
@@ -49,23 +48,6 @@ def test_sync_persons_keeps_admin_deactivation(conn):
     db.sync_persons(conn, ["waqas"])  # re-running enroll must not re-activate
     assert db.person_ids(conn) == {}
     assert db.active_person_id(conn, "waqas") is None
-
-
-def test_old_database_is_migrated(tmp_path):
-    import sqlite3
-
-    path = tmp_path / "old.db"
-    old = sqlite3.connect(path)
-    old.execute(
-        "CREATE TABLE attendance_events (id INTEGER PRIMARY KEY, person_id INTEGER NOT NULL, "
-        "camera_id INTEGER NOT NULL, timestamp TEXT NOT NULL, match_score REAL NOT NULL, snapshot_path TEXT)"
-    )
-    old.commit()
-    old.close()
-    conn = db.connect(path)
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(attendance_events)")}
-    assert {"manual", "voided"} <= cols
-    conn.close()
 
 
 @pytest.fixture
@@ -239,13 +221,12 @@ def test_camera_event_cooldown_runs_across_midnight_and_ignores_voided(conn, gat
     assert db.add_camera_event(conn, pid, gate2, datetime(2026, 10, 20, 23, 59), 0.8, None, 300)[0]
 
 
-def test_two_workers_seeing_one_person_at_once_record_one_event(tmp_path):
-    """Two worker processes (two IN cameras) write at the same moment: BEGIN IMMEDIATE makes the second one see the
+def test_two_workers_seeing_one_person_at_once_record_one_event():
+    """Two worker processes (two IN cameras) write at the same moment: the write lock makes the second one see the
     first one's event."""
     import threading
 
-    path = tmp_path / "race.db"
-    setup = db.connect(path)
+    setup = db.connect()
     db.sync_persons(setup, ["waqas"])
     pid = db.person_ids(setup)["waqas"]
     cams = [db.upsert_camera(setup, f"gate{i}", i, "IN") for i in range(4)]
@@ -253,7 +234,7 @@ def test_two_workers_seeing_one_person_at_once_record_one_event(tmp_path):
     results, barrier = [], threading.Barrier(len(cams))
 
     def worker(cam):
-        c = db.connect(path)
+        c = db.connect()
         barrier.wait()
         results.append(db.add_camera_event(c, pid, cam, datetime(2026, 10, 20, 8, 0, 1), 0.8, None, 300)[0])
         c.close()

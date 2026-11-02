@@ -6,7 +6,7 @@ liveness -> embed the track's best frames -> match -> vote. Detection and tracki
 a FRAME_WIDTH px copy; the faces are then scaled back to the camera's pixels,
 so the quality filter (MIN_FACE_PX is camera pixels), the liveness crops, the ArcFace alignment
 and the snapshot use the full-resolution frame. When a
-track's vote is won, an event is written to data/attendance.db with a face
+track's vote is won, an event is written to the database with a face
 snapshot in data/snapshots/, unless the person is still in the cool-down for
 this camera. Every match decision is logged (time, track, name or unknown,
 score, second-best score) for threshold tuning.
@@ -639,7 +639,9 @@ def main() -> int:
         config.WORKER_DEBUG_LOG = True
     try:
         config.check_cameras()
-    except config.CamerasFileError as e:
+        if not args.no_db:
+            dbconn.server_url()
+    except (config.CamerasFileError, dbconn.DatabaseConfigError) as e:
         print(f"ERROR: {e}")
         return 1
     cam = find_camera(args.camera)

@@ -19,13 +19,13 @@ import_roster row for the file.
 import csv
 import io
 import re
-import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from app import config, db
 from app.people_import import HEADINGS, ImportFileError, _key, read_table
 from app.shifts import OFF
+from app.mssql import Connection
 
 ISO_DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 OTHER_DATE = re.compile(r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b|\b\d{4}/\d{1,2}/\d{1,2}\b")
@@ -124,7 +124,7 @@ def parse(data: bytes, filename: str = "") -> tuple[dict[int, date], list[_Row],
     return dates, rows, ignored, headings
 
 
-def plan(conn: sqlite3.Connection, data: bytes, filename: str = "") -> RosterPlan:
+def plan(conn: Connection, data: bytes, filename: str = "") -> RosterPlan:
     """What importing the file would do (see the module docstring); changes nothing."""
     dates, rows, ignored, headings = parse(data, filename)
     result = RosterPlan(sorted(dates.values()), ignored_columns=ignored)
@@ -167,11 +167,11 @@ def plan(conn: sqlite3.Connection, data: bytes, filename: str = "") -> RosterPla
     return result
 
 
-def import_roster(conn: sqlite3.Connection, data: bytes, filename: str, user: str, reason: str) -> RosterPlan:
+def import_roster(conn: Connection, data: bytes, filename: str, user: str, reason: str) -> RosterPlan:
     """Import the file in one transaction (see the module docstring). Raises ValueError (nothing changed) if any cell
     has an error."""
     db.require_reason(reason)
-    conn.execute("BEGIN IMMEDIATE")  # planned and written under one write lock: nothing changes in between
+    conn.begin()  # planned and written under one write lock: nothing changes in between
     try:
         result = plan(conn, data, filename)
         if result.errors:
@@ -190,7 +190,7 @@ def import_roster(conn: sqlite3.Connection, data: bytes, filename: str, user: st
     return result
 
 
-def template(conn: sqlite3.Connection, first: date, last: date, kind: str = "xlsx", site_id: int | None = None,
+def template(conn: Connection, first: date, last: date, kind: str = "xlsx", site_id: int | None = None,
              department: str | None = None) -> bytes:
     """The roster of `first` to `last` as a file to fill in: every active person (of the site / department), one
     column per date, each cell the current entry (a shift's name, OFF, or blank). Excel also gets a Shifts sheet."""

@@ -1,29 +1,26 @@
-"""Microsoft SQL Server: the engine, a connection that behaves like sqlite3's, and the schema.
+"""Microsoft SQL Server: the engine, the connection and the schema.
 
-Connection (what app.db.connect returns for an mssql+pyodbc:// URL) keeps app/db.py's SQL and its transactions as
-they are on SQLite:
+Connection (what app.db.connect returns):
 
 - execute(sql, params) with ? marks; every result is read at once (the driver allows one open result per
   connection), so rows can be used after the next execute. Rows work by name and by position, and dict(row).
-- Values come back as SQLite returns them: DATETIME2 as "YYYY-MM-DD HH:MM:SS" (".fff" only when there are
-  milliseconds), DATE as "YYYY-MM-DD", TIME as "HH:MM", BIT as 0/1. So the attendance rules, the audit details
-  and the API answers don't depend on the backend.
-- Like sqlite3: no transaction for reads; the first INSERT/UPDATE/DELETE/MERGE (or BEGIN IMMEDIATE) starts one,
-  `with conn:` commits it (or rolls it back on an error). lastrowid after an INSERT, rowcount after a change.
-- One writer at a time, as SQLite: every transaction first takes the exclusive application lock WRITE_LOCK
-  (sp_getapplock, released with the transaction), waiting at most DB_LOCK_TIMEOUT_MS ("database is locked").
-  With READ_COMMITTED_SNAPSHOT on (as SQLite's WAL) readers never wait for it.
+- Values come back in plain form: DATETIME2 as "YYYY-MM-DD HH:MM:SS" (".fff" only when there are milliseconds),
+  DATE as "YYYY-MM-DD", TIME as "HH:MM", BIT as 0/1. The attendance rules, the audit details and the API answers use
+  these.
+- No transaction for reads; the first INSERT/UPDATE/DELETE/MERGE (or begin()) starts one, `with conn:` commits it
+  (or rolls it back on an error). lastrowid after an INSERT, rowcount after a change.
+- One writer at a time: every transaction first takes the exclusive application lock WRITE_LOCK (sp_getapplock,
+  released with the transaction), waiting at most DB_LOCK_TIMEOUT_MS ("database is locked"). With
+  READ_COMMITTED_SNAPSHOT on, readers never wait for it.
 - A lost connection (SQL Server restarted, network) is dropped; the next statement outside a transaction gets a
   new one from the pool (pre-pinged), at most once every DB_RECONNECT_SECONDS for a long-lived connection, so a
   camera worker isn't held up by a server that is down. The transaction the loss interrupted is gone (the server
   rolled it back, or, if the loss came during COMMIT, maybe committed it: see app.db.add_camera_event's retry).
 
-The schema is the SQLite schema at version SCHEMA_VERSION (len(app.db.VERSIONS)) in SQL Server types: IDENTITY
-keys, DATETIME2(3) times, DATE, TIME(0), BIT flags, FLOAT scores, NVARCHAR text (bounded only where indexed), the
-same unique constraints and indexes, and the version in gatesense_schema. Schema steps after it need a SQL Server
-version too (tests/test_mssql.py checks that the two schemas match). A database made at an older version is brought up
-to date at the first connection (upgrade_schema: the UPGRADES steps, which only add tables, in one transaction under
-the write lock).
+The schema, at version SCHEMA_VERSION: IDENTITY keys, DATETIME2(3) times, DATE, TIME(0), BIT flags, FLOAT scores,
+NVARCHAR text (bounded only where indexed), and the version in gatesense_schema. A new schema step raises
+SCHEMA_VERSION and adds an UPGRADES entry: a database made at an older version is brought up to date at the first
+connection (upgrade_schema: the UPGRADES steps, which only add tables, in one transaction under the write lock).
 """
 
 import threading
@@ -44,7 +41,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 from app import config
 from app.dbconn import CI, CS, MSSQL, DatabaseConfigError, safe_url
 
-SCHEMA_VERSION = 8  # = len(app.db.VERSIONS)
+SCHEMA_VERSION = 8
 WRITE_LOCK = "gatesense-write"
 VERSION_TABLE = "gatesense_schema"
 
@@ -145,7 +142,7 @@ Table("shift_versions", metadata, _id(),
       Column("out_window_after_min", Integer, nullable=False),
       Column("created", _time(), nullable=False),
       Column("created_by", _text(), nullable=False),
-      # SQLite's UNIQUE (shift_id, effective_from) lets NULLs repeat; a filtered unique index does the same here.
+      # One version per shift per date; the versions "from the start" (NULL) are left out of the index.
       Index("uq_shift_versions_shift_id_effective_from", "shift_id", "effective_from", unique=True,
             mssql_where=text("effective_from IS NOT NULL")))
 Table("app_settings", metadata,
@@ -197,8 +194,8 @@ def database_name(url: str) -> str:
     return make_url(url).database or ""
 
 
-def sqlite_value(v):
-    """A value as SQLite would return it (see the module docstring)."""
+def plain_value(v):
+    """A value in the plain form the rest of GateSense uses (see the module docstring)."""
     if isinstance(v, bool):
         return int(v)
     if isinstance(v, datetime):
@@ -213,7 +210,7 @@ def sqlite_value(v):
 
 
 class Row:
-    """A row like sqlite3.Row: row[0], row["name"] (names ignore case, as sqlite3's), keys(), dict(row)."""
+    """One row: row[0], row["name"] (names ignore case), keys(), dict(row)."""
 
     __slots__ = ("_index", "_values")
 
@@ -256,7 +253,7 @@ class Cursor:
         for i, d in enumerate(description or ()):
             index.setdefault(d[0], i)
             index.setdefault("\0" + d[0].lower(), i)
-        self._rows = [Row(index, tuple(sqlite_value(v) for v in r)) for r in rows]
+        self._rows = [Row(index, tuple(plain_value(v) for v in r)) for r in rows]
         self._next = 0
 
     def fetchone(self) -> Row | None:
@@ -281,9 +278,7 @@ def _locked(message: str) -> pyodbc.OperationalError:
 
 
 class Connection:
-    """A SQL Server connection that behaves like sqlite3's for app/db.py (see the module docstring)."""
-
-    dialect = MSSQL
+    """A connection to SQL Server (see the module docstring)."""
 
     def __init__(self, url: str, query_timeout: int | None = None):
         self.url = url
@@ -293,19 +288,12 @@ class Connection:
         self.closed = False
         self.query_timeout = config.DB_QUERY_TIMEOUT_SECONDS if query_timeout is None else query_timeout
         self._retry_at = 0.0
-        self._dbapi()  # like sqlite3.connect: a server that can't be reached fails here
-
-    # sqlite3's interface ---------------------------------------------------------------------------------------
+        self._dbapi()  # a server that can't be reached fails here
 
     def execute(self, sql: str, params=()) -> Cursor:
         if self.closed:
             raise pyodbc.ProgrammingError("Cannot operate on a closed database.")
         word = (sql.split(None, 1) or [""])[0].upper()
-        if word == "BEGIN":
-            if self.in_transaction:
-                raise pyodbc.ProgrammingError("cannot start a transaction within a transaction")
-            self.begin()
-            return Cursor()
         insert = word == "INSERT"
         if word in WRITES and not self.in_transaction:
             self.begin()
@@ -358,28 +346,10 @@ class Connection:
             self.rollback()
         return False
 
-    # The rest ------------------------------------------------------------------------------------------------
-
-    def executemany(self, sql: str, rows: list[tuple]) -> None:
-        """One statement for many rows (the migration's copy), inside the transaction (started if needed)."""
-        if not self.in_transaction:
-            self.begin()
-        cur = self._dbapi().cursor()
-        try:
-            cur.fast_executemany = True
-            cur.executemany(sql, rows)
-        except pyodbc.Error as e:
-            if self._engine.dialect.is_disconnect(e, self._fairy, cur):
-                self._drop()
-            raise
-        finally:
-            try:
-                cur.close()
-            except pyodbc.Error:
-                pass
-
     def begin(self) -> None:
-        """Start a transaction holding the write lock (one writer at a time, as SQLite's BEGIN IMMEDIATE)."""
+        """Start a transaction holding the write lock (one writer at a time)."""
+        if self.in_transaction:
+            raise pyodbc.ProgrammingError("cannot start a transaction within a transaction")
         self._run("BEGIN TRANSACTION", ())
         self.in_transaction = True
         try:
@@ -507,16 +477,22 @@ def upgrade_schema(conn: Connection) -> int | None:
     return version
 
 
-def create_schema(conn: Connection, seed: bool) -> bool:
-    """Create the tables at SCHEMA_VERSION in an empty database, in one transaction under the write lock (two
-    processes starting at once create them once). `seed`: also the default site and config.DEFAULT_SHIFTS, as a
-    new SQLite database gets (the migration copies its own). False if the schema was already there."""
+def create_schema(conn: Connection) -> bool:
+    """Create the tables at SCHEMA_VERSION, the default site and config.DEFAULT_SHIFTS in an empty database, in one
+    transaction under the write lock (two processes starting at once create them once); refused if some of
+    GateSense's tables are there already. False if the schema was already there."""
     conn.begin()
     try:
         if schema_version(conn) is not None:
             conn.rollback()
             return False
-        create_tables(conn, seed)
+        if found := existing_tables(conn):
+            raise DatabaseConfigError(f"the database has GateSense tables ({', '.join(found)}) but no "
+                                      f"{VERSION_TABLE}: it was set up by hand or half-way; use an empty database")
+        for statement in _ddl(conn):
+            conn.execute(statement)
+        conn.execute(f"INSERT INTO {VERSION_TABLE} (version) VALUES (?)", (SCHEMA_VERSION,))
+        _seed(conn)
         conn.commit()
     except BaseException:
         conn.rollback()
@@ -524,22 +500,9 @@ def create_schema(conn: Connection, seed: bool) -> bool:
     return True
 
 
-def create_tables(conn: Connection, seed: bool) -> None:
-    """The tables at SCHEMA_VERSION, inside the caller's transaction (see create_schema); refused if some of
-    GateSense's tables are there already."""
-    if found := existing_tables(conn):
-        raise DatabaseConfigError(f"the database has GateSense tables ({', '.join(found)}) but no "
-                                  f"{VERSION_TABLE}: it was set up by hand or half-way; use an empty database")
-    for statement in _ddl(conn):
-        conn.execute(statement)
-    conn.execute(f"INSERT INTO {VERSION_TABLE} (version) VALUES (?)", (SCHEMA_VERSION,))
-    if seed:
-        _seed(conn)
-
-
 def _seed(conn: Connection) -> None:
-    """What schema steps 1, 5 and 6 put into a new SQLite database: the default site and the default shifts, each
-    with its first version (from the start)."""
+    """What a new database starts with: the default site and the default shifts, each with its first version
+    (from the start)."""
     now = datetime.now().isoformat(sep=" ", timespec="seconds")
     conn.execute("INSERT INTO sites (name) VALUES (?)", (config.DEFAULT_SITE_NAME,))
     for s in config.DEFAULT_SHIFTS:
@@ -576,7 +539,7 @@ def connect(url: str, migrate: bool = True) -> Connection:
         try:
             version = schema_version(conn)
             if version is None:
-                create_schema(conn, seed=True)
+                create_schema(conn)
             elif version < SCHEMA_VERSION:
                 upgrade_schema(conn)
             check_version(conn)

@@ -3,18 +3,15 @@
 While the app runs, a lifespan task checks every MAINTENANCE_CHECK_SECONDS whether the nightly job is due (once a
 day, at or after BACKUP_HOUR). The job:
 
-- makes a backup set in <data>/backups/, every file named "<part>-nightly-<time>": the database (SQLite's online
-  backup: consistent while the cameras keep writing, then checked with PRAGMA integrity_check; on SQL Server
-  <database>-nightly-<time>.bak, a COPY_ONLY backup with checksums written by the SQL Server service, then checked
-  with RESTORE VERIFYONLY), the face gallery,
-  the enrollment photos (known/ as a zip), cameras.json and settings.json. Never .env: it holds passwords. Each
+- makes a backup set in <data>/backups/, every file named "<part>-nightly-<time>": the database
+  (<database>-nightly-<time>.bak, a COPY_ONLY backup with checksums written by the SQL Server service: consistent
+  while the cameras keep writing, then checked with RESTORE VERIFYONLY), the face gallery, the enrollment photos (known/ as a zip), cameras.json and settings.json. Never .env: it holds passwords. Each
   file is written under a .partial name, checked and flushed to disk before it gets its real name, so a set that
   looks complete is complete;
 - copies the set to BACKUP_COPY_DIR (GATESENSE_BACKUP_COPY_DIR: another disk or a USB drive), if set, and checks
   the database copy there too. A copy that fails (drive unplugged) makes the run "not ok" on the System page, but
   the set in backups/ stays;
-- keeps the newest BACKUP_KEEP nightly sets in each folder (manual "Back up now" sets and the copies made before
-  a database upgrade are never deleted automatically);
+- keeps the newest BACKUP_KEEP nightly sets in each folder (manual "Back up now" sets are never deleted automatically);
 - deletes event snapshots (data/snapshots/<day>/) older than SNAPSHOT_RETENTION_DAYS and clears those events'
   snapshot_path, so the dashboard shows "no snapshot" instead of a broken picture. The events themselves stay;
 - deletes unknown visitors (app/visitors.py) first seen more than UNKNOWN_RETENTION_DAYS ago, rows and snapshots
@@ -24,9 +21,9 @@ Each run is audited (user "system"); the last run is kept in data/run/_maintenan
 caught up at the first check after the next start (only once, not once per missed day).
 
 restore_set() puts a set back (scripts/restore.py stops GateSense first): the current files are moved aside to
-backups/before-restore-<time>/, the database's -wal and -shm files go with them, and the restored files are
-checked afterwards. A SQL Server backup (.bak) is put back by an administrator (restore_commands: the app's login
-can't replace its own database); restore_set restores the other parts and refuses that one.
+backups/before-restore-<time>/, and the restored files are checked afterwards. The database backup (.bak) is put
+back by an administrator (restore_commands: the app's login can't replace its own database); restore_set restores
+the other parts and refuses that one.
 """
 
 import asyncio
@@ -35,7 +32,6 @@ import os
 import re
 import hashlib
 import shutil
-import sqlite3
 import zipfile
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -45,7 +41,7 @@ from pathlib import Path, PurePosixPath
 from starlette.concurrency import run_in_threadpool
 
 from api.db import Database
-from app import config, dbconn
+from app import config, dbconn, mssql
 from app import db as app_db
 from app.fileutil import atomic_write_bytes, replace_retry, sync_dir
 
@@ -61,7 +57,7 @@ class BackupError(RuntimeError):
 
 
 def backup_dir() -> Path:
-    return config.DB_PATH.parent / "backups"
+    return config.DATA_DIR / "backups"
 
 
 def state_path() -> Path:
@@ -76,39 +72,15 @@ def read_state() -> dict:
 
 
 def part_names() -> dict[str, tuple[str, str]]:
-    """part -> (file stem, extension) of its file in a set, e.g. database -> ("attendance", "db"), or on SQL Server
-    ("GateSense", "bak")."""
-    if url := dbconn.server_url():
-        from app import mssql
-
-        database = (mssql.database_name(url), "bak")
-    else:
-        database = (config.DB_PATH.stem, "db")
-    return {"database": database, "gallery": (config.GALLERY_PATH.stem, "npz"),
+    """part -> (file stem, extension) of its file in a set, e.g. database -> ("GateSense", "bak")."""
+    return {"database": (mssql.database_name(dbconn.server_url()), "bak"), "gallery": (config.GALLERY_PATH.stem, "npz"),
             "known": ("known", "zip"), "cameras": (config.CAMERAS_FILE.stem, "json"),
             "settings": (config.SETTINGS_FILE.stem, "json")}
 
 
-def is_server_backup(path: Path) -> bool:
-    """A SQL Server backup file (.bak, also while it is a .partial), not a SQLite database."""
-    return ".bak" in path.suffixes
-
-
 def integrity(path: Path) -> str:
-    """PRAGMA integrity_check of a database file, read-only: "ok" or SQLite's description of the damage. A SQL
-    Server backup is checked by the server (RESTORE VERIFYONLY)."""
-    if is_server_backup(path):
-        if not (url := dbconn.server_url()):
-            return f"{path.name} is a SQL Server backup: set {config.DATABASE_URL_ENV} to check or restore it"
-        from app import mssql
-
-        return mssql.verify_backup(url, path)
-    try:
-        with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=10)) as conn:
-            rows = conn.execute("PRAGMA integrity_check").fetchall()
-    except sqlite3.Error as e:
-        return f"{type(e).__name__}: {e}"
-    return "; ".join(str(r[0]) for r in rows[:5])
+    """RESTORE VERIFYONLY of a database backup, by the server: "ok" or the problem."""
+    return mssql.verify_backup(dbconn.server_url(), path)
 
 
 def _fsync(path: Path) -> None:
@@ -143,10 +115,10 @@ def sha256(path: Path) -> str:
 
 
 def _check_file(part: str, path: Path, source: Path | None = None) -> None:
-    """Raise BackupError if a written backup file can't be read back. A copy of a SQL Server backup (`source` =
+    """Raise BackupError if a written backup file can't be read back. A copy of the database backup (`source` =
     the checked original) is compared byte for byte: the SQL Server service may not be allowed to read the copy
     folder (a USB drive)."""
-    if part == "database" and source is not None and is_server_backup(path):
+    if part == "database" and source is not None:
         if sha256(path) != sha256(source):
             raise BackupError(f"the copy {path.name} differs from {source}")
     elif part == "database":
@@ -217,13 +189,8 @@ def make_backup(db: Database, kind: str, now: datetime | None = None, folder: Pa
             if source is not None and not source.exists():
                 continue  # nothing of this part yet (no one enrolled, no settings changed)
             made.append(partial)  # first, so a failure below removes it too
-            if part == "database" and db.backend == dbconn.MSSQL:
-                from app import mssql
-
+            if part == "database":
                 mssql.backup_database(db.url, partial)
-            elif part == "database":
-                with closing(db.connect()) as src, closing(sqlite3.connect(partial)) as dst:
-                    src.backup(dst)
             elif part == "known":
                 zip_folder(config.KNOWN_DIR, partial)
             else:
@@ -335,7 +302,7 @@ def clean_snapshots(db: Database, today: date, days: int | None = None) -> dict:
     if removed:
         prefix = config.SNAPSHOT_DIR.relative_to(config.DATA_DIR).as_posix()
         with db.transaction() as conn:
-            column = dbconn.like(dbconn.dialect(conn), "snapshot_path")
+            column = dbconn.like("snapshot_path")
             for day in removed:
                 cleared += conn.execute(f"UPDATE attendance_events SET snapshot_path = NULL WHERE {column} LIKE ?",
                                         (f"{prefix}/{day}/%",)).rowcount
@@ -458,19 +425,14 @@ def _copy_in(source: Path, dest: Path) -> None:
 def restore_set(backup: BackupSet, parts: tuple[str, ...] = PARTS, now: datetime | None = None,
                 log=print, user: str = "restore.py", reason: str = "restored from a backup") -> dict:
     """Put a backup set's files back. GateSense and every camera worker must be stopped (scripts/restore.py does
-    that). The files it replaces, and the database's -wal/-shm files, are moved to backups/before-restore-<time>/
-    first. Returns a report: what was restored, where the old files went, the checks afterwards, and problems
-    (empty = ok). The restore is audited in the restored database."""
-    from app import db as app_db
+    that). The files it replaces are moved to backups/before-restore-<time>/ first. Returns a report: what was restored, where the old files went, the checks afterwards, and problems
+    (empty = ok). The restore is audited in the database."""
     from app.gallery import LOAD_ERRORS, Gallery
 
     parts = tuple(p for p in parts if p in backup.files)
-    if "database" in parts and is_server_backup(backup.database):
+    if "database" in parts:
         raise BackupError(f"{backup.database.name} is a SQL Server backup: an administrator restores it (see "
                           "scripts/restore.py); restore the other parts with --only")
-    if "database" in parts and (result := integrity(backup.database)) != "ok":
-        raise BackupError(f"the backup {backup.database.name} failed the integrity check ({result}); "
-                          "choose another backup")
     if "known" in parts:
         with zipfile.ZipFile(backup.files["known"]) as z:
             if bad := z.testzip():
@@ -487,11 +449,6 @@ def restore_set(backup: BackupSet, parts: tuple[str, ...] = PARTS, now: datetime
             log(f"  moved the current {path.name} to {aside}")
 
     report: dict = {"backup": f"{backup.kind} {backup.stamp}", "restored": [], "moved_aside_to": str(aside)}
-    if "database" in parts:
-        for suffix in ("", "-wal", "-shm"):  # an old -wal next to a restored database would be replayed into it
-            move_aside(config.DB_PATH.with_name(config.DB_PATH.name + suffix))
-        _copy_in(backup.database, config.DB_PATH)
-        report["restored"].append("database")
     if "gallery" in parts:
         move_aside(config.GALLERY_PATH)
         _copy_in(backup.files["gallery"], config.GALLERY_PATH)
@@ -510,21 +467,14 @@ def restore_set(backup: BackupSet, parts: tuple[str, ...] = PARTS, now: datetime
 
     checks: dict = {}
     problems: list[str] = []
-    server = dbconn.server_url()
-    if server or config.DB_PATH.is_file():
-        # SQLite: upgrades an older backup's schema (copy first). SQL Server: the database in use (not restored here).
-        with closing(app_db.connect(None if server else config.DB_PATH)) as conn:
-            if not server:
-                checks["database"] = integrity(config.DB_PATH)
-                if checks["database"] != "ok":
-                    problems.append(f"database: {checks['database']}")
-            checks["events"] = conn.execute("SELECT count(*) FROM attendance_events").fetchone()[0]
-            checks["people"] = conn.execute("SELECT count(*) FROM persons").fetchone()[0]
-            checks["users"] = conn.execute("SELECT count(*) FROM users").fetchone()[0]
-            if report["restored"]:
-                app_db.log_change(conn, user, "restore_backup", "database",
-                                  {"backup": report["backup"], "parts": report["restored"], "moved_aside_to": str(aside)},
-                                  reason)
+    with closing(app_db.connect()) as conn:  # the database in use (not restored here)
+        checks["events"] = conn.execute("SELECT count(*) FROM attendance_events").fetchone()[0]
+        checks["people"] = conn.execute("SELECT count(*) FROM persons").fetchone()[0]
+        checks["users"] = conn.execute("SELECT count(*) FROM users").fetchone()[0]
+        if report["restored"]:
+            app_db.log_change(conn, user, "restore_backup", "database",
+                              {"backup": report["backup"], "parts": report["restored"], "moved_aside_to": str(aside)},
+                              reason)
     if config.GALLERY_PATH.is_file():
         try:
             checks["gallery"] = f"ok, {len(Gallery.load())} people"
