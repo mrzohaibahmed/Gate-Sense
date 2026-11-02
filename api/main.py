@@ -44,6 +44,7 @@ from api.routes import auth as auth_routes
 from api.workers import WorkerManager
 from app import config, dbconn
 from app import db as app_db
+from app import enrollment as app_enrollment
 from app import liveness as app_liveness
 
 PUBLIC_PATHS = {"/api/health", "/api/auth/login"}  # the only endpoints without require_permission
@@ -151,6 +152,8 @@ def create_app(workers: WorkerManager | None = None, database: Database | None =
         database.connect().close()  # create or upgrade the tables before anything uses them
         if message := auth.bootstrap_admin(database):
             print(message, flush=True)
+        if renamed := await run_in_threadpool(app_enrollment.name_all_photos):
+            print(f"Renamed {renamed} enrollment photo(s) to <code>-<number>", flush=True)
         from app import models  # here, not at import: it loads onnxruntime and InsightFace
 
         dev = await run_in_threadpool(models.device)  # the enrollment models' device; each camera logs its own

@@ -56,15 +56,16 @@ def test_excel_and_csv_export(conn):
     totals = reports.person_totals(rows)
     wb = openpyxl.load_workbook(io.BytesIO(reports.rows_xlsx(
         [("Summary", reports.TOTAL_COLUMNS, totals), ("Daily detail", reports.DAILY_COLUMNS_RANGE, rows)], "t")))
-    assert wb.sheetnames == ["Summary", "Daily detail"]
-    assert wb["Summary"]["A1"].value == "Employee code" and wb["Summary"].freeze_panes == "A2"
-    assert wb["Daily detail"].max_row == len(rows) + 1
+    assert wb.sheetnames == ["SUMMARY", "DAILY DETAIL"]
+    assert wb["SUMMARY"]["A1"].value == "EMPLOYEE CODE" and wb["SUMMARY"].freeze_panes == "A2"
+    assert wb["DAILY DETAIL"].max_row == len(rows) + 1
+    assert wb["SUMMARY"]["A2"].value == "ALI" and wb["SUMMARY"]["B2"].value == "ALI"
     csv = reports.rows_csv(reports.DAILY_COLUMNS_RANGE, rows).decode("utf-8-sig").splitlines()
-    assert csv[0] == ("Date,Employee code,Name,Department,Shift,Shift start,Shift end,First IN,Last OUT,Hours worked,"
-                      "Late (min),Early leave (min),Overtime (min),Status")
-    assert "2026-10-02,ali,ali,,General,08:00:00,16:30:00,08:10:00,,,0,,,missing OUT" in csv
-    assert "2026-10-01,waqas,waqas,,General,08:00:00,16:30:00,09:00:00,17:00:00,8.0,60,0,30,late" in csv
-    assert "2026-10-05,waqas,waqas,,OFF,,,,,,,,,off day" in csv
+    assert csv[0] == ("DATE,EMPLOYEE CODE,NAME,DEPARTMENT,SHIFT,SHIFT START,SHIFT END,FIRST IN,LAST OUT,HOURS WORKED,"
+                      "LATE (MIN),EARLY LEAVE (MIN),OVERTIME (MIN),STATUS")
+    assert "2026-10-02,ALI,ALI,,GENERAL,08:00:00,16:30:00,08:10:00,,,0,,,MISSING OUT" in csv
+    assert "2026-10-01,WAQAS,WAQAS,,GENERAL,08:00:00,16:30:00,09:00:00,17:00:00,8.0,60,0,30,LATE" in csv
+    assert "2026-10-05,WAQAS,WAQAS,,OFF,,,,,,,,,OFF DAY" in csv
 
 
 def test_a_night_shift_is_one_row_dated_the_day_it_starts(conn):

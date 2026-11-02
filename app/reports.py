@@ -121,16 +121,18 @@ def _cell(value, kind: str):
         return value.isoformat()
     if kind == "yesno":
         return "YES" if value else ""
+    if kind == "text":
+        return value.upper()
     return value
 
 
 def rows_csv(columns: list[tuple[str, str, str]], rows: list[dict]) -> bytes:
-    """CSV with a BOM so Excel opens it as UTF-8."""
+    """CSV with a BOM so Excel opens it as UTF-8. Headers and text in capitals, like the screens."""
     import csv
 
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\r\n")
-    writer.writerow([h for h, _, _ in columns])
+    writer.writerow([h.upper() for h, _, _ in columns])
     for r in rows:
         writer.writerow([_cell(r.get(k), kind) for _, k, kind in columns])
     return buf.getvalue().encode("utf-8-sig")
@@ -138,7 +140,8 @@ def rows_csv(columns: list[tuple[str, str, str]], rows: list[dict]) -> bytes:
 
 def rows_xlsx(sheets: list[tuple[str, list[tuple[str, str, str]], list[dict]]], title: str) -> bytes:
     """One sheet per (name, columns, rows): bold white header on the GateSense teal, first row frozen, filters,
-    real dates, times (hh:mm) and numbers, column widths fitted. `title` goes in the document properties."""
+    real dates, times (hh:mm) and numbers, column widths fitted, sheet names, headers and text in capitals like the
+    screens. `title` goes in the document properties."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
 
@@ -148,8 +151,8 @@ def rows_xlsx(sheets: list[tuple[str, list[tuple[str, str, str]], list[dict]]], 
     wb.properties.creator = "GateSense"
     header_font, header_fill = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="0E7C66")
     for name, columns, rows in sheets:
-        ws = wb.create_sheet(name[:31])
-        ws.append([h for h, _, _ in columns])
+        ws = wb.create_sheet(name[:31].upper())
+        ws.append([h.upper() for h, _, _ in columns])
         for cell in ws[1]:
             cell.font, cell.fill = header_font, header_fill
             cell.alignment = Alignment(vertical="center")
@@ -158,7 +161,8 @@ def rows_xlsx(sheets: list[tuple[str, list[tuple[str, str, str]], list[dict]]], 
             for _, key, kind in columns:
                 v = r.get(key)
                 values.append(v.time() if kind == "time" and v is not None else
-                              ("YES" if v else "") if kind == "yesno" else ("" if v is None else v))
+                              ("YES" if v else "") if kind == "yesno" else _cell(v, kind) if kind == "text" else
+                              ("" if v is None else v))
             ws.append(values)
         formats = {"date": "yyyy-mm-dd", "time": "hh:mm", "hours": "0.00", "int": "0"}
         for i, (header, _, kind) in enumerate(columns, start=1):

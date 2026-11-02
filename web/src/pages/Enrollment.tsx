@@ -376,16 +376,21 @@ function DetailsStep({ preselected, onNext }: { preselected: number | null; onNe
         ) : (
           <form onSubmit={create} className="grid max-w-2xl gap-4 sm:grid-cols-2" noValidate aria-label="New person">
             <Field label="Employee code" htmlFor="code" error={errors.employee_code?.message}>
-              <Input id="code" aria-invalid={!!errors.employee_code} {...form.register("employee_code")} />
+              <Input
+                id="code"
+                className="uppercase"
+                aria-invalid={!!errors.employee_code}
+                {...form.register("employee_code")}
+              />
             </Field>
             <Field label="Name" htmlFor="name" error={errors.name?.message}>
-              <Input id="name" aria-invalid={!!errors.name} {...form.register("name")} />
+              <Input id="name" className="uppercase" aria-invalid={!!errors.name} {...form.register("name")} />
             </Field>
             <Field label="Department" htmlFor="department">
-              <Input id="department" {...form.register("department")} />
+              <Input id="department" className="uppercase" {...form.register("department")} />
             </Field>
             <Field label="Shift" htmlFor="shift">
-              <Input id="shift" {...form.register("shift")} />
+              <Input id="shift" className="uppercase" {...form.register("shift")} />
             </Field>
             {error && (
               <p role="alert" className="text-sm text-destructive sm:col-span-2">

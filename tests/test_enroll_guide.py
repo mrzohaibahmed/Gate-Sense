@@ -211,12 +211,12 @@ def test_finish_saves_photos_with_steps(conn):
     person = enroll_guide.finish(sess, FaceAt(), FakeRecognizer(), conn)
     assert len(person.accepted) == 3 and enrollment.load_gallery().counts() == {"e1": 3}
     stored = enrollment.read_sidecar(config.KNOWN_DIR / "e1")
-    assert [(name, e["step"]) for name, e in stored.items()] == [("1.jpg", "front"), ("2.jpg", "left"),
-                                                                 ("3.jpg", "right")]
+    assert [(name, e["step"]) for name, e in stored.items()] == [("e1-1.jpg", "front"), ("e1-2.jpg", "left"),
+                                                                 ("e1-3.jpg", "right")]
     assert all("yaw" in e and "pitch" in e and "score" in e for e in stored.values())
     enrollment.enroll_one("e1", FaceAt(), FakeRecognizer(), conn)  # a later rebuild keeps the steps
-    assert enrollment.read_sidecar(config.KNOWN_DIR / "e1")["2.jpg"]["step"] == "left"
-    assert json.loads((config.KNOWN_DIR / "e1" / "photos.json").read_text())["photos"]["1.jpg"]["ok"]
+    assert enrollment.read_sidecar(config.KNOWN_DIR / "e1")["e1-2.jpg"]["step"] == "left"
+    assert json.loads((config.KNOWN_DIR / "e1" / "photos.json").read_text())["photos"]["e1-1.jpg"]["ok"]
 
 
 # --- Liveness ----------------------------------------------------------------------------------------------------

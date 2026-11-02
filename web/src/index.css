@@ -135,6 +135,15 @@
     font-size: 14px; /* dense base text; rem-based spacing stays on the 8 px grid */
     line-height: 20px;
     font-variant-numeric: tabular-nums; /* times and counts line up in tables and tiles */
+    text-transform: uppercase; /* everything is shown in capitals; stored values keep the case they were typed in */
+  }
+  /* Browsers reset these to none. Typed text stays as typed (passwords, URLs, reasons), except fields given
+     "uppercase" (names, departments); use "normal-case" where the case of a shown value matters (URLs, logs). */
+  button,
+  select,
+  ::file-selector-button,
+  ::placeholder {
+    text-transform: uppercase;
   }
   :focus-visible {
     @apply outline-2 outline-offset-2 outline-ring;

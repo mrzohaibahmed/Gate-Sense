@@ -4,14 +4,16 @@ One subfolder per enrolled person. The folder name is the person's employee code
 
 ```
 known/
-  waqas/
-    1.jpg
-    2.jpg
+  4425/
+    4425-1.jpg
+    4425-2.jpg
     ...
   e042/
-    1.jpg
+    e042-1.jpg
     ...
 ```
+
+Photos are named `<code>-<number>`. Photos added here by hand under any other name are renamed at the next app start or `enroll.py` run.
 
 - Employee codes start with a letter or digit and use only letters, digits, `_`, `-` and `.`.
 - Use 5 to 10 photos per person: straight on, slightly left and right, with and without glasses.

@@ -53,17 +53,22 @@ export function EditPersonDialog({
       }}
     >
       <Field label="Employee code" htmlFor="edit-code" hint="It names the photo folder, so it can't be changed.">
-        <Input id="edit-code" value={person.employee_code} readOnly disabled />
+        <Input id="edit-code" className="uppercase" value={person.employee_code} readOnly disabled />
       </Field>
       <Field label="Name" htmlFor="edit-name">
-        <Input id="edit-name" value={name} onChange={(e) => setName(e.target.value)} />
+        <Input id="edit-name" className="uppercase" value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
       <div className="grid grid-cols-2 gap-2">
         <Field label="Department" htmlFor="edit-department">
-          <Input id="edit-department" value={department} onChange={(e) => setDepartment(e.target.value)} />
+          <Input
+            id="edit-department"
+            className="uppercase"
+            value={department}
+            onChange={(e) => setDepartment(e.target.value)}
+          />
         </Field>
         <Field label="Shift" htmlFor="edit-shift">
-          <Input id="edit-shift" value={shift} onChange={(e) => setShift(e.target.value)} />
+          <Input id="edit-shift" className="uppercase" value={shift} onChange={(e) => setShift(e.target.value)} />
         </Field>
       </div>
       {(sites.data?.items.length ?? 0) > 1 && (

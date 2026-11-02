@@ -98,11 +98,11 @@ def run_case(passes, first: date, last: date, roster=(), corrections=(), roster_
         out["monthly"] = {k: people[0][k] for k in MONTHLY} if people else None
         text = hr.get("/api/reports/daily/export", params={"from": first, "to": last, "format": "csv"})
         lines = list(csv.reader(io.StringIO(text.content.decode("utf-8-sig"))))
-        assert (lines[0][4], lines[0][-1]) == ("Shift", "Status")
-        out["csv"] = [(line[4], line[-1]) for line in lines[1:]]
+        assert (lines[0][4], lines[0][-1]) == ("SHIFT", "STATUS")
+        out["csv"] = [(line[4], line[-1].lower()) for line in lines[1:]]
         book = load_workbook(io.BytesIO(hr.get("/api/reports/monthly/export",
                                                params={"from": first, "to": last, "format": "xlsx"}).content))
-        out["xlsx"] = [(row[4], row[-1]) for row in book["Daily detail"].iter_rows(min_row=2, values_only=True)]
+        out["xlsx"] = [(row[4], row[-1].lower()) for row in book["DAILY DETAIL"].iter_rows(min_row=2, values_only=True)]
     out["today_py"] = []
     day = first
     while day <= last:
@@ -111,9 +111,10 @@ def run_case(passes, first: date, last: date, roster=(), corrections=(), roster_
         with contextlib.redirect_stdout(buf):
             today_script.main()
         lines = buf.getvalue().splitlines()
-        header = next((line for line in lines if line.startswith("Name")), None)
+        header = next((line for line in lines if line.startswith("NAME")), None)
         if header:
-            out["today_py"] += [line[header.index("Status"):].strip() for line in lines if line.startswith(CODE)]
+            out["today_py"] += [line[header.index("STATUS"):].strip().lower() for line in lines
+                                if line.startswith(CODE.upper())]
         day += timedelta(days=1)
     return out
 
@@ -133,7 +134,7 @@ def set_roster(client: TestClient, roster) -> None:
 def same_everywhere(out, statuses):
     """The status of each day agrees across the API, the register, the CSV, the Excel sheet and today.py."""
     assert [r[5] for r in out["rows"]] == [d[2] for d in out["daily"]] == statuses
-    assert [c[1] for c in out["csv"]] == [x[1] for x in out["xlsx"]] == out["today_py"] == statuses
+    assert [c[1] for c in out["csv"]] == [x[1] for x in out["xlsx"]] == out["today_py"] == [s.lower() for s in statuses]
 
 
 def general(first=D, last=None):
@@ -149,7 +150,7 @@ def test_a_in_and_out():
     assert out["overview"] == [{"people": 1, "present": 1, "inside_now": None, "on_time": 1, "late": 0,
                                 "early_leave": 0, "overtime": 0, "missing_in": 0, "missing_out": 0, "check": 0,
                                 "absent": 0, "not_in_yet": 0, "off_day": 0, "unscheduled": 0}]
-    assert out["daily"] == [(str(D), "General", "on time", 8.0)] and out["csv"] == [("General", "on time")]
+    assert out["daily"] == [(str(D), "General", "on time", 8.0)] and out["csv"] == [("GENERAL", "on time")]
     assert out["monthly"] == {"days": 1, "days_scheduled": 1, "days_present": 1, "days_late": 0, "late_minutes": 0,
                               "days_early_leave": 0, "early_leave_minutes": 0, "overtime_minutes": 0,
                               "days_missing_in": 0, "days_missing_out": 0, "days_check": 0, "days_absent": 0,

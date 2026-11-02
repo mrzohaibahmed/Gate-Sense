@@ -211,24 +211,24 @@ def test_sidecar_written_for_saved_photos(conn):
                                        FakeRecognizer(), conn)
     folder = config.KNOWN_DIR / "e1"
     data = json.loads((folder / "photos.json").read_text())
-    assert list(data["photos"]) == ["1.jpg"]  # the refused photo was never saved
-    entry = data["photos"]["1.jpg"]
+    assert list(data["photos"]) == ["e1-1.jpg"]  # the refused photo was never saved
+    entry = data["photos"]["e1-1.jpg"]
     assert entry["ok"] and entry["yaw"] == 12 and entry["pitch"] == -4 and 0 < entry["score"] <= 100
     assert data["limits"] == {"max_yaw": 35.0, "max_pitch": 25.0}
     assert enrollment.read_sidecar(folder) == data["photos"]
-    assert [p.name for p in enrollment.photo_paths(folder)] == ["1.jpg"]  # photos.json isn't a photo
+    assert [p.name for p in enrollment.photo_paths(folder)] == ["e1-1.jpg"]  # photos.json isn't a photo
 
 
 def test_sidecar_follows_deletes_and_full_rebuilds(conn):
     det = PoseDetector()
     enrollment.add_photos("e1", [("a", photo("good", 1)), ("b", photo("good", 2))], det, FakeRecognizer(), conn)
-    enrollment.delete_photo("e1", "1.jpg", det, FakeRecognizer(), conn)
-    assert list(enrollment.read_sidecar(config.KNOWN_DIR / "e1")) == ["2.jpg"]
+    enrollment.delete_photo("e1", "e1-1.jpg", det, FakeRecognizer(), conn)
+    assert list(enrollment.read_sidecar(config.KNOWN_DIR / "e1")) == ["e1-2.jpg"]
     (config.KNOWN_DIR / "e2").mkdir()
     cv2.imwrite(str(config.KNOWN_DIR / "e2" / "1.png"), photo("blurry"))  # added by hand, for the CLI rebuild
     enrollment.enroll_all(det, FakeRecognizer(), conn)
     stored = enrollment.read_sidecar(config.KNOWN_DIR / "e2")
-    assert stored["1.png"]["ok"] is False and stored["1.png"]["reason"].startswith("Photo is blurry")
+    assert stored["e2-1.png"]["ok"] is False and stored["e2-1.png"]["reason"].startswith("Photo is blurry")
 
 
 def test_existing_photo_over_the_new_limit_is_reported_not_silently_dropped(conn):
@@ -236,5 +236,5 @@ def test_existing_photo_over_the_new_limit_is_reported_not_silently_dropped(conn
     and photos.json says why, so the page shows it."""
     enrollment.add_photos("e1", [("a", photo("good", 1))], PoseDetector(yaw=20), FakeRecognizer(), conn)
     person = enrollment.enroll_one("e1", PoseDetector(yaw=37), FakeRecognizer(), conn)
-    assert person.accepted == [] and person.rejected == [("1.jpg", "turned sideways (37° > 35°)")]
-    assert enrollment.read_sidecar(config.KNOWN_DIR / "e1")["1.jpg"]["reason"].startswith("Face turned too far")
+    assert person.accepted == [] and person.rejected == [("e1-1.jpg", "turned sideways (37° > 35°)")]
+    assert enrollment.read_sidecar(config.KNOWN_DIR / "e1")["e1-1.jpg"]["reason"].startswith("Face turned too far")

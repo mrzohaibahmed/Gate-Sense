@@ -91,8 +91,8 @@ def test_the_same_raw_events_give_shift_results_on_and_calendar_results_off(app)
 
     assert switch(admin, False, "pilot without shifts").json()["enabled"] is False
     assert rows(admin) == OFF  # no restart: read on every request
-    assert csv_rows(admin)[0] == ["Date", "Employee code", "Name", "Department", "First IN", "Last OUT",
-                                  "Hours worked", "Status"]  # no shift columns
+    assert csv_rows(admin)[0] == ["DATE", "EMPLOYEE CODE", "NAME", "DEPARTMENT", "FIRST IN", "LAST OUT",
+                                  "HOURS WORKED", "STATUS"]  # no shift columns
     monthly = {p["name"]: p for p in admin.get("/api/reports/monthly", params={"from": D, "to": E}).json()["people"]}
     assert (monthly["Ayesha"]["days"], monthly["Ayesha"]["days_present"], monthly["Ayesha"]["days_missing_out"],
             monthly["Ayesha"]["days_missing_in"]) == (2, 1, 1, 1)
@@ -101,13 +101,13 @@ def test_the_same_raw_events_give_shift_results_on_and_calendar_results_off(app)
     assert (day["shifts"], day["people"], day["present"], day["complete"], day["missing_out"], day["absent"],
             day["late"]) == (False, 2, 2, 1, 1, 0, 0)
     out = today_py(D)
-    assert "Shift" not in out and "Bilal" in out and "complete" in out and "missing OUT" in out
+    assert "SHIFT" not in out and "BILAL" in out and "COMPLETE" in out and "MISSING OUT" in out
 
     # Switching back: the shift results again, from the same raw events; nothing stored changed either way.
     assert switch(admin, True, "shifts are planned now").json()["enabled"] is True
     assert rows(admin) == ON
     assert stored(app) == before
-    assert "Night" in today_py(D)
+    assert "NIGHT" in today_py(D)
 
 
 def test_repeats_follow_the_rule_in_use(app):
@@ -132,8 +132,8 @@ def test_today_without_an_out_is_inside_with_shifts_off(app):
     assert (row["status"], row["open"], row["inside"]) == ("missing OUT", True, True)
     o = admin.get("/api/overview").json()
     assert (o["inside_now"], o["missing_out"], o["present"]) == (1, 0, 1)  # still inside: not missing yet
-    assert csv_rows(admin, TODAY, TODAY)[1][-1] == "inside"
-    assert "inside" in today_py(TODAY)
+    assert csv_rows(admin, TODAY, TODAY)[1][-1] == "INSIDE"
+    assert "INSIDE" in today_py(TODAY)
 
 
 def test_shifts_are_off_on_a_new_install(app, monkeypatch):

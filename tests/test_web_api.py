@@ -99,15 +99,15 @@ def test_review_and_save(app):
     photos.append({"step": "right", "image": b64(frame("right", seed=9))})
     r = hr.post(f"/api/people/{pid}/enroll", json={"photos": photos})  # no reason needed: a default is audited
     assert r.status_code == 200, r.text
-    assert r.json() == {"employee_code": "1004", "saved": ["1.jpg", "2.jpg", "3.jpg"], "accepted": 3, "embeddings": 3}
+    assert r.json() == {"employee_code": "1004", "saved": ["1004-1.jpg", "1004-2.jpg", "1004-3.jpg"], "accepted": 3, "embeddings": 3}
     stored = enrollment.read_sidecar(config.KNOWN_DIR / "1004")
-    assert [stored[f]["step"] for f in ("1.jpg", "2.jpg", "3.jpg")] == ["front", "left", "right"]
+    assert [stored[f]["step"] for f in ("1004-1.jpg", "1004-2.jpg", "1004-3.jpg")] == ["front", "left", "right"]
     assert enrollment.load_gallery().counts() == {"1004": 3}
     entry = items(as_role(app, "admin").get("/api/audit", params={"action": "enroll_person"}))[0]
     assert entry["user"] == "hr" and entry["reason"] == "guided enrollment" and entry["details"]["steps"] == [
         "front", "left", "right"]
     person = next(p for p in items(hr.get("/api/people")) if p["employee_code"] == "1004")
-    assert person["photo_url"] == f"/api/people/{pid}/photos/1.jpg" and person["embeddings"] == 3
+    assert person["photo_url"] == f"/api/people/{pid}/photos/1004-1.jpg" and person["embeddings"] == 3
     assert hr.get(person["photo_url"]).status_code == 200
 
 

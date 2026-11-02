@@ -146,11 +146,11 @@ def test_upload_photos_saves_the_passing_ones(app):
     assert r.status_code == 200, r.text
     res = {x["name"]: x for x in r.json()["results"]}
     assert [n for n, x in res.items() if x["ok"]] == ["front.jpg", "side.jpg"]
-    assert res["front.jpg"]["saved_as"] == "1.jpg" and res["front.jpg"]["message"] == ""
+    assert res["front.jpg"]["saved_as"] == "1001-1.jpg" and res["front.jpg"]["message"] == ""
     for bad in ("group.jpg", "blurry.jpg", "broken.jpg"):
         assert not res[bad]["ok"] and res[bad]["message"] and res[bad]["saved_as"] is None, bad
     assert r.json()["saved"] == 2 and r.json()["embeddings"] == 2
-    assert sorted(p.name for p in enrollment.photo_paths(config.KNOWN_DIR / "1001")) == ["1.jpg", "2.jpg"]
+    assert sorted(p.name for p in enrollment.photo_paths(config.KNOWN_DIR / "1001")) == ["1001-1.jpg", "1001-2.jpg"]
     row = audit(app, "add_photos")[0]
     assert row["user"] == "hr" and row["reason"] == "photos from HR" and "group.jpg" in row["details"]
     assert hr.post(f"/api/people/{pid}/photos", json={**body, "photos": body["photos"] * 3}).status_code == 422
@@ -166,12 +166,12 @@ def test_delete_one_photo_rebuilds(app):
     hr.post(f"/api/people/{pid}/photos", json={"photos": [  # no reason: the default goes to the audit log
         {"name": f"{i}.jpg", "image": b64(photo("good", seed=i))} for i in range(3)]})
     assert enrollment.load_gallery().counts()["1001"] == 3
-    assert hr.delete(f"/api/people/{pid}/photos/2.jpg").status_code == 422  # no reason
-    r = hr.delete(f"/api/people/{pid}/photos/2.jpg", params={"reason": "blurred"})
+    assert hr.delete(f"/api/people/{pid}/photos/1001-2.jpg").status_code == 422  # no reason
+    r = hr.delete(f"/api/people/{pid}/photos/1001-2.jpg", params={"reason": "blurred"})
     assert r.status_code == 200 and r.json()["photos"] == 2 and r.json()["embeddings"] == 2
     assert enrollment.load_gallery().counts()["1001"] == 2
-    assert hr.delete(f"/api/people/{pid}/photos/9.jpg", params={"reason": "x"}).status_code == 404
-    assert audit(app, "delete_photo")[0]["details"].count("2.jpg") == 1
+    assert hr.delete(f"/api/people/{pid}/photos/1001-9.jpg", params={"reason": "x"}).status_code == 404
+    assert audit(app, "delete_photo")[0]["details"].count("1001-2.jpg") == 1
 
 
 def test_delete_face_data_keeps_the_person_and_attendance(app):
@@ -289,23 +289,23 @@ def test_exports_and_their_audit(app):
     assert r.headers["content-disposition"] == (f'attachment; filename="gatesense-daily-{YESTERDAY}_{TODAY}.csv"')
     assert r.content.startswith(b"\xef\xbb\xbf")
     rows = list(csv.reader(io.StringIO(r.content.decode("utf-8-sig"))))
-    assert rows[0] == ["Date", "Employee code", "Name", "Department", "Shift", "Shift start", "Shift end", "First IN",
-                       "Last OUT", "Hours worked", "Late (min)", "Early leave (min)", "Overtime (min)", "Status"]
+    assert rows[0] == ["DATE", "EMPLOYEE CODE", "NAME", "DEPARTMENT", "SHIFT", "SHIFT START", "SHIFT END", "FIRST IN",
+                       "LAST OUT", "HOURS WORKED", "LATE (MIN)", "EARLY LEAVE (MIN)", "OVERTIME (MIN)", "STATUS"]
     assert len(rows) == 1 + 8  # 4 people, 2 days
-    bilal = next(row for row in rows[1:] if row[2] == "Bilal" and row[0] == str(TODAY))
-    assert (bilal[4], bilal[7], bilal[8], bilal[10], bilal[13]) == ("General", "09:20:00", "", "80", "late")
+    bilal = next(row for row in rows[1:] if row[2] == "BILAL" and row[0] == str(TODAY))
+    assert (bilal[4], bilal[7], bilal[8], bilal[10], bilal[13]) == ("GENERAL", "09:20:00", "", "80", "LATE")
 
     x = hr.get("/api/reports/monthly/export", params={**params, "format": "xlsx", "department": "Stores"})
     assert x.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     assert "gatesense-monthly-" in x.headers["content-disposition"] and "-Stores.xlsx" in x.headers["content-disposition"]
     wb = load_workbook(io.BytesIO(x.content))
-    assert wb.sheetnames == ["Summary", "Daily detail"]
-    summary, detail = wb["Summary"], wb["Daily detail"]
+    assert wb.sheetnames == ["SUMMARY", "DAILY DETAIL"]
+    summary, detail = wb["SUMMARY"], wb["DAILY DETAIL"]
     assert summary.freeze_panes == "A2" and summary["A1"].font.bold and summary["A1"].fill.fgColor.rgb.endswith("0E7C66")
-    assert [c.value for c in summary[1]][:6] == ["Employee code", "Name", "Department", "Days", "Scheduled",
-                                                 "Present"]
-    assert [r[1] for r in summary.iter_rows(min_row=2, values_only=True)] == ["Ayesha", "Chand"]
-    hours_col = [c.value for c in summary[1]].index("Total hours") + 1
+    assert [c.value for c in summary[1]][:6] == ["EMPLOYEE CODE", "NAME", "DEPARTMENT", "DAYS", "SCHEDULED",
+                                                 "PRESENT"]
+    assert [r[1] for r in summary.iter_rows(min_row=2, values_only=True)] == ["AYESHA", "CHAND"]
+    hours_col = [c.value for c in summary[1]].index("TOTAL HOURS") + 1
     assert summary.cell(row=2, column=hours_col).value == 17.08  # Ayesha's total hours, a number
     first_in = detail.cell(row=2, column=8)
     assert first_in.number_format == "hh:mm" and str(first_in.value) == "08:00:00"

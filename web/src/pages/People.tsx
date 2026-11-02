@@ -194,7 +194,7 @@ export function PeoplePage() {
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   onBlur={() => search.trim() !== q && update({ q: search.trim() })}
-                  className="w-56 pl-7"
+                  className="w-64 pl-7"
                 />
               </form>
               <NativeSelect aria-label="Active" value={active} onChange={(e) => update({ active: e.target.value })}>

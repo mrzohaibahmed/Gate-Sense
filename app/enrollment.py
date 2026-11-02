@@ -1,6 +1,6 @@
 """Enrollment, shared by scripts/enroll.py and the dashboard's Enrollment page.
 
-A person's photos live in known/<employee code>/. Each photo is checked
+A person's photos live in known/<employee code>/, named <employee code>-<N>.jpg. Each photo is checked
 (exactly one face that passes the quality filter) and embedded; all accepted
 embeddings go into data/gallery.npz under the employee code, and the persons
 table gets a row for everyone in the gallery.
@@ -114,7 +114,7 @@ KEEP = ("step",)  # per-photo fields that survive a rebuild (set once, e.g. by t
 def write_sidecar(folder: Path, result: PersonResult, extra: dict[str, dict] | None = None) -> None:
     """known/<code>/photos.json: score, yaw, pitch and the check result of each photo, for the dashboard.
 
-    `extra` adds fields per photo (e.g. {"3.jpg": {"step": "left"}}); fields in KEEP are carried over
+    `extra` adds fields per photo (e.g. {"4425-3.jpg": {"step": "left"}}); fields in KEEP are carried over
     from the previous photos.json for photos that are still there.
     """
     if not folder.is_dir():
@@ -151,7 +151,8 @@ def enroll_all(detector, recognizer, conn: sqlite3.Connection) -> tuple[Gallery,
     saved if someone is enrolled; people who were in the old gallery but have
     no usable photos now are deactivated.
     """
-    folders = sorted(p for p in config.KNOWN_DIR.iterdir() if p.is_dir()) if config.KNOWN_DIR.exists() else []
+    name_all_photos()
+    folders =sorted(p for p in config.KNOWN_DIR.iterdir() if p.is_dir()) if config.KNOWN_DIR.exists() else []
     results = [enroll_folder(f, detector, recognizer) for f in folders]
     for folder, result in zip(folders, results):
         write_sidecar(folder, result)
@@ -182,14 +183,66 @@ def enroll_one(code: str, detector, recognizer, conn: sqlite3.Connection,
     return result
 
 
+def photo_number(code: str, path: Path) -> int | None:
+    """N of a photo named <code>-<N>.<ext>; None for any other name."""
+    match = re.fullmatch(re.escape(code) + r"-(\d+)", path.stem)
+    return int(match[1]) if match else None
+
+
 def next_photo_path(code: str) -> Path:
     folder = person_dir(code)
-    numbers = [int(p.stem) for p in photo_paths(folder) if p.stem.isdigit()]
-    return folder / f"{max(numbers, default=0) + 1}.jpg"
+    numbers = [n for p in photo_paths(folder) if (n := photo_number(code, p)) is not None]
+    return folder / f"{code}-{max(numbers, default=0) + 1}.jpg"
+
+
+def name_photos(folder: Path) -> int:
+    """Rename a folder's photos to <code>-<N>.<ext>, and their photos.json entries with them; returns how many.
+
+    Old or hand-added names: 3.jpg keeps its number if it is free, anything else gets the next free one.
+    """
+    code = folder.name
+    photos = photo_paths(folder)
+    taken = {n for p in photos if (n := photo_number(code, p)) is not None}
+    others = [p for p in photos if photo_number(code, p) is None]
+    others.sort(key=lambda p: (not p.stem.isdigit(), int(p.stem) if p.stem.isdigit() else 0, p.name))
+    renamed = {}
+    try:
+        for photo in others:
+            number = int(photo.stem) if photo.stem.isdigit() and int(photo.stem) not in taken else None
+            number = max(taken, default=0) + 1 if number is None else number
+            target = photo.with_name(f"{code}-{number}{photo.suffix}")
+            photo.rename(target)
+            taken.add(number)
+            renamed[photo.name] = target.name
+    finally:
+        if renamed:
+            _rename_in_sidecar(folder, renamed)
+    return len(renamed)
+
+
+def _rename_in_sidecar(folder: Path, renamed: dict[str, str]) -> None:
+    try:
+        data = json.loads((folder / SIDECAR).read_text(encoding="utf-8"))
+        data["photos"] = {renamed.get(name, name): entry for name, entry in data["photos"].items()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return  # no usable photos.json: the next rebuild writes one
+    atomic_write_bytes(folder / SIDECAR, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
+
+
+def name_all_photos() -> int:
+    """name_photos for every person (at app start and before a full rebuild). A file that can't be renamed stays
+    as it is, with a warning: it still works under its old name."""
+    count = 0
+    for folder in sorted(p for p in config.KNOWN_DIR.iterdir() if p.is_dir()) if config.KNOWN_DIR.exists() else []:
+        try:
+            count += name_photos(folder)
+        except OSError as e:
+            print(f"WARNING: could not rename the photos in {folder.name}: {e}", flush=True)
+    return count
 
 
 def save_photo(code: str, img: np.ndarray) -> Path:
-    """Save as the next numbered JPEG, shrunk to ENROLL_MAX_PHOTO_PX (re-encoding also drops EXIF data)."""
+    """Save as the next <code>-<N>.jpg, shrunk to ENROLL_MAX_PHOTO_PX (re-encoding also drops EXIF data)."""
     longest = max(img.shape[:2])
     if longest > config.ENROLL_MAX_PHOTO_PX:
         scale = config.ENROLL_MAX_PHOTO_PX / longest

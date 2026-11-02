@@ -39,7 +39,7 @@ export function TopBar({ onMenu, onSearch }: { onMenu: () => void; onSearch: () 
       >
         <Search className="size-4 shrink-0" />
         <span className="hidden truncate md:inline">Search people, pages…</span>
-        <kbd className="ml-auto hidden rounded border bg-muted px-1 text-xs md:inline">Ctrl K</kbd>
+        <kbd className="ml-auto hidden rounded border bg-muted px-1 text-xs whitespace-nowrap md:inline">Ctrl K</kbd>
       </button>
       <LiveDot />
       <Notifications />

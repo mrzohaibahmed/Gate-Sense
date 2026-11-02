@@ -249,7 +249,7 @@ function CamerasTab() {
                     <DirectionBadge direction={c.direction} />
                   </Td>
                   <Td>{c.type}</Td>
-                  <Td className="max-w-72 truncate text-xs" title={String(c.source)}>
+                  <Td className="max-w-72 truncate text-xs normal-case" title={String(c.source)}>
                     {String(c.source)}
                     {c.missing_variables.length > 0 && (
                       <Badge tone="error" className="ml-1">
@@ -384,7 +384,7 @@ export function CameraLogView({ camera, refreshMs = 2000 }: { camera: Camera; re
           ref={(el) => {
             if (el && follow) el.scrollTop = el.scrollHeight;
           }}
-          className="h-[60vh] overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-xs leading-5 whitespace-pre-wrap"
+          className="h-[60vh] overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-xs leading-5 whitespace-pre-wrap normal-case"
         >
           {log.isPending
             ? "Loading…"
@@ -744,7 +744,7 @@ function SitesTab() {
         }}
       >
         <Field label="Name" htmlFor="site-name">
-          <Input id="site-name" value={name} onChange={(e) => setName(e.target.value)} />
+          <Input id="site-name" className="uppercase" value={name} onChange={(e) => setName(e.target.value)} />
         </Field>
       </ReasonDialog>
       <ReasonDialog

@@ -104,10 +104,42 @@ def test_add_photos_saves_only_accepted(conn):
     results, person = enrollment.add_photos(
         "e1", [("a.jpg", photo("good", 1)), ("b.jpg", photo("none", 2)), ("c.jpg", photo("good", 3))], DET, REC, conn)
     assert [(label, check.reason, path.name if path else None) for label, check, path in results] == \
-        [("a.jpg", None, "1.jpg"), ("b.jpg", "no face", None), ("c.jpg", None, "2.jpg")]
-    assert [p.name for p in enrollment.photo_paths(config.KNOWN_DIR / "e1")] == ["1.jpg", "2.jpg"]  # + photos.json
-    assert person.accepted == ["1.jpg", "2.jpg"]  # saved JPEGs pass the same check again
+        [("a.jpg", None, "e1-1.jpg"), ("b.jpg", "no face", None), ("c.jpg", None, "e1-2.jpg")]
+    assert [p.name for p in enrollment.photo_paths(config.KNOWN_DIR / "e1")] == ["e1-1.jpg", "e1-2.jpg"]  # + photos.json
+    assert person.accepted == ["e1-1.jpg", "e1-2.jpg"]  # saved JPEGs pass the same check again
     assert counts() == {"e1": 2}
+
+
+def test_old_photo_names_are_renamed_with_their_stored_details(conn):
+    folder = config.KNOWN_DIR / "4425"
+    add_files("4425", a="good")  # hand-added name
+    for number in (1, 2):
+        write_image(folder / f"{number}.jpg", photo("good", seed=number))  # the old names
+    write_image(folder / "4425-1.jpg", photo("good", seed=5))  # 1 is taken: 1.jpg moves on to a free number
+    enrollment.write_sidecar(folder, enrollment.enroll_folder(folder, DET, REC), {"2.jpg": {"step": "left"}})
+
+    assert enrollment.name_all_photos() == 3
+    assert sorted(p.name for p in enrollment.photo_paths(folder)) == [
+        "4425-1.jpg", "4425-2.jpg", "4425-3.jpg", "4425-4.png"]
+    stored = enrollment.read_sidecar(folder)
+    assert sorted(stored) == ["4425-1.jpg", "4425-2.jpg", "4425-3.jpg", "4425-4.png"]
+    assert stored["4425-3.jpg"]["step"] == "left"  # 2.jpg, moved on by 1.jpg taking number 2
+    assert enrollment.name_all_photos() == 0  # done once
+    assert enrollment.next_photo_path("4425").name == "4425-5.jpg"
+
+
+def test_enroll_all_renames_hand_added_photos(conn):
+    add_files("ali", front="good")
+    _, results, _ = enrollment.enroll_all(DET, REC, conn)
+    assert results[0].accepted == ["ali-1.png"]
+
+
+def test_a_photo_that_cannot_be_renamed_stays_and_is_reported(conn, monkeypatch, capsys):
+    add_files("ali", a="good")
+    monkeypatch.setattr(enrollment.Path, "rename", lambda *_: (_ for _ in ()).throw(PermissionError("in use")))
+    assert enrollment.name_all_photos() == 0
+    assert "could not rename the photos in ali" in capsys.readouterr().out
+    assert [p.name for p in enrollment.photo_paths(config.KNOWN_DIR / "ali")] == ["a.png"]
 
 
 def test_add_photos_nothing_accepted_changes_nothing(conn):
@@ -130,9 +162,9 @@ def test_large_upload_is_shrunk(conn):
 
 def test_delete_photo_rebuilds_embeddings(conn):
     enrollment.add_photos("e1", [("a", photo("good", 1)), ("b", photo("good", 2))], DET, REC, conn)
-    person = enrollment.delete_photo("e1", "1.jpg", DET, REC, conn)
-    assert person.accepted == ["2.jpg"] and counts() == {"e1": 1}
-    for bad in ["../e1/2.jpg", "missing.jpg", "2.jpg/.."]:
+    person = enrollment.delete_photo("e1", "e1-1.jpg", DET, REC, conn)
+    assert person.accepted == ["e1-2.jpg"] and counts() == {"e1": 1}
+    for bad in ["../e1/e1-2.jpg", "missing.jpg", "e1-2.jpg/.."]:
         with pytest.raises(ValueError):
             enrollment.delete_photo("e1", bad, DET, REC, conn)
 
@@ -157,7 +189,7 @@ def test_delete_face_data_needs_reason(conn):
     enrollment.add_photos("e1", [("a", photo("good"))], DET, REC, conn)
     with pytest.raises(ValueError):
         enrollment.delete_face_data("e1", "  ", "admin", conn, deactivate=False)
-    assert (config.KNOWN_DIR / "e1" / "1.jpg").exists() and counts() == {"e1": 1}
+    assert (config.KNOWN_DIR / "e1" / "e1-1.jpg").exists() and counts() == {"e1": 1}
 
 
 def test_delete_face_data_can_keep_person_active(conn):

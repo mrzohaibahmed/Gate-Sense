@@ -233,7 +233,7 @@ export function ShiftsTab() {
       >
         <div className="grid grid-cols-2 gap-3">
           <Field label="Name" htmlFor="shift-name" className="col-span-2">
-            <Input id="shift-name" value={form.name} onChange={set("name")} />
+            <Input id="shift-name" className="uppercase" value={form.name} onChange={set("name")} />
           </Field>
           <Field label="Start" htmlFor="shift-start">
             <Input id="shift-start" type="time" value={form.start} onChange={set("start")} />

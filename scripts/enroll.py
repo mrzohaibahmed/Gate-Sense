@@ -101,7 +101,7 @@ def main() -> int:
     conn = db.connect()
     gallery, results, removed = enrollment.enroll_all(detector, recognizer, conn)
     if not results:
-        print(f"No person folders in {config.KNOWN_DIR}. Add photos as known/<code>/1.jpg, ... (see known/README.md)")
+        print(f"No person folders in {config.KNOWN_DIR}. Add photos to known/<code>/; they are renamed <code>-1.jpg, ... (see known/README.md)")
         conn.close()
         return 1
 

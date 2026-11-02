@@ -108,7 +108,7 @@ def log_match(stamp: str, track_id: int, m: Match) -> None:
 def draw(img, bbox, color, text, thickness: int = 2) -> None:
     x1, y1, x2, y2 = (int(v) for v in bbox)
     cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
-    cv2.putText(img, text, (x1, max(y1 - 8, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
+    cv2.putText(img, text.upper(), (x1, max(y1 - 8, 15)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
 
 def mirror_box(bbox, width: int):
@@ -119,7 +119,7 @@ def mirror_box(bbox, width: int):
 
 def header(img, text: str) -> None:
     cv2.rectangle(img, (0, 0), (img.shape[1], 24), (0, 0, 0), -1)
-    cv2.putText(img, text, (6, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    cv2.putText(img, text.upper(), (6, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
 
 def find_camera(name: str | None) -> dict:
