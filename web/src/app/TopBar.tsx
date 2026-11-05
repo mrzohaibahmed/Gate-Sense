@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { Bell, CameraOff, LogOut, Menu, Moon, Search, Sun, SunMoon, UserRoundX } from "lucide-react";
-import { Link, useNavigate } from "react-router";
+import { Bell, CameraOff, LogOut, Moon, Search, Sun, SunMoon, UserRoundX } from "lucide-react";
+import { Link, NavLink, useNavigate } from "react-router";
 import { toast } from "sonner";
 
 import { api } from "@/api/client";
@@ -15,78 +15,40 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { NativeSelect } from "@/components/ui/input";
 import { Tooltip } from "@/components/ui/misc";
 import { useLive } from "@/live/LiveProvider";
 import { cn, today } from "@/lib/utils";
 
 import { useFilters } from "./filters";
+import { DesktopNav, MobileNav } from "./MainNav";
 import { setTheme } from "./theme";
 
-export function TopBar({ onMenu, onSearch }: { onMenu: () => void; onSearch: () => void }) {
+/** The logged-in header: the logo, the pages (a drawer on a narrower screen), search and the account. */
+export function TopBar({ onSearch }: { onSearch: () => void }) {
   return (
-    <header className="sticky top-0 z-20 flex h-12 items-center gap-2 border-b bg-card px-2 md:px-4">
-      <Button variant="ghost" size="icon" className="md:hidden" onClick={onMenu} aria-label="Open the menu">
-        <Menu />
-      </Button>
-      <SiteSwitcher />
-      <DatePicker />
+    <header className="sticky top-0 z-20 flex h-16 items-center gap-2 border-b bg-card px-2 lg:px-4">
+      <MobileNav />
+      <NavLink to="/" className="mr-2 flex shrink-0 items-center gap-2 rounded-lg" aria-label="GateSense, Overview">
+        <span className="flex size-9 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
+          GS
+        </span>
+        <span className="hidden text-lg font-semibold tracking-tight sm:inline">GateSense</span>
+      </NavLink>
+      <DesktopNav />
       <button
         type="button"
         onClick={onSearch}
-        className="ml-auto flex h-8 min-w-0 items-center gap-2 rounded-md border border-input bg-background px-2 text-sm text-muted-foreground hover:bg-muted md:w-64"
+        className="ml-auto flex h-10 min-w-0 items-center gap-2 rounded-lg border border-input bg-card px-2.5 text-sm text-muted-foreground hover:bg-muted 2xl:w-72"
         aria-label="Search (Ctrl+K)"
       >
         <Search className="size-4 shrink-0" />
-        <span className="hidden truncate md:inline">Search people, pages…</span>
-        <kbd className="ml-auto hidden rounded border bg-muted px-1 text-xs whitespace-nowrap md:inline">Ctrl K</kbd>
+        <span className="hidden truncate 2xl:inline">Search people, pages…</span>
+        <kbd className="ml-auto hidden rounded border bg-muted px-1 text-xs whitespace-nowrap 2xl:inline">Ctrl K</kbd>
       </button>
       <LiveDot />
       <Notifications />
       <UserMenu />
     </header>
-  );
-}
-
-function SiteSwitcher() {
-  const { data: me } = useMe();
-  const { siteId, setSiteId } = useFilters();
-  const sites = useQuery({
-    queryKey: ["sites"],
-    queryFn: () => api.get("/api/sites", { query: { page_size: 500 } }),
-    enabled: can(me, "sites:read"),
-    staleTime: 300_000,
-  });
-  const items = sites.data?.items ?? [];
-  if (items.length <= 1 && siteId === null) return null; // one site: nothing to switch
-  return (
-    <NativeSelect
-      aria-label="Site"
-      className="max-w-40"
-      value={siteId ?? ""}
-      onChange={(e) => setSiteId(e.target.value ? Number(e.target.value) : null)}
-    >
-      <option value="">All sites</option>
-      {items.map((s) => (
-        <option key={s.id} value={s.id}>
-          {s.name}
-        </option>
-      ))}
-    </NativeSelect>
-  );
-}
-
-function DatePicker() {
-  const { date, setDate } = useFilters();
-  return (
-    <input
-      type="date"
-      aria-label="Day"
-      value={date}
-      max={today()}
-      onChange={(e) => e.target.value && setDate(e.target.value)}
-      className="h-8 rounded-md border border-input bg-card px-2 text-sm"
-    />
   );
 }
 
@@ -198,11 +160,11 @@ function UserMenu() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" className="gap-2 px-1 md:px-2" aria-label="Account">
-          <span className="flex size-6 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">
+        <Button variant="ghost" className="h-10 gap-2 px-1 2xl:px-2" aria-label="Account">
+          <span className="flex size-8 items-center justify-center rounded-full bg-accent text-xs font-semibold text-accent-foreground">
             {initials}
           </span>
-          <span className="hidden max-w-32 truncate md:inline">{me.full_name || me.username}</span>
+          <span className="hidden max-w-32 truncate 2xl:inline">{me.full_name || me.username}</span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">

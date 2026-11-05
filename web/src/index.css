@@ -5,82 +5,80 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /*
- * GateSense design tokens. Neutral slate greys, one teal accent, IN = blue, OUT = orange, and one colour per
- * attendance status. Components use the Tailwind names mapped in @theme below (bg-card, text-muted-foreground,
- * text-in, bg-status-missing/10, ...), never raw colours, so light and dark stay in step.
+ * GateSense design tokens: a soft mint page, white panels, one forest green accent, IN = blue, OUT = orange, and one
+ * colour per attendance status. Components use the Tailwind names mapped in @theme below (bg-card,
+ * text-muted-foreground, text-in, bg-status-missing/10, ...), never raw colours, so light and dark stay in step.
  * Spacing follows an 8 px grid: use even Tailwind steps (2 = 8 px, 4 = 16 px, 6 = 24 px).
  */
 :root {
-  --background: #f8fafc; /* slate-50 */
-  --foreground: #0f172a; /* slate-900 */
+  --background: #f4faf7;
+  --foreground: #102d29;
   --card: #ffffff;
-  --card-foreground: #0f172a;
+  --card-foreground: #102d29;
   --popover: #ffffff;
-  --popover-foreground: #0f172a;
-  --muted: #f1f5f9; /* slate-100 */
-  --muted-foreground: #64748b; /* slate-500 */
-  --border: #e2e8f0; /* slate-200 */
-  --input: #cbd5e1; /* slate-300 */
-  --ring: #0e7c66;
+  --popover-foreground: #102d29;
+  --muted: #edf5f1;
+  --muted-foreground: #586f7b; /* a little darker than the design's #647B87: 4.5:1 on the mint page too */
+  --border: #e1ece7;
+  --input: #b9ccc4; /* form controls: must be visible against white */
+  --ring: #08745e;
 
-  --primary: #0e7c66; /* the one accent: teal */
+  --primary: #08745e;
   --primary-foreground: #ffffff;
-  --accent: #e7f3f0; /* teal tint for selected / hover */
-  --accent-foreground: #0b5f4f;
-  --secondary: #f1f5f9;
-  --secondary-foreground: #0f172a;
-  --destructive: #dc2626;
+  --accent: #e0f3ec; /* mint: selected, hover, the active page */
+  --accent-foreground: #065a49;
+  --secondary: #edf5f1;
+  --secondary-foreground: #102d29;
+  --destructive: #c81e1e;
   --destructive-foreground: #ffffff;
 
-  --in: #2563eb; /* IN events: blue */
-  --out: #ea580c; /* OUT events: orange */
-  --status-inside: #0e7c66; /* came in, still inside */
-  --status-left: #64748b; /* came in and went out */
-  --status-missing: #d97706; /* missing exit / entry */
-  --status-absent: #e11d48; /* no events */
-  --ok: #16a34a;
-  --warn: #d97706;
+  --in: #1d4ed8; /* IN events: blue */
+  --out: #c2410c; /* OUT events: orange */
+  --status-inside: #08745e; /* came in, still inside */
+  --status-left: #586f7b; /* came in and went out */
+  --status-missing: #a35200; /* missing exit / entry, warnings */
+  --status-absent: #be123c; /* no events */
+  --ok: #0f7a3d;
+  --warn: #a35200;
 
-  --sidebar: #ffffff;
-  --sidebar-foreground: #334155;
-  --sidebar-border: #e2e8f0;
-  --radius: 6px;
+  --glow: rgb(8 116 94 / 0.14); /* around the Inside now count */
+  --shadow-panel: 0 1px 2px rgb(16 45 41 / 0.04), 0 4px 16px rgb(16 45 41 / 0.03);
+  --radius: 8px;
 }
 
 .dark {
-  --background: #0b1120;
-  --foreground: #e2e8f0;
-  --card: #0f172a;
-  --card-foreground: #e2e8f0;
-  --popover: #111a2e;
-  --popover-foreground: #e2e8f0;
-  --muted: #1e293b;
-  --muted-foreground: #94a3b8;
-  --border: #1e293b;
-  --input: #334155;
+  --background: #0a1613;
+  --foreground: #e3efeb;
+  --card: #10211d;
+  --card-foreground: #e3efeb;
+  --popover: #132822;
+  --popover-foreground: #e3efeb;
+  --muted: #1a2f2a;
+  --muted-foreground: #9db3ac;
+  --border: #213a34;
+  --input: #38544c;
   --ring: #2bb39a;
 
   --primary: #14a085;
   --primary-foreground: #ffffff;
-  --accent: #10332d;
-  --accent-foreground: #7fdcc8;
-  --secondary: #1e293b;
-  --secondary-foreground: #e2e8f0;
+  --accent: #123a31;
+  --accent-foreground: #8be3cf;
+  --secondary: #1a2f2a;
+  --secondary-foreground: #e3efeb;
   --destructive: #ef4444;
   --destructive-foreground: #ffffff;
 
   --in: #60a5fa;
   --out: #fb923c;
   --status-inside: #2bb39a;
-  --status-left: #94a3b8;
+  --status-left: #9db3ac;
   --status-missing: #fbbf24;
   --status-absent: #fb7185;
   --ok: #4ade80;
   --warn: #fbbf24;
 
-  --sidebar: #0f172a;
-  --sidebar-foreground: #cbd5e1;
-  --sidebar-border: #1e293b;
+  --glow: rgb(43 179 154 / 0.14);
+  --shadow-panel: none;
 }
 
 @theme inline {
@@ -112,9 +110,6 @@
   --color-status-absent: var(--status-absent);
   --color-ok: var(--ok);
   --color-warn: var(--warn);
-  --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar-border: var(--sidebar-border);
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
@@ -135,17 +130,18 @@
     font-size: 14px; /* dense base text; rem-based spacing stays on the 8 px grid */
     line-height: 20px;
     font-variant-numeric: tabular-nums; /* times and counts line up in tables and tiles */
-    text-transform: uppercase; /* everything is shown in capitals; stored values keep the case they were typed in */
-  }
-  /* Browsers reset these to none. Typed text stays as typed (passwords, URLs, reasons), except fields given
-     "uppercase" (names, departments); use "normal-case" where the case of a shown value matters (URLs, logs). */
-  button,
-  select,
-  ::file-selector-button,
-  ::placeholder {
-    text-transform: uppercase;
   }
   :focus-visible {
     @apply outline-2 outline-offset-2 outline-ring;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 }

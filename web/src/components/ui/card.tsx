@@ -2,9 +2,14 @@ import * as React from "react";
 
 import { cn } from "@/lib/utils";
 
-/** Cards: 1 px border, no heavy shadow. */
+/** Panels: white, 1 px border, a restrained shadow. */
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("rounded-lg border bg-card text-card-foreground", className)} {...props} />;
+  return (
+    <div
+      className={cn("rounded-lg border bg-card text-card-foreground shadow-(--shadow-panel)", className)}
+      {...props}
+    />
+  );
 }
 
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {

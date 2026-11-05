@@ -4616,6 +4616,10 @@ export interface operations {
                 status?: ("on time" | "late" | "early leave" | "missing IN" | "missing OUT" | "absent" | "not in yet" | "check" | "off day" | "unscheduled" | "complete") | null;
                 /** @description exact department name */
                 department?: string | null;
+                /** @description only the people in the building now, once each (the Overview's inside_now: an open day, from yesterday or today, ending with an IN); from and to are ignored */
+                inside?: boolean;
+                /** @description only days that can still change (true) or are over (false) */
+                open?: boolean | null;
                 page?: number;
                 page_size?: number;
                 /** @description field to sort by; prefix with "-" for descending, e.g. "-date" */

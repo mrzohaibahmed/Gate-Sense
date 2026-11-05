@@ -132,7 +132,7 @@ describe("Unknown visitors page", () => {
 });
 
 describe("Unknown visitors in the menu", () => {
-  const menu = () => screen.findByRole("complementary", { name: "Main menu" });
+  const menu = () => screen.findByRole("navigation", { name: "Main menu" });
 
   it("is there for a guard while the log is on, with the visits waiting for review", async () => {
     setup("guard", {}, "/live");

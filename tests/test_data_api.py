@@ -599,3 +599,21 @@ def test_openapi_lists_every_endpoint_with_a_response_model(app):
     for name in ("Page_Event_", "Page_AttendanceRow_", "Overview", "Camera", "PersonDetail", "Settings",
                  "AuditEntry", "Site", "Page_UnknownVisit_"):
         assert name in spec["components"]["schemas"], name
+
+
+def test_the_inside_list_is_the_overviews_inside_now(app):
+    v = as_role(app, "viewer")
+    expected = v.get("/api/overview").json()["inside_now"]
+    r = v.get("/api/attendance", params={"inside": True})
+    assert r.status_code == 200 and r.json()["total"] == expected
+    rows = r.json()["items"]
+    assert all(x["open"] and x["inside"] for x in rows)
+    assert len({x["person_id"] for x in rows}) == len(rows)  # once each
+    assert v.get("/api/attendance", params={"inside": True, "q": "no such person"}).json()["total"] == 0
+
+
+def test_missing_out_can_be_listed_without_the_days_still_open(app):
+    v = as_role(app, "viewer")
+    count = v.get("/api/overview").json()["missing_out"]
+    r = v.get("/api/attendance", params={"status": "missing OUT", "open": False})
+    assert r.status_code == 200 and r.json()["total"] == count

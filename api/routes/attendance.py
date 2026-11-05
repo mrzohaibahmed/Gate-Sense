@@ -42,6 +42,11 @@ def list_attendance(request: Request, params: ListParams = Depends(list_params),
                     person: int | None = Query(None, description="person id"),
                     status: Status | None = None,
                     department: str | None = Query(None, description="exact department name"),
+                    inside: bool = Query(False, description="only the people in the building now, once each (the "
+                                                            "Overview's inside_now: an open day, from yesterday or "
+                                                            "today, ending with an IN); from and to are ignored"),
+                    open_day: bool | None = Query(None, alias="open", description="only days that can still change "
+                                                                                  "(true) or are over (false)"),
                     _: CurrentUser = Depends(read)) -> dict:
     """One row per roster day: every roster row (a shift or OFF) plus unscheduled dates with passes, computed from
     the events (voided ones ignored) with the shift's times in force that day. The first IN in the shift's IN window,
@@ -49,10 +54,17 @@ def list_attendance(request: Request, params: ListParams = Depends(list_params),
     early leave, missing IN, missing OUT, absent, not in yet, check, off day, unscheduled. A night shift is dated the
     day it starts. Any other event is a repeat. site_id = the person's site. Default sort: -date, then name."""
     first, last = dates(date_from, date_to)
+    if inside:
+        last = date.today()
+        first = last - timedelta(days=1)
     rows = attendance_rows(auth.db_of(request), first, last)
     rows = [r for r in rows if (person is None or r["person_id"] == person) and (status is None or r["status"] == status)
             and (params.site_id is None or r["site_id"] == params.site_id)
-            and (department is None or (r["department"] or "") == department)]
+            and (department is None or (r["department"] or "") == department)
+            and (open_day is None or r["open"] == open_day)]
+    if inside:  # one row per person, as inside_now counts them: a night shift from yesterday and today's day are one
+        rows = list({r["person_id"]: r for r in sorted((r for r in rows if r["open"] and r["inside"]),
+                                                       key=lambda r: r["date"])}.values())
     return paginate(rows, params, ("name", "employee_code", "department", "shift"),
                     ("date", "name", "employee_code", "department", "shift", "first_in", "last_out", "worked_hours",
                      "late_minutes", "early_leave_minutes", "overtime_minutes", "status"),

@@ -12,6 +12,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useState } from "react";
+import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import { ApiError, api, resourceUrl } from "@/api/client";
@@ -50,7 +51,8 @@ export function SettingsPage() {
   const shifts = useShiftsEnabled();
   const tabs = TABS.filter((t) => can(me, t.permission) && (shifts || t.key !== "shifts"));
   // Controlled: the tab picked stays picked when the list changes (the Shifts tab arrives with the Shifts setting).
-  const [tab, setTab] = useState<string | undefined>();
+  const [params] = useSearchParams();
+  const [tab, setTab] = useState<string | undefined>(params.get("tab") ?? undefined);
   const current = tabs.some((t) => t.key === tab) ? tab : tabs[0]?.key;
   return (
     <>

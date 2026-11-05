@@ -141,7 +141,7 @@ export function PeoplePage() {
   });
   return (
     <>
-      <PageHeader title="People">
+      <PageHeader title="People" filters="site">
         {can(me, "people:manage") && (
           <>
             <Button variant="outline" onClick={() => setImporting(true)}>

@@ -48,7 +48,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 function menu() {
-  return within(screen.getByRole("complementary", { name: "Main menu" }));
+  return within(screen.getByRole("navigation", { name: "Main menu" }));
 }
 
 describe("route guards", () => {
@@ -68,7 +68,7 @@ describe("route guards", () => {
 
   it("shows the menu items of the role only", async () => {
     renderRoutes(routes, "/", makeMe("viewer", PERMISSIONS.viewer!));
-    await screen.findByRole("complementary", { name: "Main menu" });
+    await screen.findByRole("navigation", { name: "Main menu" });
     await menu().findByRole("link", { name: "Roster" }); // once the Shifts setting has arrived (on)
     const labels = menu()
       .getAllByRole("link")
@@ -78,14 +78,14 @@ describe("route guards", () => {
 
   it("an admin sees every item", async () => {
     renderRoutes(routes, "/", makeMe("admin", PERMISSIONS.admin!));
-    await screen.findByRole("complementary", { name: "Main menu" });
+    await screen.findByRole("navigation", { name: "Main menu" });
     await menu().findByRole("link", { name: "Roster" });
     expect(menu().getAllByRole("link")).toHaveLength(9);
   });
 
   it("a guard sees live cameras but not people", async () => {
     renderRoutes(routes, "/", makeMe("guard", PERMISSIONS.guard!));
-    await screen.findByRole("complementary", { name: "Main menu" });
+    await screen.findByRole("navigation", { name: "Main menu" });
     expect(menu().getByRole("link", { name: "Live cameras" })).toBeInTheDocument();
     expect(menu().queryByRole("link", { name: "People" })).not.toBeInTheDocument();
     expect(menu().queryByRole("link", { name: "Roster" })).not.toBeInTheDocument();

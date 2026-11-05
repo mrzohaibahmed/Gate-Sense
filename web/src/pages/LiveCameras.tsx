@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CameraOff, Maximize2, Play, Square, VideoOff } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import { api, ApiError, resourceUrl } from "@/api/client";
@@ -41,6 +42,8 @@ export function LiveCamerasPage() {
   const [layout, setLayoutState] = useState<Layout>(storedLayout);
   const [page, setPage] = useState(0);
   const [full, setFull] = useState<Camera | null>(null);
+  const [params, setParams] = useSearchParams();
+  const direction = params.get("direction");
   const cameras = useQuery({
     queryKey: ["cameras", siteId],
     queryFn: () => api.get("/api/cameras", { query: { site_id: siteId, page_size: 500 } }),
@@ -57,12 +60,20 @@ export function LiveCamerasPage() {
   };
   if (cameras.isPending) return <PageSkeleton />;
   if (cameras.error) return <ErrorState error={cameras.error} retry={() => void cameras.refetch()} />;
-  const all = cameras.data.items;
+  const all = cameras.data.items.filter((c) => !direction || c.direction === direction);
   const pages = Math.max(1, Math.ceil(all.length / layout));
   const shown = all.slice(page * layout, page * layout + layout);
   return (
     <>
-      <PageHeader title="Live cameras">
+      <PageHeader title="Live cameras" filters="site">
+        {direction && (
+          <Badge tone="accent" className="px-2 py-1">
+            {direction === "IN" ? "Entrance cameras" : "Exit cameras"}
+            <button type="button" onClick={() => setParams({}, { replace: true })} aria-label="Show all cameras">
+              ×
+            </button>
+          </Badge>
+        )}
         <div role="group" aria-label="Cameras per screen" className="flex rounded-md border">
           {LAYOUTS.map((l) => (
             <button
@@ -96,7 +107,7 @@ export function LiveCamerasPage() {
       <div className="px-4 pb-4">
         {all.length === 0 ? (
           <Card>
-            <EmptyState icon={<CameraOff />} title="No cameras">
+            <EmptyState icon={<CameraOff />} title={direction ? "No cameras in this direction" : "No cameras"}>
               Add one under Settings → Cameras.
             </EmptyState>
           </Card>

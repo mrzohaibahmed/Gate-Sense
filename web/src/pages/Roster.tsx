@@ -198,7 +198,7 @@ function RosterWeek() {
 
   return (
     <>
-      <PageHeader title="Roster">
+      <PageHeader title="Roster" filters="site">
         {editable && (
           <>
             <Button variant="outline" size="sm" onClick={() => setImporting(true)}>

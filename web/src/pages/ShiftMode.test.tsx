@@ -47,7 +47,7 @@ function start(role: string, path: string, enabled: boolean) {
   return api;
 }
 
-const menu = () => within(screen.getByRole("complementary", { name: "Main menu" }));
+const menu = () => within(screen.getByRole("navigation", { name: "Main menu" }));
 
 afterEach(() => vi.unstubAllGlobals());
 

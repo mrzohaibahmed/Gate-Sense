@@ -90,7 +90,7 @@ export function ReportsPage() {
 
   return (
     <>
-      <PageHeader title="Reports">
+      <PageHeader title="Reports" filters="site">
         <Button asChild variant="outline" size="sm">
           <a href={exportUrl("csv")} download>
             <FileText /> Export CSV

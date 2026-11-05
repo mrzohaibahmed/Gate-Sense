@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-quer
 import type { ColumnDef } from "@tanstack/react-table";
 import { ClipboardList, Ban, RotateCcw, Search } from "lucide-react";
 import { useMemo, useState } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
 
 import { api, resourceUrl } from "@/api/client";
@@ -10,6 +10,7 @@ import type { AttendanceEvent, AttendanceRow, Status } from "@/api/types";
 import { PageHeader } from "@/app/AppShell";
 import { useFilters } from "@/app/filters";
 import { can, useMe } from "@/auth/auth";
+import { Avatar } from "@/components/Avatar";
 import { DirectionBadge, MinutesBadges, StatusBadge } from "@/components/badges";
 import { type ColumnMeta, DataTable } from "@/components/DataTable";
 import { ReasonDialog } from "@/components/ReasonDialog";
@@ -41,13 +42,13 @@ const STATUS_OPTION: Record<Status, string> = {
 const SHIFT_COLUMNS = new Set(["shift", "minutes"]);
 const PAGE_SIZE = 100;
 
-function columns(shifts: boolean): ColumnDef<AttendanceRow>[] {
-  return allColumns().filter(
+function columns(shifts: boolean, linkPeople: boolean, avatars: boolean): ColumnDef<AttendanceRow>[] {
+  return allColumns(linkPeople, avatars).filter(
     (c) => shifts || !SHIFT_COLUMNS.has(c.id ?? (c as { accessorKey?: string }).accessorKey ?? ""),
   );
 }
 
-function allColumns(): ColumnDef<AttendanceRow>[] {
+function allColumns(linkPeople: boolean, avatars: boolean): ColumnDef<AttendanceRow>[] {
   const meta = (m: ColumnMeta) => m;
   return [
     { accessorKey: "date", header: "Date", meta: meta({ label: "Date", sortKey: "date" }) },
@@ -56,7 +57,22 @@ function allColumns(): ColumnDef<AttendanceRow>[] {
       header: "Name",
       enableHiding: false,
       meta: meta({ label: "Name", sortKey: "name" }),
-      cell: ({ row }) => <span className="font-medium">{row.original.name}</span>,
+      cell: ({ row }) => (
+        <span className="flex items-center gap-2">
+          {avatars && <Avatar name={row.original.name} className="size-7" />}
+          {linkPeople ? (
+            <Link
+              to={`/people/${row.original.person_id}`}
+              onClick={(e) => e.stopPropagation()}
+              className="font-medium hover:underline"
+            >
+              {row.original.name}
+            </Link>
+          ) : (
+            <span className="font-medium">{row.original.name}</span>
+          )}
+        </span>
+      ),
     },
     { accessorKey: "employee_code", header: "Code", meta: meta({ label: "Code", sortKey: "employee_code" }) },
     {
@@ -119,6 +135,8 @@ export function AttendancePage() {
   const status = (params.get("status") as Status | null) ?? null;
   const department = params.get("department") ?? "";
   const person = params.get("person");
+  const inside = params.get("inside") === "1";
+  const openDay = params.get("open"); // "false": days that are over
   const q = params.get("q") ?? "";
   const sort = params.get("sort") ?? "-date";
   const page = Number(params.get("page") ?? 1);
@@ -136,7 +154,7 @@ export function AttendancePage() {
   };
 
   const rows = useQuery({
-    queryKey: ["attendance", "table", { from, to, status, department, person, q, sort, page, siteId }],
+    queryKey: ["attendance", "table", { from, to, status, department, person, inside, openDay, q, sort, page, siteId }],
     queryFn: () =>
       api.get("/api/attendance", {
         query: {
@@ -145,6 +163,8 @@ export function AttendancePage() {
           status,
           department: department || null,
           person: person ? Number(person) : null,
+          inside: inside || undefined,
+          open: openDay === null ? null : openDay === "true",
           q: q || null,
           sort,
           page,
@@ -167,11 +187,12 @@ export function AttendancePage() {
     return [...names].sort();
   }, [people.data, rows.data]);
   const shifts = useShiftsEnabled();
-  const cols = useMemo(() => columns(shifts), [shifts]);
+  const linkPeople = can(me, "people:read");
+  const cols = useMemo(() => columns(shifts, linkPeople, inside), [shifts, linkPeople, inside]);
 
   return (
     <>
-      <PageHeader title="Attendance" />
+      <PageHeader title={inside ? "Everyone inside" : "Attendance"} filters={inside ? "site" : "site and date"} />
       <div className="px-4 pb-4">
         <DataTable
           columns={cols}
@@ -187,37 +208,56 @@ export function AttendancePage() {
           retry={() => void rows.refetch()}
           onRowClick={setSelected}
           rowLabel={(r) => `${r.name}, ${r.date}`}
-          initialHidden={from === to ? ["date"] : []}
+          initialHidden={from === to || inside ? ["date"] : []}
           empty={
-            <EmptyState icon={<ClipboardList />} title="No rows">
-              Nobody matches these filters.
+            <EmptyState icon={<ClipboardList />} title={inside ? "Nobody inside" : "No rows"}>
+              {inside ? "Nobody inside matches these filters." : "Nobody matches these filters."}
             </EmptyState>
           }
           toolbar={
             <>
-              <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                From
-                <input
-                  type="date"
-                  aria-label="From"
-                  value={from}
-                  max={to}
-                  onChange={(e) => e.target.value && update({ from: e.target.value })}
-                  className="h-8 rounded-md border border-input bg-card px-2 text-sm text-foreground"
-                />
-              </label>
-              <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                To
-                <input
-                  type="date"
-                  aria-label="To"
-                  value={to}
-                  min={from}
-                  max={today()}
-                  onChange={(e) => e.target.value && update({ to: e.target.value })}
-                  className="h-8 rounded-md border border-input bg-card px-2 text-sm text-foreground"
-                />
-              </label>
+              {inside ? (
+                <Badge tone="inside" className="px-2 py-1">
+                  Inside now
+                  <button type="button" onClick={() => update({ inside: null })} aria-label="Show all attendance">
+                    ×
+                  </button>
+                </Badge>
+              ) : (
+                <>
+                  <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                    From
+                    <input
+                      type="date"
+                      aria-label="From"
+                      value={from}
+                      max={to}
+                      onChange={(e) => e.target.value && update({ from: e.target.value })}
+                      className="h-8 rounded-md border border-input bg-card px-2 text-sm text-foreground"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                    To
+                    <input
+                      type="date"
+                      aria-label="To"
+                      value={to}
+                      min={from}
+                      max={today()}
+                      onChange={(e) => e.target.value && update({ to: e.target.value })}
+                      className="h-8 rounded-md border border-input bg-card px-2 text-sm text-foreground"
+                    />
+                  </label>
+                </>
+              )}
+              {openDay === "false" && (
+                <Badge tone="accent" className="px-2 py-1">
+                  Days that are over
+                  <button type="button" onClick={() => update({ open: null })} aria-label="Include days still running">
+                    ×
+                  </button>
+                </Badge>
+              )}
               <NativeSelect
                 aria-label="Department"
                 value={department}
