@@ -252,14 +252,14 @@ WEB_DIST = Path(os.environ.get("GATESENSE_WEB_DIST") or ROOT_DIR / "web" / "dist
 MAX_REQUEST_BYTES = 10_000_000  # larger request bodies are refused (413): enrollment photos are the biggest
 LOGIN_RATE_LIMIT = 10  # login attempts per IP address per LOGIN_RATE_WINDOW_SECONDS (on top of the account lockout)
 LOGIN_RATE_WINDOW_SECONDS = 60
-# The database: GATESENSE_DB_URL from the environment only (never .env, never written to a log: it holds the
+# The database: GATESENSE_DB_URL from the environment, else from .env (never written to a log: it holds the
 # password): mssql+pyodbc://user:password@host\INSTANCE/GateSense?driver=ODBC+Driver+18+for+SQL+Server&
 # TrustServerCertificate=yes = Microsoft SQL Server (app/mssql.py). Without it GateSense refuses to start; so does
 # any other URL, or only the old name GATESENSE_DATABASE_URL (app/dbconn.py).
 DATABASE_URL_ENV = "GATESENSE_DB_URL"
 OLD_DATABASE_URL_ENV = "GATESENSE_DATABASE_URL"
-DATABASE_URL = os.environ.get(DATABASE_URL_ENV) or None
-OLD_DATABASE_URL = os.environ.get(OLD_DATABASE_URL_ENV) or None
+DATABASE_URL = _server_setting(DATABASE_URL_ENV)
+OLD_DATABASE_URL = _server_setting(OLD_DATABASE_URL_ENV)
 DB_LOCK_TIMEOUT_MS = 10_000  # one writer at a time (sp_getapplock); a write that waits longer fails and is retried
 DB_LOGIN_TIMEOUT_SECONDS = 5  # connecting while the server is down gives up after this long
 DB_QUERY_TIMEOUT_SECONDS = 30  # a statement the server doesn't answer (backups have none)

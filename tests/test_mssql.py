@@ -52,6 +52,17 @@ def test_urls_that_cant_be_used(monkeypatch):
             db.connect()
 
 
+def test_the_url_can_come_from_the_env_file(tmp_path, monkeypatch):
+    url = r"mssql+pyodbc://u:p%40ss@localhost\SQLEXPRESS01/GateSense?driver=ODBC+Driver+18+for+SQL+Server&x=yes"
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"{config.DATABASE_URL_ENV}='{url}'\n", encoding="utf-8")
+    monkeypatch.setenv("GATESENSE_ENV_FILE", str(env_file))
+    monkeypatch.delenv(config.DATABASE_URL_ENV)
+    assert config._server_setting(config.DATABASE_URL_ENV) == url
+    monkeypatch.setenv(config.DATABASE_URL_ENV, TEST_DB_URL)  # a real environment variable wins
+    assert config._server_setting(config.DATABASE_URL_ENV) == TEST_DB_URL
+
+
 def test_the_password_is_never_shown():
     url = r"mssql+pyodbc://gatesense_app:p%40ss:w0rd@localhost\SQLEXPRESS01/GateSense?driver=ODBC+Driver+18+for+SQL+Server"
     shown = dbconn.safe_url(url)

@@ -91,9 +91,12 @@ After updating GateSense's code, restart it (`stop.bat`, then `start.bat`); star
 
 ## SQL Server
 
-GateSense keeps its data in Microsoft SQL Server, in the database the environment variable `GATESENSE_DB_URL` points
-at; without it GateSense refuses to start. It is read from the environment only (never from `.env`), and the password
-in it is never shown or logged. The face embeddings stay in `data\gallery.npz`.
+GateSense keeps its data in Microsoft SQL Server, in the database the setting `GATESENSE_DB_URL` points
+at; without it GateSense refuses to start. It is read from the environment, else from `.env`, and the password in it
+is never shown or logged. The face embeddings stay in `data\gallery.npz`.
+
+Setting up a new computer (installing SQL Server and the ODBC driver, moving data from another computer):
+[DATABASE_SETUP.md](DATABASE_SETUP.md).
 
 **Once, as an administrator of the SQL Server instance** (here `localhost\SQLEXPRESS01`, SQL Server 2025 Express):
 
@@ -124,16 +127,17 @@ in it is never shown or logged. The face embeddings stay in `data\gallery.npz`.
    mkdir "D:\Camera Attendence\data\backups"
    icacls "D:\Camera Attendence\data\backups" /grant "NT Service\MSSQL$SQLEXPRESS01:(OI)(CI)M"
    ```
-4. Tell GateSense (PowerShell; single quotes keep the URL as it is). In the password, write `@ : / ? # & % +` and
-   spaces percent-encoded (`@` = `%40`, `:` = `%3A`, `/` = `%2F`, `?` = `%3F`, `#` = `%23`, `&` = `%26`, `%` = `%25`,
-   `+` = `%2B`, space = `%20`):
+4. Tell GateSense: add this line to `.env` in the project root (single quotes keep the URL as it is). In the
+   password, write `@ : / ? # & % +` and spaces percent-encoded (`@` = `%40`, `:` = `%3A`, `/` = `%2F`, `?` = `%3F`,
+   `#` = `%23`, `&` = `%26`, `%` = `%25`, `+` = `%2B`, space = `%20`):
 
    ```
-   setx GATESENSE_DB_URL 'mssql+pyodbc://gatesense_app:PASSWORD@localhost\SQLEXPRESS01/GateSense?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes'
+   GATESENSE_DB_URL='mssql+pyodbc://gatesense_app:PASSWORD@localhost\SQLEXPRESS01/GateSense?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes'
    ```
-   `setx` applies to programs started afterwards: open a new terminal (and restart VS Code) before the next step.
-   As a Windows service (`install_service.ps1`), add the same variable to the service (the `+` keeps the variables
-   the install script set): `nssm set GateSense AppEnvironmentExtra "+GATESENSE_DB_URL=..."`.
+   Or set it as an environment variable instead (PowerShell: `setx GATESENSE_DB_URL '...'`, then open a new terminal
+   and restart VS Code). An environment variable wins over `.env`: moving the URL to `.env`, remove the variable
+   (`[Environment]::SetEnvironmentVariable('GATESENSE_DB_URL', $null, 'User')`, then a new terminal). A Windows
+   service (`install_service.ps1`) reads the same `.env` (in the project folder), so it needs nothing extra.
 
 **Backups** are `GateSense-nightly-<time>.bak` (and `-manual-`) in the backup sets: a
 COPY_ONLY backup with checksums, checked with `RESTORE VERIFYONLY`, copied to the second backup folder (compared byte

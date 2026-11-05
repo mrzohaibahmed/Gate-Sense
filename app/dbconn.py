@@ -1,6 +1,6 @@
 """Which database GateSense uses, and the few pieces of SQL used in several places.
 
-GateSense stores its data in Microsoft SQL Server: config.DATABASE_URL (GATESENSE_DB_URL, from the environment only),
+GateSense stores its data in Microsoft SQL Server: config.DATABASE_URL (GATESENSE_DB_URL, from the environment or .env),
 an mssql+pyodbc:// URL, opened through SQLAlchemy's engine and pyodbc (app/mssql.py). Without it GateSense refuses to
 start.
 

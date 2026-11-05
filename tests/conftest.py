@@ -20,7 +20,7 @@ def _check_test_database(url: str | None) -> None:
     if not url.lower().startswith("mssql+pyodbc://"):
         pytest.exit("GATESENSE_TEST_DB_URL must be an mssql+pyodbc:// URL", 2)
     name = mssql.database_name(url)
-    real = os.environ.get(config.DATABASE_URL_ENV)
+    real = config.DATABASE_URL  # the environment or the real .env
     if "test" not in name.lower() or (real and mssql.database_name(real).lower() == name.lower()):
         pytest.exit(f"GATESENSE_TEST_DB_URL's database {name!r} must be a separate test database (its name "
                     f"containing 'test', not the one in {config.DATABASE_URL_ENV}): the tests empty it", 2)
