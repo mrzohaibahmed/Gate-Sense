@@ -188,6 +188,19 @@ def test_https_check(monkeypatch, host, certs, allow, error, warning):
         assert "GATESENSE_SSL_CERTFILE" in e and "GATESENSE_ALLOW_HTTP=1" in e
 
 
+@pytest.mark.parametrize("host, https, expected", [
+    ("127.0.0.1", False, "http://localhost:8000"),
+    ("0.0.0.0", True, "https://localhost:8000"),
+    ("::", True, "https://localhost:8000"),
+    ("192.168.1.10", True, "https://192.168.1.10:8000"),
+])
+def test_the_browser_opens_an_address_it_can_use(monkeypatch, host, https, expected):
+    monkeypatch.setattr(config, "API_HOST", host)
+    monkeypatch.setattr(config, "API_PORT", 8000)
+    monkeypatch.setattr(config, "HTTPS", https)
+    assert run.url() == expected
+
+
 def test_preflight_refuses_a_first_start_without_an_admin_password(monkeypatch, capsys):
     monkeypatch.delenv(config.DASHBOARD_PASSWORD_ENV)  # set for every test by the first_password fixture
     monkeypatch.setattr(run, "port_in_use", lambda: False)

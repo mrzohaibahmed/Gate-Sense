@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { Bell, CameraOff, LogOut, Moon, Search, Sun, SunMoon, UserRoundX } from "lucide-react";
+import { Bell, CameraOff, LogOut, MonitorUp, Moon, Search, Sun, SunMoon, UserRoundX, Volume2 } from "lucide-react";
+import { useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router";
 import { toast } from "sonner";
 
@@ -9,6 +10,7 @@ import { Badge } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -17,6 +19,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip } from "@/components/ui/misc";
 import { useLive } from "@/live/LiveProvider";
+import {
+  beep,
+  type DesktopState,
+  desktopState,
+  requestDesktop,
+  setAlertPrefs,
+  useAlertPrefs,
+} from "@/live/visitorAlert";
 import { cn, today } from "@/lib/utils";
 
 import { useFilters } from "./filters";
@@ -139,6 +149,58 @@ function Notifications() {
   );
 }
 
+const DESKTOP_HINT: Record<DesktopState, string | null> = {
+  granted: null,
+  default: null,
+  denied: "blocked in this browser's site settings",
+  unsupported: "needs https or this PC",
+};
+
+/** Unknown visitor alerts for this browser: the beep and the desktop notification (unknowns:read only). */
+function VisitorAlertItems() {
+  const prefs = useAlertPrefs();
+  const [desktop, setDesktop] = useState<DesktopState>(desktopState);
+  const hint = DESKTOP_HINT[desktop];
+  return (
+    <>
+      <DropdownMenuSeparator />
+      <DropdownMenuLabel>Unknown visitor alerts</DropdownMenuLabel>
+      <DropdownMenuCheckboxItem
+        checked={prefs.sound}
+        onSelect={(e) => e.preventDefault()}
+        onCheckedChange={(on) => {
+          setAlertPrefs({ sound: on });
+          if (on) beep(1); // a 1 s preview, and the click unlocks the browser's audio
+        }}
+      >
+        <Volume2 className="mr-2 size-4" /> Beep
+      </DropdownMenuCheckboxItem>
+      <DropdownMenuCheckboxItem
+        checked={prefs.desktop && desktop === "granted"}
+        disabled={hint !== null}
+        onSelect={(e) => e.preventDefault()}
+        onCheckedChange={(on) => {
+          if (!on) {
+            setAlertPrefs({ desktop: false });
+            return;
+          }
+          void requestDesktop().then((state) => {
+            setDesktop(state);
+            setAlertPrefs({ desktop: state === "granted" });
+            if (state === "denied") toast.error("Desktop alerts are blocked in this browser's site settings");
+          });
+        }}
+      >
+        <MonitorUp className="mr-2 size-4" />
+        <span className="flex flex-col">
+          Desktop notification
+          {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
+        </span>
+      </DropdownMenuCheckboxItem>
+    </>
+  );
+}
+
 function UserMenu() {
   const { data: me } = useMe();
   const navigate = useNavigate();
@@ -184,6 +246,7 @@ function UserMenu() {
         <DropdownMenuItem onSelect={() => setTheme("system")}>
           <SunMoon /> Like the system
         </DropdownMenuItem>
+        {can(me, "unknowns:read") && <VisitorAlertItems />}
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={() => navigate("/change-password?voluntary=1")}>Change password</DropdownMenuItem>
         <DropdownMenuItem

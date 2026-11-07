@@ -34,7 +34,9 @@ API = "_api"  # data/run/_api.json (written by the running app), _api.stop (asks
 
 
 def url() -> str:
-    host = "localhost" if config.API_HOST in ("127.0.0.1", "::1") else config.API_HOST
+    """The address this PC's browser opens: localhost also when listening on every address (0.0.0.0, a name the
+    certificate covers; browsers refuse 0.0.0.0 itself)."""
+    host = "localhost" if config.API_HOST in ("127.0.0.1", "::1", "0.0.0.0", "::") else config.API_HOST
     return f"{'https' if config.HTTPS else 'http'}://{host}:{config.API_PORT}"
 
 
